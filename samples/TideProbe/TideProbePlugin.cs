@@ -9,6 +9,9 @@ namespace Nami.Samples.TideProbe;
 [PluginInfo("dev.nami.samples.tideprobe", "Tide Probe", "0.1.0", Description = "Verifies typed game access through Tide.")]
 public sealed class TideProbePlugin : NamiPlugin
 {
+    private int _ticks;
+    private bool _sceneProbeDone;
+
     public override void OnLoad()
     {
         var log = Context.Log;
@@ -33,8 +36,8 @@ public sealed class TideProbePlugin : NamiPlugin
             log.Error($"Debug.Log(string) failed: {ex.Message}");
         }
 
-        // 2. Typed static method call with an INT arg (pick a harmless int-taking static).
-        //    Debug.Log(object) boxes any value; pass an int to prove primitive marshaling.
+        // 2. Typed static method call with an INT arg — proves primitive marshaling AND the
+        //    signature-aware boxing path (int is boxed for Debug.Log(object)).
         try
         {
             var debug = GameClass.Resolve("UnityEngine.CoreModule", "UnityEngine", "Debug");
@@ -46,8 +49,7 @@ public sealed class TideProbePlugin : NamiPlugin
             log.Error($"Debug.Log(int) failed: {ex.Message}");
         }
 
-        // 3. Instance access: Application has no parameterless ctor, so create a
-        //    UnityEngine.GameObject and call an instance method on it — the real prize.
+        // 3. Instance access on a freshly created GameObject.
         try
         {
             var goClass = GameClass.Resolve("UnityEngine.CoreModule", "UnityEngine", "GameObject");
@@ -63,25 +65,72 @@ public sealed class TideProbePlugin : NamiPlugin
             log.Error($"instance access failed: {ex.Message}");
         }
 
-        // 4. Unity internal-call property access (the historical crash case): read AND write
-        //    Time.timeScale, whose getter/setter are Unity internal calls that used to crash
-        //    when invoked from the nested drain.
+        // 4. Generic typed API: bool + enum reads, no hand-picked TideType.
         try
         {
-            var timeClass = GameClass.Resolve("UnityEngine.CoreModule", "UnityEngine", "Time");
-            var original = timeClass.GetStaticFloat("timeScale");
-            log.Info($"Time.timeScale read = {original}");
-            timeClass.SetStaticFloat("timeScale", original);
-            log.Info("Time.timeScale write OK (internal-call property path stable)");
+            var app = GameClass.Resolve("UnityEngine.CoreModule", "UnityEngine", "Application");
+            bool wasBg = app.Get<bool>("runInBackground");
+            log.Info($"Application.runInBackground (typed Get<bool>) = {wasBg}");
+            app.Set("runInBackground", true);
+            log.Info("Application.runInBackground set to true via typed Set<bool> OK");
+
+            var quality = GameClass.Resolve("UnityEngine.CoreModule", "UnityEngine", "QualitySettings");
+            int shadow = quality.Get<int>("shadowResolution");  // ShadowResolution enum as int
+            log.Info($"QualitySettings.shadowResolution (enum via Get<int>) = {shadow}");
         }
         catch (Exception ex)
         {
-            log.Error($"Time.timeScale property access failed: {ex.Message}");
+            log.Error($"typed generic API failed: {ex.Message}");
         }
 
-        // 5. Scene-object discovery via a known safe static: Camera.main is a plain managed
-        //    static property (no internal-call scene iteration). Full FindObjectOfType needs
-        //    a non-nested main-thread hook (see docs) and is not exposed yet.
+        // 5. Array access: read a static string[] — System.Environment.GetCommandLineArgs().
+        try
+        {
+            var env = GameClass.Resolve("mscorlib", "System", "Environment");
+            var v = env.CallStaticValue("GetCommandLineArgs", Array.Empty<TideValue>(), TideType.Object);
+            using var args = GameObject.FromHandle(v.Handle);
+            if (args is null)
+            {
+                log.Error("GetCommandLineArgs returned a null handle");
+            }
+            else
+            {
+                int n = TideArrays.GetLength(args);
+                log.Info($"Environment.GetCommandLineArgs() length = {n}");
+                if (n > 0)
+                {
+                    var first = TideArrays.GetString(args, 0);
+                    log.Info($"args[0] = '{first}'");
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            log.Error($"array access failed: {ex.Message}");
+        }
+
+        log.Info("TideProbe boot checks complete; scene probe fires after the scene loads");
+    }
+
+    public override void OnUpdate()
+    {
+        // Scene-object discovery needs a loaded scene; fire once ~10s after boot (600 ticks).
+        if (_sceneProbeDone)
+        {
+            return;
+        }
+
+        if (++_ticks < 600)
+        {
+            return;
+        }
+
+        _sceneProbeDone = true;
+        var log = Context.Log;
+
+        // 6. Scene-object discovery via the SAFE static-accessor route. Unity forbids
+        //    Object.FindObjectOfType from foreign re-entry (aborts 0xe0000001), but static
+        //    scene accessors like Camera.main run through the normal property path.
         try
         {
             var cameraClass = GameClass.Resolve("UnityEngine.CoreModule", "UnityEngine", "Camera");
@@ -89,6 +138,11 @@ public sealed class TideProbePlugin : NamiPlugin
             log.Info(camera is not null
                 ? $"Camera.main found live instance (handle={camera.HandleValue})"
                 : "Camera.main -> none (no active Camera in the scene)");
+            if (camera is not null)
+            {
+                var name = camera.GetString("name");
+                log.Info($"live Camera.name = '{name}'");
+            }
         }
         catch (Exception ex)
         {

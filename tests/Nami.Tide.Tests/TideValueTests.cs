@@ -117,3 +117,110 @@ public sealed class TideStringMarshalingTests
         v.FreeStringBuffer();  // must not throw
     }
 }
+
+public enum TestEnum
+{
+    Zero = 0,
+    One = 1,
+    Seven = 7
+}
+
+public sealed class TideTypesTests
+{
+    [Theory]
+    [InlineData(typeof(int), TideType.I32)]
+    [InlineData(typeof(long), TideType.I64)]
+    [InlineData(typeof(float), TideType.R4)]
+    [InlineData(typeof(double), TideType.R8)]
+    [InlineData(typeof(bool), TideType.Bool)]
+    [InlineData(typeof(string), TideType.String)]
+    public void Of_Primitives(Type t, TideType expected)
+    {
+        var method = typeof(TideTypes).GetMethod(nameof(TideTypes.Of))!.MakeGenericMethod(t);
+        Assert.Equal(expected, method.Invoke(null, null));
+    }
+
+    [Fact]
+    public void Of_Enum_MapsToUnderlyingInt()
+    {
+        Assert.Equal(TideType.I32, TideTypes.Of<TestEnum>());
+    }
+
+    [Fact]
+    public void Of_GameObject_MapsToObject()
+    {
+        Assert.Equal(TideType.Object, TideTypes.Of<GameObject>());
+    }
+}
+
+public sealed class TideValueConversionTests
+{
+    [Fact]
+    public void ToValue_Int_ProducesI32()
+    {
+        var v = GameClass.ToValue(42);
+        Assert.Equal(TideType.I32, v.Type);
+        Assert.Equal(42, v.Int32);
+    }
+
+    [Fact]
+    public void ToValue_Bool_ProducesBool()
+    {
+        var v = GameClass.ToValue(true);
+        Assert.Equal(TideType.Bool, v.Type);
+        Assert.True(v.Boolean);
+    }
+
+    [Fact]
+    public void ToValue_String_ProducesString()
+    {
+        var v = GameClass.ToValue("hi");
+        try
+        {
+            Assert.Equal(TideType.String, v.Type);
+            Assert.Equal("hi", v.String);
+        }
+        finally
+        {
+            v.FreeStringBuffer();
+        }
+    }
+
+    [Fact]
+    public void ToValue_Enum_ProducesUnderlyingInt()
+    {
+        var v = GameClass.ToValue(TestEnum.Seven);
+        Assert.Equal(TideType.I32, v.Type);
+        Assert.Equal(7, v.Int32);
+    }
+
+    [Fact]
+    public void ToValue_GameObject_ProducesHandle()
+    {
+        var go = GameObject.FromHandle(1234)!;
+        var v = GameClass.ToValue(go);
+        Assert.Equal(TideType.Object, v.Type);
+        Assert.Equal(1234L, v.Handle);
+    }
+
+    [Fact]
+    public void Convert_Enum_RestoresValue()
+    {
+        var v = TideValue.FromInt(7);
+        var result = GameClass.Convert<TestEnum>(v);
+        Assert.Equal(TestEnum.Seven, result);
+    }
+
+    [Fact]
+    public void Convert_Int_RestoresValue()
+    {
+        var v = TideValue.FromInt(99);
+        Assert.Equal(99, GameClass.Convert<int>(v));
+    }
+
+    [Fact]
+    public void Convert_Bool_RestoresValue()
+    {
+        Assert.True(GameClass.Convert<bool>(TideValue.FromBool(true)));
+    }
+}

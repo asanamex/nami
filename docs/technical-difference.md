@@ -28,14 +28,14 @@ marketing sheet.
 | BCL available to plugins | Whatever the game's Mono provides (no `Span`-heavy modern APIs by default, old GC, no modern `AssemblyLoadContext` semantics). | Full modern .NET 10 BCL: current GC/JIT, `Span<T>`, `async`, source generators, `System.Text.Json`, etc. |
 | Runtime for IL2CPP games | Bundles a **.NET 6 CoreCLR** (BepInEx 6) alongside the game's native IL2CPP; plugins run on that. | Planned: the same CoreCLR hosting machinery as Mono, so plugin code and tooling are identical across both backends. |
 | GC coexistence | Mono games: plugins share the game's Boehm GC. IL2CPP: separate CoreCLR GC in-process. | Separate CoreCLR GC in-process in both cases. Mono-game plugin code never allocates in the game's GC. |
-| Calling game code from a plugin | Mono games: trivial — plugin IL runs in the game runtime, so it can call any game method directly. IL2CPP: via generated interop. | Mono games: **Tide** — plugin code runs on Nami's .NET and calls INTO the game's Mono via a main-thread bridge with **typed access** (`GameClass`/`GameObject`: static + instance field access, typed method calls with primitive/string args, object creation; verified in-game). Still narrower than in-runtime calls: no scene-object discovery helpers or enum/array values yet, and some Unity internal-call properties are a known edge. |
+| Calling game code from a plugin | Mono games: trivial — plugin IL runs in the game runtime, so it can call any game method directly. IL2CPP: via generated interop. | Mono games: **Tide** — plugin code runs on Nami's .NET and calls INTO the game's Mono via a main-thread bridge with **typed access** (`GameClass`/`GameObject`: static + instance field/property access incl. live objects, typed method calls with signature-aware boxing, a generic `Get<T>`/`Set<T>`/`Call<T>` API, enums as their underlying int, arrays via `TideArrays`, object creation; verified in-game). Still narrower than in-runtime calls: Unity's scene-iteration scan APIs (`Object.FindObjectOfType`) abort from foreign re-entry, so live scene objects are reached via static accessors (`Camera.main`). |
 
 ## 3. Plugin isolation & failure handling
 
 | Aspect | BepInEx | Nami |
 |---|---|---|
 | Isolation between plugins | Mono games: all plugins share the game's single AppDomain — shared statics, shared assembly resolution, exceptions and `static` state can bleed between plugins and the game. | Every plugin loads into its **own unloadable `AssemblyLoadContext`**: isolated statics, isolated resolution; plugin assemblies are distinct instances even when names collide. |
-| Unloading / hot reload | Not supported on Mono (plugins live for the process lifetime). IL2CPP: process-lifetime component contexts. | Collectible ALCs from day one — the foundation for per-mod unload and hot reload (M4 milestone). |
+| Unloading / hot reload | Not supported on Mono (plugins live for the process lifetime). IL2CPP: process-lifetime component contexts. | Collectible ALCs from day one — the foundation for per-mod unload and hot reload (M5 milestone). |
 | A crashing plugin | An exception escaping a plugin's update can take down the game or corrupt shared state; no structured quarantine. | **Crash quarantine**: a plugin that throws N consecutive times is disabled (`Quarantined`), `OnUnload` is called, the reason is logged, the game keeps running. Verified by test. |
 | Assembly identity conflicts | Two plugins shipping the same dependency fight over one AppDomain resolution. | Each ALC resolves its own copy; only the Nami framework assemblies unify (by design, so plugin↔loader types match). |
 
@@ -92,7 +92,7 @@ marketing sheet.
 
 | Aspect | BepInEx | Nami |
 |---|---|---|
-| Third-party runtime deps | Doorstop, HarmonyX, MonoMod.RuntimeDetour/Utils, Mono.Cecil, Cpp2IL, Il2CppInterop, bundled .NET 6. | No third-party managed packages; native side uses only the Windows API + the bundled .NET 10 runtime. Patching/interop are future in-house subsystems. |
+| Third-party runtime deps | Doorstop, HarmonyX, MonoMod.RuntimeDetour/Utils, Mono.Cecil, Cpp2IL, Il2CppInterop, bundled .NET 6. | No third-party managed packages; native side uses only the Windows API + the bundled .NET 10 runtime. Patching is shipped in-house (Wave); the IL2CPP interop layer is the future subsystem. |
 | Injection surface | Doorstop (separate project, C++). | In-repo C++ (`native/`): injector + loader, ~600 LOC, fully static link (no MinGW runtime DLLs to resolve in a foreign process). |
 | IL tooling | Mono.Cecil everywhere (discovery, patching, interop). | None (by design); reflection-based discovery; native metadata reader planned for IL2CPP. |
 

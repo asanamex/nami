@@ -47,7 +47,7 @@ shipped — it is the architectural target.)*
 | Unity Mono modding | mature | **works end-to-end** (load, patch, typed game access) |
 | Unity IL2CPP modding | mature | next milestone |
 | Harmony-style method patching | yes (HarmonyX) | **Wave** — in-house detours + IL-copy patching: prefix/postfix, skip, `__instance`/`__result`/`__state`, any signature |
-| Calling game code from mods | yes (in-process) | **Tide** — typed static/instance field access, typed calls, object creation (opt-in) |
+| Calling game code from mods | yes (in-process) | **Tide** — typed fields/properties, calls, objects, a generic `Get<T>`/`Set<T>`/`Call<T>` API, enums, arrays, live scene objects via statics (opt-in) |
 | Ecosystem / existing mods | huge | zero (clean-slate API) |
 | Years of edge-case hardening | yes | no — expect bugs |
 | Packaging / templates / installer | mature | next milestone (`nami launch`/`create` player flow already in) |

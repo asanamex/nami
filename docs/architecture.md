@@ -28,20 +28,25 @@ IL2CPP games (the IL2CPP side uses the same hosting machinery; only the game-typ
 
 ```
 native/                          C++17 (Windows x64 first)
-  injector/injector_main.cpp     nami_boot.exe: CreateProcessW(suspended) →
-                                VirtualAllocEx(path) → WriteProcessMemory →
-                                CreateRemoteThread(LoadLibraryW) → ResumeThread
+  injector/injector_main.cpp     inject_into_game(): CreateProcessW(suspended) →
+                                 VirtualAllocEx(path) → WriteProcessMemory →
+                                 CreateRemoteThread(LoadLibraryW) → ResumeThread
+  injector/injector_exe.cpp      nami_boot.exe entry (wmain): parses <game> <loader> [--root]
   loader/loader_exports.cpp      nami_loader.dll: DllMain spawns the boot thread
-                                (CreateThread) — no separate export is called by the injector
+                                 (CreateThread) — no separate export is called by the injector
   loader/loader_main.cpp         boot thread: waits for mono-2.0-bdwgc.dll / mono.dll (30s),
-                                UTF-8 root
-  loader/tide_pump.cpp           Tide main-thread executor: mono_runtime_invoke hook + drain
+                                 UTF-8 root
+  loader/tide_pump.cpp           Tide main-thread executor: mono_runtime_invoke hook + pre/post
+                                 drain queues, install lock, re-entrancy guard
   loader/tide_ops.cpp            Tide native ops (UnityLog, parameterless InvokeStatic)
-  loader/tide_objects.cpp        Tide typed game access (field/property/method/object ops)
+  loader/tide_objects.cpp        Tide typed game access (field/property/method/object/array ops,
+                                 GCHandle *_v2 handles, exception surfacing)
+  loader/tide_abi.h              shared Tide value/request ABI (TideValue, CallRequest)
   core/runtime_host.cpp          hostfxr: initialize_for_runtime_config → get_runtime_delegate(
-                                hdt_load_assembly_and_get_function_pointer) →
-                                load_assembly_and_get_function_pointer(Nami.Runtime.dll,
-                                ComponentEntry.EntryPoint, UNMANAGEDCALLERSONLY sentinel)
+                                 hdt_load_assembly_and_get_function_pointer) →
+                                 load_assembly_and_get_function_pointer(Nami.Runtime.dll,
+                                 ComponentEntry.EntryPoint, UNMANAGEDCALLERSONLY sentinel)
+  smoke/smoke_main.cpp           native toolchain smoke test (ctest)
 
 src/Nami.Runtime/                managed in-game bootstrap
   ComponentEntry.cs              [UnmanagedCallersOnly] entry, BootArgs struct, catch→log
@@ -50,15 +55,18 @@ src/Nami.Tide/                   bridge API mods call (see docs/tide.md)
 src/Nami.Core/                   chainloader (ALC per mod, quarantine, resolver, discovery)
 src/Nami.Wave/                   patching engine (x64 inline detours + IL-copy patches)
 src/Nami.Sdk/                    public plugin API ([NamiPlugin], NamiPlugin, PluginInfo, ...)
-src/Nami.Cli/                    `nami` console tool: version/doctor/list + the launcher flow —
-                                 launch set <game.exe> (stored in nami.json), launch [offline|steam]
-                                 (spawns native/nami_boot.exe; Steam relay to steam://rungameid/<id>
-                                 after the game exits), create (self-extracts launchNami.exe +
-                                 run-with-nami.bat into the nami root). Game exe auto-detection picks
-                                 the largest .exe, skipping crash handlers/updaters.
+src/Nami.Cli/                    `nami` console tool: version/doctor/list + install (roadmap
+                                 stub) + the launcher flow — launch set <game.exe> (stored in
+                                 nami.json), launch [offline|steam] (spawns native/nami_boot.exe;
+                                 Steam relay to steam://rungameid/<id> after the game exits),
+                                 create (self-extracts launchNami.exe + run-with-nami.bat into the
+                                 nami root). Game exe auto-detection picks the largest .exe,
+                                 skipping crash handlers/updaters.
 tools/launch-shim/               launchNami.exe — tiny self-contained console app, embedded in
                                  Nami.Cli; spawns nami_boot.exe with paths from its own location
-samples/HelloNami/               example mod
+samples/HelloNami/               example mod (log-only)
+samples/TideProbe/               in-game proof of Tide typed access (generic API, enums, arrays,
+                                 Camera.main scene access)
 ```
 
 ## Boot sequence (verified in-game)
@@ -121,7 +129,8 @@ calls — game stable. Opt-in via `"enableMonoBridge": true`. Full details: `doc
 
 ## Future layers
 
-- Tide: scene-object discovery, enum/array values, a typed projection layer.
+- Tide: Unity scene-iteration scan APIs (`FindObjectOfType`) via a Wave-installed per-frame
+  script callback; a generated strongly-typed projection layer over the generic `Get<T>` API.
 - `Nami.Interop` — offline (dev-time) reference assembly generation for IL2CPP modders.
 - IL2CPP bridge — same hosting, plus native metadata reading of `global-metadata.dat`.
 - `.nmod` packaging, hot reload, per-mod profiler, comparative bench gates.

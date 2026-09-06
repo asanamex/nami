@@ -43,6 +43,11 @@ public static unsafe partial class Tide
     [DllImport(LoaderDll, EntryPoint = "nami_tide_object_op", CallingConvention = CallingConvention.Cdecl)]
     internal static extern int NativeObjectOp(CallRequest* request);
 
+    // Runs an op AFTER the current mono_runtime_invoke returns (outside the nested frame).
+    // Required for Unity scene-iteration APIs (Object.FindObjectOfType).
+    [DllImport(LoaderDll, EntryPoint = "nami_tide_object_op_post", CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int NativeObjectOpPost(CallRequest* request);
+
     [DllImport(LoaderDll, EntryPoint = "nami_tide_free", CallingConvention = CallingConvention.Cdecl)]
     internal static extern void NativeFree(void* ptr);
 
@@ -165,7 +170,7 @@ internal static unsafe class TideObjectOp
     /// freed by the caller via TideValue.FreeNativeReturn after reading.
     /// </summary>
     public static TideValue Call(TideCallOp op, GameClass target, string member,
-        TideValue* args, int argCount, TideType returnType)
+        TideValue* args, int argCount, TideType returnType, bool postInvoke = false)
     {
         try
         {
@@ -183,7 +188,7 @@ internal static unsafe class TideObjectOp
             req.Args = args;
             req.Ret = returnType == TideType.Void ? null : &ret;
 
-            var rc = Tide.NativeObjectOp(&req);
+            var rc = postInvoke ? Tide.NativeObjectOpPost(&req) : Tide.NativeObjectOp(&req);
             if (rc != 0)
             {
                 throw Error(op, $"{target.Name}.{member}", rc, req);

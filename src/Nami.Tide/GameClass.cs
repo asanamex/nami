@@ -109,6 +109,177 @@ public sealed unsafe class GameClass
     {
         return TideObjectOp.Call(op, this, member, null, 0, returnType);
     }
+
+    // ------------------------------------------------------------- generic typed API
+
+    /// <summary>Reads a static field/property as <typeparamref name="T"/>.</summary>
+    public T? Get<T>(string field)
+    {
+        var type = TideTypes.Of<T>();
+        var v = TideObjectOp.Call(TideCallOp.GetStaticField, this, field, null, 0, type);
+        return Convert<T>(v);
+    }
+
+    /// <summary>Writes a static field/property with a strongly-typed value.</summary>
+    public void Set<T>(string field, T value)
+    {
+        var arg = ToValue(value);
+        var args = new[] { arg };
+        fixed (TideValue* p = args)
+        {
+            TideObjectOp.Call(TideCallOp.SetStaticField, this, field, p, 1, TideType.Void);
+        }
+    }
+
+    /// <summary>Invokes a static method and returns its value as <typeparamref name="TResult"/>.</summary>
+    public TResult? Call<TResult>(string method, params TideValue[] args)
+    {
+        var retType = TideTypes.Of<TResult>();
+        fixed (TideValue* p = args)
+        {
+            var v = TideObjectOp.Call(TideCallOp.InvokeStatic, this, method, p, args.Length, retType);
+            return Convert<TResult>(v);
+        }
+    }
+
+    /// <summary>Invokes a static method with strongly-typed arguments (void).</summary>
+    public void CallVoid<T>(string method, T arg0)
+    {
+        CallStatic(method, ToValue(arg0));
+    }
+
+    internal static TideValue ToValue<T>(T value)
+    {
+        return value switch
+        {
+            null => TideValue.FromString(null),
+            int i => TideValue.FromInt(i),
+            long l => TideValue.FromLong(l),
+            float f => TideValue.FromFloat(f),
+            double d => TideValue.FromDouble(d),
+            bool b => TideValue.FromBool(b),
+            string s => TideValue.FromString(s),
+            GameObject go => TideValue.FromHandle(go.HandleValue),
+            _ when typeof(T).IsEnum => TideValue.FromInt(System.Convert.ToInt32(value)),
+            _ => throw new NotSupportedException($"type {typeof(T)} is not supported by Tide")
+        };
+    }
+
+    internal static T? Convert<T>(TideValue v)
+    {
+        var t = typeof(T);
+        if (t.IsEnum)
+        {
+            return (T)Enum.ToObject(t, v.Type == TideType.I64 ? v.Int64 : v.Int32);
+        }
+
+        if (t == typeof(int)) return (T)(object)v.Int32;
+        if (t == typeof(long)) return (T)(object)v.Int64;
+        if (t == typeof(float)) return (T)(object)v.Single;
+        if (t == typeof(double)) return (T)(object)v.Double;
+        if (t == typeof(bool)) return (T)(object)v.Boolean;
+        if (t == typeof(string))
+        {
+            try
+            {
+                var s = v.String;
+                return s is null ? default : (T)(object)s;
+            }
+            finally
+            {
+                v.FreeNativeReturn();
+            }
+        }
+
+        if (typeof(GameObject).IsAssignableFrom(t) && v.Type == TideType.Object)
+        {
+            return (T)(object)new GameObject(v.Handle);
+        }
+
+        return default;
+    }
+}
+
+/// <summary>
+/// Reads/writes game-side System.Array objects (obtained via an object-typed field/property
+/// or method return). Arrays arrive as <see cref="GameObject"/> handles; this helper provides
+/// typed element access. Value-type arrays are readable; writes are supported for
+/// reference-element arrays (object[]/string[]).
+/// </summary>
+public static unsafe class TideArrays
+{
+    /// <summary>Returns the number of elements in the array.</summary>
+    public static int GetLength(GameObject array)
+    {
+        var args = new[] { TideValue.FromHandle(array.HandleValue) };
+        fixed (TideValue* p = args)
+        {
+            var v = TideObjectOp.CallInstance(TideCallOp.ArrayLength, array.HandleValue, "", p, 1, TideType.I32);
+            return v.Int32;
+        }
+    }
+
+    /// <summary>Reads a string element (for string[]).</summary>
+    public static string? GetString(GameObject array, int index)
+    {
+        var v = GetElement(array, index, TideType.String);
+        try
+        {
+            return v.String;
+        }
+        finally
+        {
+            v.FreeNativeReturn();
+        }
+    }
+
+    public static int GetInt(GameObject array, int index) => GetElement(array, index, TideType.I32).Int32;
+    public static long GetLong(GameObject array, int index) => GetElement(array, index, TideType.I64).Int64;
+    public static float GetFloat(GameObject array, int index) => GetElement(array, index, TideType.R4).Single;
+    public static double GetDouble(GameObject array, int index) => GetElement(array, index, TideType.R8).Double;
+    public static bool GetBool(GameObject array, int index) => GetElement(array, index, TideType.Bool).Boolean;
+
+    /// <summary>Reads an enum element as its underlying int (int-backed enums).</summary>
+    public static int GetEnum(GameObject array, int index) => GetElement(array, index, TideType.I32).Int32;
+
+    /// <summary>Reads a reference element as a handle; caller owns it (Dispose it).</summary>
+    public static GameObject GetObject(GameObject array, int index)
+    {
+        var v = GetElement(array, index, TideType.Object);
+        return v.Handle == 0 ? null! : new GameObject(v.Handle);
+    }
+
+    /// <summary>Writes a string element (string[]).</summary>
+    public static void SetString(GameObject array, int index, string? value)
+        => SetElement(array, index, TideValue.FromString(value));
+
+    public static void SetInt(GameObject array, int index, int value) => SetElement(array, index, TideValue.FromInt(value));
+    public static void SetLong(GameObject array, int index, long value) => SetElement(array, index, TideValue.FromLong(value));
+    public static void SetFloat(GameObject array, int index, float value) => SetElement(array, index, TideValue.FromFloat(value));
+    public static void SetDouble(GameObject array, int index, double value) => SetElement(array, index, TideValue.FromDouble(value));
+    public static void SetBool(GameObject array, int index, bool value) => SetElement(array, index, TideValue.FromBool(value));
+
+    /// <summary>Writes an object element (object[]/T[] reference arrays).</summary>
+    public static void SetObject(GameObject array, int index, GameObject? value)
+        => SetElement(array, index, TideValue.FromHandle(value?.HandleValue ?? 0));
+
+    private static TideValue GetElement(GameObject array, int index, TideType returnType)
+    {
+        var args = new[] { TideValue.FromHandle(array.HandleValue), TideValue.FromInt(index) };
+        fixed (TideValue* p = args)
+        {
+            return TideObjectOp.CallInstance(TideCallOp.ArrayGet, array.HandleValue, "", p, 2, returnType);
+        }
+    }
+
+    private static void SetElement(GameObject array, int index, TideValue value)
+    {
+        var args = new[] { TideValue.FromHandle(array.HandleValue), TideValue.FromInt(index), value };
+        fixed (TideValue* p = args)
+        {
+            TideObjectOp.CallInstance(TideCallOp.ArraySet, array.HandleValue, "", p, 3, TideType.Void);
+        }
+    }
 }
 
 /// <summary>An opaque handle to a live game object (backed by a Mono GCHandle).</summary>
@@ -258,6 +429,44 @@ public sealed unsafe class GameObject : IDisposable
         {
             throw new ObjectDisposedException(nameof(GameObject));
         }
+    }
+
+    // ------------------------------------------------------- generic typed API
+
+    /// <summary>Reads an instance field/property as <typeparamref name="T"/>.</summary>
+    public T? Get<T>(string field)
+    {
+        ThrowIfDisposed();
+        var type = TideTypes.Of<T>();
+        var v = GetInstance(TideCallOp.GetInstanceField, field, type);
+        return GameClass.Convert<T>(v);
+    }
+
+    /// <summary>Writes an instance field/property with a strongly-typed value.</summary>
+    public void Set<T>(string field, T value)
+    {
+        SetField(field, GameClass.ToValue(value));
+    }
+
+    /// <summary>Invokes an instance method with strongly-typed args and returns <typeparamref name="TResult"/>.</summary>
+    public TResult? Call<TResult>(string method, params TideValue[] args)
+    {
+        ThrowIfDisposed();
+        var retType = TideTypes.Of<TResult>();
+        var withThis = new TideValue[args.Length + 1];
+        withThis[0] = TideValue.FromHandle(Handle);
+        Array.Copy(args, 0, withThis, 1, args.Length);
+        fixed (TideValue* p = withThis)
+        {
+            var v = TideObjectOp.CallInstance(TideCallOp.InvokeInstance, Handle, method, p, withThis.Length, retType);
+            return GameClass.Convert<TResult>(v);
+        }
+    }
+
+    /// <summary>Invokes an instance method (void) with one strongly-typed argument.</summary>
+    public void CallVoid<T>(string method, T arg0)
+    {
+        CallVoid(method, new[] { GameClass.ToValue(arg0) });
     }
 
     /// <summary>Frees the underlying Mono GCHandle. Idempotent and safe to call twice.</summary>

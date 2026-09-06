@@ -20,20 +20,30 @@
 
 namespace nami::tide {
 
+// Drains the post-invoke queue (work that must run OUTSIDE the nested runtime_invoke frame).
+// Defined below; called by the detour (inside the anonymous namespace).
+void drain_post_queue();
+
 namespace {
 
 struct Request {
     TideWorkFn fn;
     void* arg;
     HANDLE done;
+    int flags;         // RequestFlags
     Request* next;
 };
 
+// Two queues: `pre` work runs BEFORE the original mono_runtime_invoke (the nested drain,
+// safe for plain managed calls); `post` work runs AFTER it returns (outside the nested
+// frame, safe for Unity scene-iteration internal calls). Both run on the game main thread.
 struct QueueState {
     CRITICAL_SECTION lock;
-    Request* head;
+    Request* head;   // pre queue
     Request* tail;
-    volatile LONG work_pending;  // fast-path: set when a request is queued
+    Request* post_head;  // post queue (run after the current runtime_invoke returns)
+    Request* post_tail;
+    volatile LONG work_pending;  // fast-path: set when any request is queued
 };
 
 QueueState g_queue{};
@@ -49,7 +59,8 @@ using mono_runtime_invoke_fn = void* (*)(void*, void*, void**, void**);
 mono_runtime_invoke_fn g_original_runtime_invoke = nullptr;
 unsigned char* g_trampoline = nullptr;  // holds the original prologue + jump back
 
-// The detour installed over mono_runtime_invoke: drain Tide work, then run the original.
+// The detour installed over mono_runtime_invoke: drain Tide work, run the original, then
+// drain the post queue (scene-iteration work) outside the nested frame.
 void* __stdcall runtime_invoke_detour(void* method, void* obj, void** args, void** exc) {
     // Fast path: nothing queued → skip the lock entirely (this runs on the game's hottest
     // path — every managed invocation).
@@ -57,7 +68,13 @@ void* __stdcall runtime_invoke_detour(void* method, void* obj, void** args, void
         drain_queue();
     }
 
-    return g_original_runtime_invoke(method, obj, args, exc);
+    void* result = g_original_runtime_invoke(method, obj, args, exc);
+
+    if (InterlockedCompareExchange(&g_queue.work_pending, 0, 0) != 0) {
+        drain_post_queue();
+    }
+
+    return result;
 }
 
 // ---------------------------------------------------------------------------
@@ -201,45 +218,67 @@ void* build_trampoline(unsigned char* target, int prologue_len) {
 
 }  // namespace
 
-// Executes all queued Tide work on the calling thread. Called from the detour, i.e. on the
-// game's main thread. Returns the number of requests executed.
-int drain_queue() {
-    // Mark the drain active so a re-entrant Tide call (mod code on the game main thread
-    // calling back into Tide) can detect it and run inline instead of queueing+waiting
-    // (which would deadlock the main thread on itself).
-    g_on_main_thread_drain = true;
+// Runs a single request's work and signals its done event. Deletes the request.
+void run_request(Request* req) {
+    if (req->fn != nullptr) {
+        req->fn(req->arg);
+    }
+    if (req->done != nullptr) {
+        SetEvent(req->done);
+    }
+    delete req;
+}
+
+// Pops and runs everything currently in the given queue head pointer (under the lock).
+// Returns the number of requests executed.
+int drain_list(Request** head, Request** tail) {
     int executed = 0;
     for (;;) {
         EnterCriticalSection(&g_queue.lock);
-        Request* req = g_queue.head;
+        Request* req = *head;
         if (req != nullptr) {
-            g_queue.head = req->next;
-            if (g_queue.head == nullptr) {
-                g_queue.tail = nullptr;
+            *head = req->next;
+            if (*head == nullptr) {
+                *tail = nullptr;
             }
-        }
-        if (g_queue.head == nullptr) {
-            InterlockedExchange(&g_queue.work_pending, 0);
         }
         LeaveCriticalSection(&g_queue.lock);
 
         if (req == nullptr) {
             break;
         }
-
-        if (req->fn != nullptr) {
-            req->fn(req->arg);
-        }
-
-        if (req->done != nullptr) {
-            SetEvent(req->done);
-        }
-
-        delete req;
+        run_request(req);
         executed++;
     }
+    return executed;
+}
+
+// Executes all queued (pre-invoke) Tide work on the calling thread. Called from the detour,
+// i.e. on the game's main thread BEFORE the original mono_runtime_invoke. Returns the number
+// of requests executed.
+int drain_queue() {
+    // Mark the drain active so a re-entrant Tide call (mod code on the game main thread
+    // calling back into Tide) can detect it and run inline instead of queueing+waiting
+    // (which would deadlock the main thread on itself).
+    g_on_main_thread_drain = true;
+    int executed = drain_list(&g_queue.head, &g_queue.tail);
     g_on_main_thread_drain = false;
     return executed;
+}
+
+// Executes the post-invoke queue: work that must run on the game main thread but OUTSIDE the
+// nested mono_runtime_invoke frame (Unity scene-iteration APIs). Called by the detour after
+// the original mono_runtime_invoke returns. Returns the number of requests executed.
+void drain_post_queue() {
+    g_on_main_thread_drain = true;
+    drain_list(&g_queue.post_head, &g_queue.post_tail);
+    // If both queues are now empty, clear the pending flag.
+    EnterCriticalSection(&g_queue.lock);
+    if (g_queue.head == nullptr && g_queue.post_head == nullptr) {
+        InterlockedExchange(&g_queue.work_pending, 0);
+    }
+    LeaveCriticalSection(&g_queue.lock);
+    g_on_main_thread_drain = false;
 }
 
 // True when the calling thread is currently executing inside the Tide drain — i.e. the
@@ -327,12 +366,22 @@ bool enqueue_request(Request* req) {
     req->next = nullptr;
 
     EnterCriticalSection(&g_queue.lock);
-    if (g_queue.tail != nullptr) {
-        g_queue.tail->next = req;
-        g_queue.tail = req;
+    if (req->flags & RequestFlag_PostInvoke) {
+        if (g_queue.post_tail != nullptr) {
+            g_queue.post_tail->next = req;
+            g_queue.post_tail = req;
+        } else {
+            g_queue.post_head = req;
+            g_queue.post_tail = req;
+        }
     } else {
-        g_queue.head = req;
-        g_queue.tail = req;
+        if (g_queue.tail != nullptr) {
+            g_queue.tail->next = req;
+            g_queue.tail = req;
+        } else {
+            g_queue.head = req;
+            g_queue.tail = req;
+        }
     }
     InterlockedExchange(&g_queue.work_pending, 1);
     LeaveCriticalSection(&g_queue.lock);
@@ -341,7 +390,7 @@ bool enqueue_request(Request* req) {
 
 // Queues work for the game main thread and blocks until it has run (timeout_ms <= 0 = wait
 // forever). The request is heap-allocated and freed by the drain after signaling.
-bool run_on_main_thread(TideWorkFn fn, void* arg, int timeout_ms) {
+bool run_on_main_thread(TideWorkFn fn, void* arg, int timeout_ms, int flags) {
     // Reentrancy guard: if the CALLER is already the game main thread (i.e. we are inside a
     // drain — a mod hook running on the game thread calls Tide), queueing + waiting would
     // deadlock (the drain can't run while we block it). Run the work inline instead.
@@ -362,6 +411,7 @@ bool run_on_main_thread(TideWorkFn fn, void* arg, int timeout_ms) {
     req->arg = arg;
     req->done = nullptr;
     req->next = nullptr;
+    req->flags = flags;
 
     if (!enqueue_request(req)) {
         delete req;

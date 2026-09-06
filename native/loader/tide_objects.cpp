@@ -85,6 +85,8 @@ struct MonoApi {
     void* (*class_from_mono_type)(void*) = nullptr;
     void* (*type_get_class)(void*) = nullptr;
     int (*type_get_type)(void*) = nullptr;
+    int (*class_is_enum)(void*) = nullptr;
+    void* (*class_get_element_class)(void*) = nullptr;
     // Type/array reflection (for scene-object discovery + array values).
     void* (*type_get_object)(void*, void*) = nullptr;
     void* (*class_get_type)(void*) = nullptr;
@@ -152,6 +154,8 @@ void resolve_api() {
     LOAD(class_from_mono_type);
     LOAD(type_get_class);
     LOAD(type_get_type);
+    LOAD(class_is_enum);
+    LOAD(class_get_element_class);
     // Type/array reflection (present on 2022.3 and Unity 6 Mono).
     LOAD(type_get_object);
     LOAD(class_get_type);
@@ -430,6 +434,57 @@ void* box_primitive(const TideValue& v) {
     }
 }
 
+// Boxes a primitive TideValue as a value of an ENUM class (param_type's class is an enum).
+// The underlying enum storage is written with the primitive's raw bytes.
+void* box_enum(void* param_type, const TideValue& v) {
+    if (param_type == nullptr || g_api.type_get_class == nullptr) {
+        return nullptr;
+    }
+    void* enum_class = g_api.type_get_class(param_type);
+    if (enum_class == nullptr) {
+        return nullptr;
+    }
+    void* obj = g_api.object_new(g_api.root_domain, enum_class);
+    if (obj == nullptr) {
+        return nullptr;
+    }
+    void* data = g_api.object_unbox(obj);
+    switch (v.type) {
+        case TideType_I32:
+            *static_cast<int32_t*>(data) = v.data.i32;
+            break;
+        case TideType_I64:
+            *static_cast<int64_t*>(data) = v.data.i64;
+            break;
+        default:
+            return nullptr;  // enums are integer-backed only
+    }
+    return obj;
+}
+
+// Boxes a primitive TideValue as a value of the given ENUM MonoClass* directly.
+void* box_enum_for_class(void* enum_class, const TideValue& v) {
+    if (enum_class == nullptr) {
+        return nullptr;
+    }
+    void* obj = g_api.object_new(g_api.root_domain, enum_class);
+    if (obj == nullptr) {
+        return nullptr;
+    }
+    void* data = g_api.object_unbox(obj);
+    switch (v.type) {
+        case TideType_I32:
+            *static_cast<int32_t*>(data) = v.data.i32;
+            break;
+        case TideType_I64:
+            *static_cast<int64_t*>(data) = v.data.i64;
+            break;
+        default:
+            return nullptr;
+    }
+    return obj;
+}
+
 // Maps a TideValue type to the mono primitive type it marshals as.
 int tide_type_to_mono_type(TideValueType t) {
     switch (t) {
@@ -449,7 +504,7 @@ int tide_type_to_mono_type(TideValueType t) {
 // reference-typed params (which accept boxed primitives). Falls back to the classic
 // name+argc lookup (which may pick an arbitrary overload) when signature info is missing.
 void* find_method_for_args(void* klass, const char* name, int argc,
-                           const TideValue* args) {
+                           const TideValue* args, bool exact_only) {
     for (void* k = klass; k != nullptr; k = g_api.class_get_parent(k)) {
         // Collect candidates with the right name + arity.
         void* best = nullptr;
@@ -472,12 +527,15 @@ void* find_method_for_args(void* klass, const char* name, int argc,
                 continue;
             }
 
-            // Score: +2 exact primitive/string/object match; +1 reference param (boxable);
-            // -1 mismatch. Prefer the highest score; keep first on ties.
+            // Score a parameter match. Rules (so overloads like Debug.Log(string) vs
+            // Debug.Log(object) resolve correctly for an int arg):
+            //   exact type               -> +3
+            //   object param, any value  -> +2 (boxed or direct)
+            //   primitive arg -> string param -> unusable (a string is not an int)
+            //   string arg -> string param exact; class/interface params -> +1 (may accept)
             int score = 0;
             bool usable = true;
             for (int i = 0; i < argc; i++) {
-                // mono_signature_get_params is an iterator: one param per call.
                 void* pit = nullptr;
                 void* pt = nullptr;
                 for (int j = 0; j <= i; j++) {
@@ -492,17 +550,34 @@ void* find_method_for_args(void* klass, const char* name, int argc,
                 }
                 const int pt_type = g_api.type_get_type(pt);
                 const int want = tide_type_to_mono_type(args[i].type);
+                const bool is_object_param = pt_type == MONO_TYPE_OBJECT;
+                const bool is_string_param = pt_type == MONO_TYPE_STRING;
                 if (pt_type == want) {
-                    score += 2;
+                    score += 3;  // exact (incl. string->string, object->object)
+                } else if (is_object_param) {
+                    score += 2;  // anything boxes to object
+                } else if (want == MONO_TYPE_STRING) {
+                    // A string value can flow to class/interface params (e.g. object
+                    // subclasses) but never to a primitive param.
+                    if (param_type_is_reference(pt)) {
+                        score += 1;
+                    } else {
+                        usable = false;
+                        break;
+                    }
+                } else if (is_string_param) {
+                    // A primitive can never be a string.
+                    usable = false;
+                    break;
                 } else if (param_type_is_reference(pt)) {
-                    // Any primitive can box to object; strings/objects pass as-is.
+                    // Primitive arg -> non-string reference param (class/interface): boxable.
                     score += 1;
                 } else {
                     usable = false;
                     break;
                 }
             }
-            if (usable && score > best_score) {
+            if (usable && (!exact_only || score >= 3 * argc) && score > best_score) {
                 best = method;
                 best_score = score;
             }
@@ -516,6 +591,7 @@ void* find_method_for_args(void* klass, const char* name, int argc,
     // Fallback: classic name+argc lookup (no signature info / no match found).
     return nullptr;
 }
+
 bool to_mono_arg(const TideValue& v, void* box, void** mono_out) {
     switch (v.type) {
         case TideType_I32:
@@ -559,16 +635,38 @@ bool to_mono_arg(const TideValue& v, void* box, void** mono_out) {
     }
 }
 
+// True when a boxed mono object's class is an enum type.
+bool is_enum_object(void* mono_object) {
+    if (mono_object == nullptr || g_api.object_get_class == nullptr ||
+        g_api.class_is_enum == nullptr) {
+        return false;
+    }
+    return g_api.class_is_enum(g_api.object_get_class(mono_object)) != 0;
+}
+
 // Writes `mono_result` into the managed ret slot according to the requested type.
 void write_ret(TideValue* ret, void* mono_result) {
     if (ret == nullptr || mono_result == nullptr) {
         return;
     }
+    // Enums box as their underlying value type; object_unbox yields the underlying data.
+    // Most Unity enums are int-backed (4 bytes). For safety, an I64 read of an enum whose
+    // underlying type is 4 bytes would read garbage high bytes, so refuse it loudly rather
+    // than return garbage — mods should read int-backed enums as TideType_I32.
+    const bool is_enum = is_enum_object(mono_result);
     switch (ret->type) {
-        case TideType_I32:
+        case TideType_I32: {
+            // Enums box as their underlying value type; most are int-backed, so an I32 read
+            // of an enum unboxes cleanly.
             ret->data.i32 = *static_cast<int32_t*>(g_api.object_unbox(mono_result));
             break;
+        }
         case TideType_I64:
+            // Enums narrower than 8 bytes cannot be safely read as I64.
+            if (is_enum) {
+                ret->type = TideType_Void;
+                break;
+            }
             ret->data.i64 = *static_cast<int64_t*>(g_api.object_unbox(mono_result));
             break;
         case TideType_R4:
@@ -628,8 +726,11 @@ int tide_object_op(void* arg) {
     auto* req = static_cast<CallRequest*>(arg);
     req->result_code = -1;
 
+    // NOTE: do NOT reset req->ret->type here. The managed side pre-fills it with the
+    // REQUESTED return type (TideType), and write_ret() switches on it to marshal the
+    // result. Zeroing it here silently turned every typed return into Void (handles/values
+    // came back as 0). Only the data is cleared.
     if (req->ret != nullptr) {
-        req->ret->type = TideType_Void;
         req->ret->data.i64 = 0;
     }
 
@@ -812,12 +913,15 @@ int tide_object_op(void* arg) {
 
             int method_argc = req->arg_count - value_start;
             // Type-aware overload selection: pick the method whose parameter types best match
-            // the passed TideValue types (avoids binding the wrong same-arity overload, e.g.
-            // Debug.Log(string) when an int was passed for Log(object)).
+            // the passed TideValue types. Only trust it when it finds an EXACT (score >= 3
+            // per arg) match for every arg; otherwise fall back to the classic name+argc
+            // lookup (Unity's first declared overload — the documented behavior).
             const TideValue* method_args = method_argc > 0 ? req->args + value_start : nullptr;
-            void* method = g_api.class_get_methods != nullptr && g_api.method_signature != nullptr
-                               ? find_method_for_args(klass, req->member, method_argc, method_args)
-                               : nullptr;
+            void* method = nullptr;
+            if (g_api.class_get_methods != nullptr && g_api.method_signature != nullptr) {
+                method = find_method_for_args(klass, req->member, method_argc, method_args,
+                                              /*exact_only=*/true);
+            }
             if (method == nullptr) {
                 method = find_method_in_hierarchy(klass, req->member, method_argc);
             }
@@ -826,6 +930,10 @@ int tide_object_op(void* arg) {
                          req->member, method_argc, req->ns, req->klass);
                 return -1;
             }
+            if (g_api.method_get_name != nullptr) {
+                log_tide("tide: invoke selected '%s' argc=%d", 
+                         static_cast<const char*>(g_api.method_get_name(method)), method_argc);
+            }
 
             for (int i = 0; i < method_argc; i++) {
                 const TideValue& v = req->args[value_start + i];
@@ -833,7 +941,9 @@ int tide_object_op(void* arg) {
                 // Signature-aware marshaling: if the target parameter is a reference type
                 // (object/string/class/...), a primitive value must be BOXED into a Mono
                 // object first; a raw value pointer would crash Mono when it treats it as
-                // an object reference (e.g. Debug.Log(object) with an int).
+                // an object reference (e.g. Debug.Log(object) with an int). Value-type
+                // params (int/float/enum) are passed as raw pointers, which mono_runtime_invoke
+                // handles per the signature.
                 void* param_type = method_param_type(method, i);
                 const bool need_box = param_type != nullptr && param_type_is_reference(param_type) &&
                                       v.type != TideType_String && v.type != TideType_Object;
@@ -901,6 +1011,197 @@ int tide_object_op(void* arg) {
             return -1;
         }
 
+        // NOTE: Object.FindObjectOfType/FindFirstObjectByType CANNOT be invoked from any
+        // mono_runtime_invoke re-entry (pre- or post-): Unity aborts the process (0xe0000001).
+        // Scene-object discovery is provided through safe static accessors (Camera.main,
+        // static object fields/properties) instead — see GameClass.GetStaticObject.
+
+        case TideCall_ArrayLength: {
+            if (req->arg_count < 1 || req->args[0].type != TideType_Object ||
+                g_api.array_length == nullptr) {
+                return -1;
+            }
+            void* arr = resolve_instance(req->args[0]);
+            if (arr == nullptr) {
+                return -1;
+            }
+            if (req->ret != nullptr) {
+                req->ret->type = TideType_I32;
+                req->ret->data.i32 = g_api.array_length(arr);
+            }
+            return 0;
+        }
+
+        case TideCall_ArrayGet: {
+            // args[0] = array handle, args[1] = I32 index. Reads via System.Array.GetValue(int),
+            // which returns a BOXED element — no MonoArray-layout assumptions, safe for
+            // value-type, enum, string and reference arrays alike.
+            if (req->arg_count < 2 || req->args[0].type != TideType_Object ||
+                req->args[1].type != TideType_I32 || g_api.array_length == nullptr) {
+                return -1;
+            }
+            void* arr = resolve_instance(req->args[0]);
+            if (arr == nullptr) {
+                return -1;
+            }
+            const int index = req->args[1].data.i32;
+            const int len = g_api.array_length(arr);
+            if (index < 0 || index >= len) {
+                log_tide("tide: array index %d out of range (len %d)", index, len);
+                return -1;
+            }
+            void* arr_class = g_api.object_get_class(arr);
+            if (arr_class == nullptr) {
+                return -1;
+            }
+            // Array.GetValue has 1-arg overloads for int AND long; pick the INT one to match
+            // our index type exactly.
+            TideValue idx_tv;
+            idx_tv.type = TideType_I32;
+            idx_tv.data.i32 = index;
+            void* get_value = g_api.class_get_methods != nullptr && g_api.method_signature != nullptr
+                                  ? find_method_for_args(arr_class, "GetValue", 1, &idx_tv, /*exact_only=*/true)
+                                  : nullptr;
+            if (get_value == nullptr) {
+                get_value = find_method_in_hierarchy(arr_class, "GetValue", 1);
+            }
+            if (get_value == nullptr) {
+                log_tide("tide: System.Array.GetValue(int) not found");
+                return -1;
+            }
+            // mono_runtime_invoke marshals a value-type parameter from a raw value pointer
+            // (this file's standard to_mono_arg convention); pass the int index by value.
+            int32_t raw_index = index;
+            void* call_args[1] = { &raw_index };
+            void* exc = nullptr;
+            void* element = g_api.runtime_invoke(get_value, arr, call_args, &exc);
+            if (exc != nullptr) {
+                log_tide("tide: Array.GetValue threw");
+                capture_exception(*req, exc);
+                return -2;
+            }
+            if (req->ret == nullptr) {
+                return 0;
+            }
+            if (element == nullptr) {
+                req->ret->type = TideType_Void;
+                req->ret->data.i64 = 0;
+                return 0;
+            }
+            // Marshal the boxed element by its runtime class.
+            void* elem_class = g_api.object_get_class(element);
+            if (elem_class == nullptr) {
+                return -1;
+            }
+            void* str_class = g_api.class_from_name(
+                g_api.assembly_get_image(find_assembly("mscorlib")), "System", "String");
+            bool is_str = str_class != nullptr && elem_class == str_class;
+            if (is_str) {
+                void* utf8 = g_api.string_to_utf8(element);
+                if (utf8 == nullptr) {
+                    req->ret->type = TideType_Void;
+                    return 0;
+                }
+                req->ret->type = TideType_String;
+                req->ret->data.str.utf8 = static_cast<const char*>(utf8);
+                req->ret->data.str.len =
+                    static_cast<int32_t>(std::strlen(static_cast<const char*>(utf8)));
+                return 0;
+            }
+            if (g_api.class_is_enum != nullptr && g_api.class_is_enum(elem_class) != 0) {
+                req->ret->type = TideType_I32;
+                req->ret->data.i32 = *static_cast<int32_t*>(g_api.object_unbox(element));
+                return 0;
+            }
+            if (g_api.object_unbox == nullptr) {
+                return -1;
+            }
+            switch (req->ret->type) {
+                case TideType_I32:
+                    req->ret->data.i32 = *static_cast<int32_t*>(g_api.object_unbox(element));
+                    break;
+                case TideType_I64:
+                    req->ret->data.i64 = *static_cast<int64_t*>(g_api.object_unbox(element));
+                    break;
+                case TideType_R4:
+                    req->ret->data.r4 = *static_cast<float*>(g_api.object_unbox(element));
+                    break;
+                case TideType_R8:
+                    req->ret->data.r8 = *static_cast<double*>(g_api.object_unbox(element));
+                    break;
+                case TideType_Bool:
+                    req->ret->data.boolean = *static_cast<int32_t*>(g_api.object_unbox(element));
+                    break;
+                default:
+                    req->ret->type = TideType_Object;
+                    req->ret->data.handle = handle_store_create(element);
+                    break;
+            }
+            return 0;
+        }
+
+        case TideCall_ArraySet: {
+            // args[0] = array handle, args[1] = I32 index, args[2] = value. Writes via
+            // System.Array.SetValue(object, int), which handles boxing/unboxing for every
+            // array kind — safe for value-type and reference arrays alike.
+            if (req->arg_count < 3 || req->args[0].type != TideType_Object ||
+                req->args[1].type != TideType_I32 || g_api.array_length == nullptr) {
+                return -1;
+            }
+            void* arr = resolve_instance(req->args[0]);
+            if (arr == nullptr) {
+                return -1;
+            }
+            const int index = req->args[1].data.i32;
+            const int len = g_api.array_length(arr);
+            if (index < 0 || index >= len) {
+                log_tide("tide: array index %d out of range (len %d)", index, len);
+                return -1;
+            }
+            void* arr_class = g_api.object_get_class(arr);
+            if (arr_class == nullptr) {
+                return -1;
+            }
+            void* set_value = find_method_in_hierarchy(arr_class, "SetValue", 2);
+            if (set_value == nullptr) {
+                log_tide("tide: System.Array.SetValue(object,int) not found");
+                return -1;
+            }
+            const TideValue& v = req->args[2];
+            void* mono_val = nullptr;
+            switch (v.type) {
+                case TideType_String:
+                    mono_val = make_string(v);
+                    break;
+                case TideType_Object:
+                    mono_val = resolve_instance(v);
+                    break;
+                default:
+                    mono_val = box_primitive(v);
+                    break;
+            }
+            if (mono_val == nullptr) {
+                log_tide("tide: cannot build ArraySet value at index %d", index);
+                return -1;
+            }
+            TideValue idx_val;
+            idx_val.type = TideType_I32;
+            idx_val.data.i32 = index;
+            void* idx_box = box_primitive(idx_val);
+            if (idx_box == nullptr) {
+                return -1;
+            }
+            void* call_args[2] = { mono_val, idx_box };
+            void* exc = nullptr;
+            g_api.runtime_invoke(set_value, arr, call_args, &exc);
+            if (exc != nullptr) {
+                log_tide("tide: Array.SetValue threw");
+                capture_exception(*req, exc);
+                return -2;
+            }
+            return 0;
+        }
+
         default:
             log_tide("tide: unknown object op %d", (int)req->op);
             return -1;
@@ -928,6 +1229,30 @@ extern "C" __declspec(dllexport) int nami_tide_object_op(void* request) {
     };
 
     const bool ok = nami::tide::run_on_main_thread(Shim::run, &local);
+    *req = local;  // write back (ret slot, result_code)
+    return ok ? local.result_code : -3;
+}
+
+// Export: run a CallRequest on the game main thread AFTER the current mono_runtime_invoke
+// returns (outside the nested frame). Use for Unity scene-iteration APIs that are not
+// re-entrant from within a nested runtime_invoke (Object.FindObjectOfType etc.).
+extern "C" __declspec(dllexport) int nami_tide_object_op_post(void* request) {
+    using nami::tide::CallRequest;
+
+    auto* req = static_cast<CallRequest*>(request);
+    CallRequest local = *req;  // copy so the export owns it during the wait
+
+    struct Shim {
+        static int run(void* arg) {
+            auto* r = static_cast<CallRequest*>(arg);
+            int code = nami::tide::tide_object_op(r);
+            r->result_code = code;
+            return code;
+        }
+    };
+
+    const bool ok = nami::tide::run_on_main_thread(Shim::run, &local, 0,
+                                                   nami::tide::RequestFlag_PostInvoke);
     *req = local;  // write back (ret slot, result_code)
     return ok ? local.result_code : -3;
 }

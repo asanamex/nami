@@ -35,8 +35,9 @@ dependency on BepInEx, HarmonyX, MonoMod, or Mono.Cecil.
 - **Per-mod isolation & crash quarantine.** A throwing mod disables itself; the game keeps
   running. Mods can be hot-reloaded (collectible ALCs are the foundation; the reload tooling
   is a later milestone).
-- **Measured.** A benchmark harness compares startup delta and memory overhead against
-  BepInEx/MelonLoader on identical fixtures, gating every milestone.
+- **Measured.** `bench/` tracks loader and patching overhead (chainloader load/update,
+  Wave hook cost); comparative gates vs BepInEx/MelonLoader on identical fixtures land with
+  the M5 milestone.
 
 ## Repository layout
 
@@ -50,11 +51,13 @@ src/
   Nami.Runtime/    In-game managed bootstrap: Boot.Run
   Nami.Tide/       Typed game access: Tide, GameClass, GameObject, TideValue
   Nami.Wave/       Patching engine: x64 detours + Harmony-style IL-copy prefix/postfix
-  Nami.Cli/        nami command-line tool
+  Nami.Cli/        nami command-line tool (install/launch/create/doctor/list)
   Nami.Interop/    Offline reference-assembly dumper                [later milestone]
+tools/
+  launch-shim/     launchNami.exe source (embedded into Nami.Cli for `nami create`)
 samples/       HelloNami (log-only) + TideProbe (typed game access proof)
-tests/         Fixture plugins + unit/integration tests
-bench/         Comparative benchmark harness vs other loaders
+tests/         Unit/integration tests (Core, Wave, Cli, Tide) + plugin fixtures
+bench/         Loader + patching benchmarks (comparative gates vs other loaders: M5)
 docs/          Architecture, Tide, Wave, roadmap
 ```
 
@@ -73,10 +76,11 @@ cmake --build native/build
 # 3. Inject (launches the game suspended, hosts .NET 10 inside it, loads mods)
 native/build/nami_boot.exe "<game>\Game.exe" "<game>\nami\native\nami_loader.dll"
 
-# ...or, once Nami.Cli is built, let the CLI do it:
-nami launch set Game.exe --steam-id <appid> "<game>"
-nami launch                # runs the game with Nami (auto-detects the exe when unset)
-nami create                # leaves launchNami.exe in <game>/nami for double-click runs
+# ...or, once Nami.Cli is built, let the CLI do it (the nami root from step 2 must exist;
+# gameDir is the trailing argument):
+nami launch set Game.exe "<game>"     # remember the game exe (add --steam-id <appid>)
+nami launch "<game>"                  # runs the game with Nami (auto-detects exe when unset)
+nami create "<game>"                  # leaves launchNami.exe in <game>/nami for double-click runs
 
 # 4. Watch the loader boot
 type "<game>\nami\nami.log"
@@ -91,7 +95,7 @@ type "<game>\nami\nami.log"
 
 ```
 dotnet build Nami.slnx              # managed solution (SDK/Core/CLI/tests/fixtures)
-dotnet test  tests/Nami.Tests       # unit + integration tests
+dotnet test  Nami.slnx              # all test projects (Core, Wave, Cli, Tide)
 
 cmake -S native -B native/build     # native core (optional for managed-only work)
 cmake --build native/build
@@ -113,7 +117,7 @@ nami launch [offline|steam] [gameDir]
 nami create [offline|steam] [gameDir]
                                     write launchNami.exe + run-with-nami.bat into the nami root
 nami doctor [gameDir]               verify an install / report the environment
-nami list [gameDir]                 list installed mods and their state
+nami list [gameDir]                 list installed mods (id/version/name + dependencies)
 ```
 
 *(`launch` auto-detects the game as the largest `.exe` when none is set. install-with-

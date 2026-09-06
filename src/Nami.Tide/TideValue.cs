@@ -26,7 +26,38 @@ internal enum TideCallOp : int
     GetInstanceField = 5,
     SetInstanceField = 6,
     NewObject = 7,
-    FreeHandle = 8
+    FreeHandle = 8,
+    ArrayLength = 9,
+    ArrayGet = 10,
+    ArraySet = 11
+}
+
+/// <summary>
+/// Maps CLR types to <see cref="TideType"/> tags for the generic typed API.
+/// Enums map to their underlying integer kind (I32 unless the underlying type is long).
+/// </summary>
+public static class TideTypes
+{
+    public static TideType Of<T>()
+    {
+        var t = typeof(T);
+        if (t.IsEnum)
+        {
+            return Type.GetTypeCode(Enum.GetUnderlyingType(t)) == TypeCode.Int64 ? TideType.I64 : TideType.I32;
+        }
+
+        return Type.GetTypeCode(t) switch
+        {
+            TypeCode.Int32 => TideType.I32,
+            TypeCode.Int64 => TideType.I64,
+            TypeCode.Single => TideType.R4,
+            TypeCode.Double => TideType.R8,
+            TypeCode.Boolean => TideType.Bool,
+            TypeCode.String => TideType.String,
+            _ when typeof(GameObject).IsAssignableFrom(t) => TideType.Object,
+            _ => throw new NotSupportedException($"type {t} is not supported by Tide")
+        };
+    }
 }
 
 /// <summary>

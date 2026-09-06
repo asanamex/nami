@@ -185,18 +185,19 @@ The game opens normally. Check that Nami booted:
 type "%GAME%\nami\nami.log"
 ```
 
-Expected output:
+Expected output (timestamps and levels as written by the file sink):
 
 ```
-[boot]        Nami managed runtime booting (nami_root=...\nami)
-[boot]        clr=10.0.10 os=Microsoft Windows ... arch=X64
-[chainloader] Loaded com.example.mymod 1.0.0 (MyMod.dll)
-[com.example.mymod] MyMod loaded on .NET 10.0.10
-[boot]        chainloader activated: 1 plugin(s) loaded
+[17:32:25.118 INFO] [boot]        Nami managed runtime booting (nami_root=...\nami)
+[17:32:25.126 INFO] [boot]        clr=10.0.10 os=Microsoft Windows ... arch=X64
+[17:32:25.544 INFO] [chainloader] Loaded com.example.mymod 1.0.0 (MyMod.dll)
+[17:32:25.544 INFO] [com.example.mymod] MyMod loaded on .NET 10.0.10
+[17:32:25.566 INFO] [boot]        chainloader activated: 1 plugin(s) loaded
 ```
 
-(With `"enableMonoBridge": true`, the log also shows `[boot] Tide bridge OK: Unity Debug.Log
-executed on the game main thread` before the chainloader lines.)
+(With `"enableMonoBridge": true`, the log also shows `[boot] attaching Tide bridge...` then
+`[boot] Tide bridge OK: Unity Debug.Log executed on the game main thread` before the
+chainloader lines.)
 
 If a mod misbehaves (throws repeatedly in `OnUpdate`), Nami **quarantines** it — disables it,
 calls `OnUnload`, logs the reason, and the game keeps running.
@@ -217,6 +218,8 @@ is not auto-created. Keys are written camelCase and read case-insensitively.
 ```
 
 - `enabledPlugins`: only these load (empty = all).
+- `logLevel`: accepted and stored, but not yet wired to the runtime's minimum level (the
+  loader logs at Info); planned.
 - `enableMonoBridge`: enables **Tide** — the bridge that lets mods call into the game's Mono
   runtime (every call runs safely on the game's main thread). Off by default because it
   patches a live game export and is verified on Unity Mono across four titles so far (2022.3
@@ -260,19 +263,23 @@ root, so the game can be started with Nami by double-clicking, without the CLI o
 ## 9. Running the test suite
 
 ```bat
-dotnet test tests/Nami.Tests
+dotnet test Nami.slnx              :: runs all four test projects
 ```
+
+(Or individually: `dotnet test tests/Nami.Tests`, `tests/Nami.Wave.Tests`,
+`tests/Nami.Cli.Tests`, `tests/Nami.Tide.Tests`.)
 
 ## 10. Known limitations
 
 - **Mono games only** — IL2CPP support is a later milestone.
-- **Tide scope**: mods can `UnityLog`, call parameterless static game methods, read/write
-  typed static fields, and create objects and call their methods with typed returns (all
-  primitives + strings). Still missing: enum/array values, scene-object discovery, and typed
-  instance method returns beyond `int`.
+- **Tide scope**: typed access covers static and instance fields/properties (primitives,
+  strings, live objects, enums as their underlying int), a generic `Get<T>`/`Set<T>`/`Call<T>`
+  API, arrays (`TideArrays`), object creation, and live scene objects via static accessors
+  (`Camera.main`). Still missing: Unity's scene-iteration scan APIs (`Object.FindObjectOfType`
+  — Unity aborts these from foreign re-entry) and a generated strongly-typed projection layer.
 - **Wave scope**: M1 supports parameterless void methods; **M2** (IL-copy) patches any
   non-generic method with a real body — any signature, prefix/postfix, skip, result
   rewriting. Windows x64 only.
-- The game must be launched via `nami_boot.exe`; Steam launch options / shortcuts can point at
-  a wrapper script that calls it.
+- The game must be launched through the Nami injector; use `nami launch` or the
+  `launchNami.exe` shortcut `nami create` writes (Steam launch options can point at that).
 - Do not run alongside BepInEx/Doorstop in the same game folder.

@@ -15,8 +15,9 @@ src/Nami.Wave/           the engine
   Internal/IlReader.cs   raw IL decoder (opcodes, operands, branch targets, EH tables)
   Internal/IlRewriter.cs re-emitter: original IL → generated assembly method (IL copy)
   Internal/PatchedBodyBuilder.cs  prefix/postfix convention binder + ret-rewriting injector
-tests/Nami.Wave.Tests/   38 [Fact] + 1 [Theory] (2 rows) in Release: M1 + M2 semantics,
-                         IL-copy fidelity, restore (the deep M2 suite is #if DEBUG)
+tests/Nami.Wave.Tests/   37 [Fact] + 1 [Theory] (2 rows) in Release: M1 + M2 semantics,
+                         IL-copy fidelity, restore (the deep M2 suite compiles in Release;
+                         in DEBUG only a placeholder runs)
 bench/Wave.Bench/        hooked-call overhead benchmark (1M calls)
 ```
 
@@ -44,7 +45,7 @@ Semantics (documented contract):
 | Piece | Behavior |
 |---|---|
 | `gate` | Runs before the original. Returns `true` → the original is skipped. All gates run; any `true` wins. |
-| `observer` | Runs after the original (or after a skip). Never prevents anything. |
+| `observer` | Runs before the original (or before a skip), after the gates. Never prevents anything. |
 | order | LIFO — the most recently hooked owner runs first. |
 | owner | A string id (the mod id). One owner per target; duplicate throws. |
 | safety | A throwing callback is swallowed (best-effort); the game must not die because a mod callback threw. |
