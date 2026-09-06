@@ -14,7 +14,8 @@ dependency on BepInEx, HarmonyX, MonoMod, or Mono.Cecil.
 ## Getting started
 
 - **[TUTORIAL.md](TUTORIAL.md)** — build Nami, stage it next to a game, write and run your first mod.
-- **[docs/vs-bepinex.md](docs/vs-bepinex.md)** — honest comparison: what Nami does differently and what it doesn't have yet.
+- **[docs/technical-difference.md](docs/technical-difference.md)** — point-by-point technical comparison with BepInEx (runtime, isolation, IL2CPP, patching, more).
+- **[docs/vs-bepinex.md](docs/vs-bepinex.md)** — the short, honest "why different / what's missing" read.
 - **[docs/architecture.md](docs/architecture.md)** — how the loader, hosting and bridges fit together.
 
 ## Why Nami exists
