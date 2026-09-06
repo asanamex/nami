@@ -1,6 +1,7 @@
 # Nami Architecture
 
-This document describes Nami's architecture at M0 (working end-to-end in a real Unity Mono game).
+This document describes Nami's architecture as implemented (working end-to-end in a real
+Unity Mono game: load, patch, and typed game access).
 
 ## Goal
 
@@ -23,7 +24,7 @@ no hot reload). Nami instead:
 This is the architectural break from BepInEx: plugins get a *modern* runtime on *both* Mono and
 IL2CPP games (the IL2CPP side uses the same hosting machinery; only the game-type bridge differs).
 
-## Component map (M0)
+## Component map
 
 ```
 native/                          C++17 (Windows x64 first)
@@ -33,7 +34,8 @@ native/                          C++17 (Windows x64 first)
   loader/loader_exports.cpp      nami_loader.dll: DllMain (empty) + nami_loader_start export
   loader/loader_main.cpp         boot thread: waits for mono-2.0-bdwgc.dll (30s), UTF-8 root
   loader/tide_pump.cpp           Tide main-thread executor: mono_runtime_invoke hook + drain
-  loader/tide_ops.cpp            Tide native ops (UnityLog, InvokeStatic)
+  loader/tide_ops.cpp            Tide native ops (UnityLog)
+  loader/tide_objects.cpp        Tide typed game access (field/property/method/object ops)
   core/runtime_host.cpp          hostfxr: initialize_for_runtime_config → get_runtime_delegate(
                                 hdt_load_assembly_and_get_function_pointer) →
                                 load_assembly_and_get_function_pointer(Nami.Runtime.dll,
@@ -71,22 +73,24 @@ samples/HelloNami/               example mod
 dotnet/host/fxr/<ver>/hostfxr.dll
 dotnet/shared/Microsoft.NETCore.App/<ver>/   (bundled runtime)
 Nami.Runtime.dll  Nami.Runtime.deps.json  Nami.Runtime.runtimeconfig.json
-Nami.Core.dll     Nami.Sdk.dll
+Nami.Core.dll     Nami.Sdk.dll           Nami.Tide.dll
 native/nami_loader.dll                     (loader derives root as two levels up)
-mods/*.dll                                 (loose plugin DLLs in M0; .nmod later)
+mods/*.dll                                 (loose plugin DLLs; .nmod later)
 nami.json                                  (optional config)
 nami.log                                   (runtime log)
 ```
 
-## Tide (the game bridge, opt-in)
+## Tide (game access, opt-in)
 
 **Tide** lets mods call into the game's Mono runtime from Nami's .NET. The core constraint
 (learned the hard way): Mono calls must run on the game's main thread — direct calls from a
 CoreCLR thread crash CoreCLR's GC, and calls from a foreign native thread crash Mono's Boehm
 GC. Tide hooks `mono_runtime_invoke` (called constantly by the game main thread) with a safe
-native detour and drains queued ops inline on the main thread. Verified in-game:
-`UnityEngine.Debug.Log` executes from Nami's .NET 10 with the game stable. Opt-in via
-`"enableMonoBridge": true`. Full details: `docs/tide.md`.
+native detour and drains queued ops inline on the main thread. On top of that it provides
+**typed game access**: static/instance field and property read/write, typed method calls, and
+live object creation/calls through GC-handle-backed handles (`GameClass`/`GameObject`).
+Verified in-game: `Debug.Log`, typed string/int calls, `new GameObject()`, instance method
+calls — game stable. Opt-in via `"enableMonoBridge": true`. Full details: `docs/tide.md`.
 
 ## Design notes
 

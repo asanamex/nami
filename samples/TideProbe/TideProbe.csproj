@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>Nami.Samples.TideProbe</RootNamespace>
+    <AssemblyName>TideProbe</AssemblyName>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Nami.Sdk\Nami.Sdk.csproj" />
+    <ProjectReference Include="..\..\src\Nami.Tide\Nami.Tide.csproj" />
+  </ItemGroup>
+
+</Project>

@@ -3,7 +3,7 @@ using Nami.Core;
 using Nami.Core.Configuration;
 using Nami.Core.Logging;
 using Nami.Sdk;
-using TideBridge = Nami.Tide.Tide;
+using Tide = Nami.Tide;
 
 namespace Nami.Runtime;
 
@@ -38,9 +38,9 @@ public static class Boot
             hub.Log("boot", LogLevel.Info, "attaching Tide bridge...");
             try
             {
-                if (TideBridge.IsAvailable)
+                if (Tide.IsAvailable)
                 {
-                    var ok = TideBridge.UnityLog("hello from Nami's .NET runtime via Tide");
+                    var ok = Tide.UnityLog("hello from Nami's .NET runtime via Tide");
                     hub.Log("boot", LogLevel.Info, ok
                         ? "Tide bridge OK: Unity Debug.Log executed on the game main thread"
                         : "Tide bridge present but UnityLog failed");

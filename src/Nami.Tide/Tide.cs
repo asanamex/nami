@@ -1,7 +1,7 @@
 using System.Runtime.InteropServices;
 using System.Text;
 
-namespace Nami.Tide;
+namespace Nami;
 
 /// <summary>
 /// Tide — the Nami ↔ game bridge.
@@ -34,6 +34,12 @@ public static unsafe partial class Tide
 
     [DllImport(LoaderDll, EntryPoint = "nami_tide_invoke_static", CallingConvention = CallingConvention.Cdecl)]
     private static extern int NativeInvokeStatic(byte* assembly, byte* ns, byte* klass, byte* method);
+
+    [DllImport(LoaderDll, EntryPoint = "nami_tide_object_op", CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int NativeObjectOp(CallRequest* request);
+
+    [DllImport(LoaderDll, EntryPoint = "nami_tide_free", CallingConvention = CallingConvention.Cdecl)]
+    internal static extern void NativeFree(void* ptr);
 
     // The loader module handle (nami_loader.dll is loaded in-process).
     private static IntPtr _loaderModule;
@@ -130,5 +136,103 @@ public static unsafe partial class Tide
         }
 
         dst[len] = 0;
+    }
+}
+
+/// <summary>Core marshaling for typed game access (see GameClass / GameObject).</summary>
+internal static unsafe class TideObjectOp
+{
+    private static void Fill(byte* dst, int capacity, string s)
+    {
+        var bytes = System.Text.Encoding.ASCII.GetBytes(s ?? string.Empty);
+        int n = Math.Min(bytes.Length, capacity - 1);
+        for (int i = 0; i < n; i++)
+        {
+            dst[i] = bytes[i];
+        }
+
+        dst[n] = 0;
+    }
+
+    /// <summary>
+    /// Runs a class-targeted op (static field/method, new object). Any string ARG buffers
+    /// are freed after the call (they are only needed during it). String RETURNS must be
+    /// freed by the caller via TideValue.FreeNativeReturn after reading.
+    /// </summary>
+    public static TideValue Call(TideCallOp op, GameClass target, string member,
+        TideValue* args, int argCount, TideType returnType)
+    {
+        try
+        {
+            var req = new CallRequest();
+            Fill(req.Assembly, 160, target.Assembly);
+            Fill(req.Ns, 160, target.Namespace);
+            Fill(req.Klass, 160, target.Name);
+            Fill(req.Member, 160, member);
+            req.Op = op;
+            req.ArgCount = argCount;
+            req.HandleCapacity = 64;
+
+            TideValue ret = default;
+            ret.Type = returnType;
+            req.Args = args;
+            req.Ret = returnType == TideType.Void ? null : &ret;
+
+            var rc = Tide.NativeObjectOp(&req);
+            if (rc != 0 && returnType != TideType.Void)
+            {
+                throw new Tide.TideException($"Tide op {op} on {target.Name}.{member} failed (code {rc})");
+            }
+
+            return ret;
+        }
+        finally
+        {
+            FreeArgStrings(args, argCount);
+        }
+    }
+
+    /// <summary>Runs an instance-targeted op (instance field/method/free).</summary>
+    public static TideValue CallInstance(TideCallOp op, long handle, string member,
+        TideValue* args, int argCount, TideType returnType)
+    {
+        try
+        {
+            var req = new CallRequest();
+            Fill(req.Member, 160, member);
+            req.Op = op;
+            req.ArgCount = argCount;
+            req.HandleCapacity = 64;
+
+            TideValue ret = default;
+            ret.Type = returnType;
+            req.Args = args;
+            req.Ret = returnType == TideType.Void ? null : &ret;
+
+            var rc = Tide.NativeObjectOp(&req);
+            if (rc != 0 && returnType != TideType.Void)
+            {
+                throw new Tide.TideException($"Tide op {op} failed (code {rc})");
+            }
+
+            return ret;
+        }
+        finally
+        {
+            FreeArgStrings(args, argCount);
+        }
+    }
+
+    private static void FreeArgStrings(TideValue* args, int argCount)
+    {
+        for (int i = 0; i < argCount; i++)
+        {
+            if (args[i].Type == TideType.String && args[i].Data.Str.Utf8 != null)
+            {
+                // String args were allocated with AllocHGlobal by TideValue.FromString.
+                Marshal.FreeHGlobal((IntPtr)args[i].Data.Str.Utf8);
+                args[i].Data.Str.Utf8 = null;
+            }
+        }
     }
 }

@@ -4,10 +4,13 @@
 faster, lighter, and safer than the established loaders, with a clean-slate API and no
 dependency on BepInEx, HarmonyX, MonoMod, or Mono.Cecil.
 
-> **Status: M0 + Wave + Tide.** The native core hosts .NET 10 inside a real Unity game
-> (Project Hardline); Wave patches methods with in-house x64 detours; and **Tide bridges mods
-> into the game** — `UnityEngine.Debug.Log` executes on the game's Mono main thread from Nami's
-> .NET 10, game stable. Enable with `"enableMonoBridge": true` in `nami.json`.
+> **Status: load + patch + bridge + typed game access all working in a real game.** The native
+> core hosts .NET 10 inside Project Hardline (Unity 2022.3.27f1 Mono); Wave patches methods
+> with in-house x64 detours; **Tide** lets mods call into the game — typed static/instance
+> field & property access, typed method calls, and live object creation/calls, all executed on
+> the game's main thread and verified stable in-game. Enable with `"enableMonoBridge": true` in
+> `nami.json`. Remaining for "pick-up modding": packaging/templates/install tooling and a few
+> documented edges (see docs).
 
 ## Getting started
 
@@ -36,20 +39,20 @@ dependency on BepInEx, HarmonyX, MonoMod, or Mono.Cecil.
 
 ```
 .github/     CI (managed + native jobs)
-native/      C++17: injector (nami_boot), in-game loader (nami_loader), hostfxr hosting
+native/      C++17: injector (nami_boot), in-game loader (nami_loader), hostfxr hosting,
+             Tide main-thread drain + object ops
 src/
   Nami.Sdk/        Public plugin API (what mods reference)
   Nami.Core/       Chainloader: discovery, graph, ALCs, quarantine
   Nami.Runtime/    In-game managed bootstrap: Boot.Run
-  Nami.Tide/       Bridge: mods call into the game's Mono runtime (main-thread drain)
+  Nami.Tide/       Typed game access: Tide, GameClass, GameObject, TideValue
   Nami.Wave/       Patching engine: x64 inline detours, gate/observer chains
   Nami.Cli/        nami command-line tool
-  Nami.Projection/ Lazy game-type projection                [later milestone]
-  Nami.Interop/    Offline reference-assembly dumper        [later milestone]
-samples/       HelloNami example mod
+  Nami.Interop/    Offline reference-assembly dumper                [later milestone]
+samples/       HelloNami (log-only) + TideProbe (typed game access proof)
 tests/         Fixture plugins + unit/integration tests
 bench/         Comparative benchmark harness vs other loaders
-docs/          Architecture & roadmap
+docs/          Architecture, Tide, Wave, roadmap
 ```
 
 ## Try it against a real game (Mono, Windows x64)
@@ -61,7 +64,8 @@ cmake --build native/build
 
 # 2. Stage a nami root next to the game (see docs/architecture.md for the layout):
 #    <game>/nami/{dotnet/, Nami.Runtime.dll, Nami.Core.dll, Nami.Sdk.dll,
-#                 native/nami_loader.dll, mods/*.dll, Nami.Runtime.runtimeconfig.json}
+#                 Nami.Tide.dll, native/nami_loader.dll, mods/*.dll,
+#                 Nami.Runtime.runtimeconfig.json}
 
 # 3. Inject (launches the game suspended, hosts .NET 10 inside it, loads mods)
 native/build/nami_boot.exe "<game>\Game.exe" "<game>\nami\native\nami_loader.dll"
@@ -101,9 +105,10 @@ nami list        list installed mods and their state
 ## Milestones
 
 See `docs/plan.md` for the full blueprint. Short version: **M0** scaffold & proof of life ·
-**M1** core framework (load order, isolation, quarantine, config, logging) · **M2** patch
-engine + Mono bridge · **M3** IL2CPP bridge + offline interop · **M4** hot reload, profiling,
-templates · **M5** perf hardening + comparative bench gates.
+**M1** core framework (load order, isolation, quarantine, config, logging) · **M2** Wave
+patching engine + Tide bridge + typed game access · **M3** IL2CPP bridge + offline interop ·
+**M4** packaging/templates/install tooling, hot reload, profiling · **M5** perf hardening +
+comparative bench gates.
 
 ## License
 

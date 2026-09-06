@@ -4,6 +4,7 @@
   </Folder>
   <Folder Name="/samples/">
     <Project Path="samples/HelloNami/HelloNami.csproj" />
+    <Project Path="samples/TideProbe/TideProbe.csproj" />
   </Folder>
   <Folder Name="/src/">
     <Project Path="src/Nami.Cli/Nami.Cli.csproj" />

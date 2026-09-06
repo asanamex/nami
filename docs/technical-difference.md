@@ -1,6 +1,6 @@
 # Nami vs BepInEx — Technical Differences
 
-A point-by-point technical comparison between Nami (this repository, M0) and BepInEx
+A point-by-point technical comparison between Nami (this repository, current state) and BepInEx
 (the reference Unity mod loader). It is written to be accurate and current as of mid-2026:
 BepInEx refers to the **5.x stable (Mono-era)** and **6.0.0-be.\* bleeding-edge** builds;
 Nami refers to the architecture implemented and verified in this repo.
@@ -28,7 +28,7 @@ marketing sheet.
 | BCL available to plugins | Whatever the game's Mono provides (no `Span`-heavy modern APIs by default, old GC, no modern `AssemblyLoadContext` semantics). | Full modern .NET 10 BCL: current GC/JIT, `Span<T>`, `async`, source generators, `System.Text.Json`, etc. |
 | Runtime for IL2CPP games | Bundles a **.NET 6 CoreCLR** (BepInEx 6) alongside the game's native IL2CPP; plugins run on that. | Planned: the same CoreCLR hosting machinery as Mono, so plugin code and tooling are identical across both backends. |
 | GC coexistence | Mono games: plugins share the game's Boehm GC. IL2CPP: separate CoreCLR GC in-process. | Separate CoreCLR GC in-process in both cases. Mono-game plugin code never allocates in the game's GC. |
-| Calling game code from a plugin | Mono games: trivial — plugin IL runs in the game runtime, so it can call any game method directly. IL2CPP: via generated interop. | Mono games: **Tide** — plugin code runs on Nami's .NET and calls INTO the game's Mono through a main-thread bridge (`Tide.UnityLog`, `Tide.InvokeStatic`; verified in-game). Still narrower than in-runtime calls: no field access or live-object calls yet. |
+| Calling game code from a plugin | Mono games: trivial — plugin IL runs in the game runtime, so it can call any game method directly. IL2CPP: via generated interop. | Mono games: **Tide** — plugin code runs on Nami's .NET and calls INTO the game's Mono via a main-thread bridge with **typed access** (`GameClass`/`GameObject`: static + instance fields/properties, typed method calls, object creation; verified in-game). Still narrower than in-runtime calls: no scene-object discovery helpers or enum/array values yet, and some Unity internal-call properties are a known edge. |
 
 ## 3. Plugin isolation & failure handling
 

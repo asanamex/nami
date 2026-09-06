@@ -41,14 +41,15 @@ shipped — it is the architectural target.)*
 
 ## What Nami does NOT have yet (honest)
 
-| Capability | BepInEx | Nami (M0) |
+| Capability | BepInEx | Nami (current) |
 |---|---|---|
-| Unity Mono modding | mature | **works end-to-end** |
+| Unity Mono modding | mature | **works end-to-end** (load, patch, typed game access) |
 | Unity IL2CPP modding | mature | next milestone |
-| Harmony-style method patching | yes (HarmonyX) | not yet (by design, own engine) |
-| Calling game code from mods | yes (in-process) | experimental bridge, off by default |
+| Harmony-style method patching | yes (HarmonyX) | **Wave** — in-house detours; parameterless-void targets so far |
+| Calling game code from mods | yes (in-process) | **Tide** — typed static/instance fields, methods, object creation (opt-in) |
 | Ecosystem / existing mods | huge | zero (clean-slate API) |
 | Years of edge-case hardening | yes | no — expect bugs |
+| Packaging / templates / installer | mature | next milestone |
 
 ## The bet
 

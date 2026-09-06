@@ -1,7 +1,7 @@
 # Nami Tutorial
 
-This guide walks you from a clean checkout to a mod running inside a real Unity game.
-Nami is at **M0** — this covers the working slice: injection, .NET hosting, mod loading.
+This guide walks you from a clean checkout to a mod running inside a real Unity game —
+including calling into the game itself through Tide's typed API.
 
 > **Current scope:** Windows x64, Unity **Mono** games (IL2CPP is a later milestone).
 > BepInEx is **not** required and must **not** be installed (its doorstop proxy conflicts
@@ -137,8 +137,8 @@ way). To use it:
 3. Call it from your mod:
 
 ```csharp
+using Nami;
 using Nami.Sdk;
-using Nami.Tide;
 
 [NamiPlugin]
 [PluginInfo("com.example.mymod", "My Mod", "1.0.0")]
@@ -146,18 +146,25 @@ public sealed class MyMod : NamiPlugin
 {
     public override void OnLoad()
     {
-        if (Tide.IsAvailable)
-        {
-            Tide.UnityLog("MyMod loaded — this shows up in Unity's own log!");
-            // Tide.InvokeStatic("Assembly-CSharp", "MyGame", "SomeClass", "SomeStaticMethod");
-        }
+        if (!Tide.IsAvailable) return;
+
+        Tide.UnityLog("MyMod loaded — this shows up in Unity's own log!");
+
+        // Read/write a static field or property on a game class:
+        var myClass = GameClass.Resolve("Assembly-CSharp", "MyGame", "PlayerStats");
+        int hp = myClass.GetStaticInt("MaxHealth");
+        myClass.SetStaticInt("MaxHealth", hp * 2);
+
+        // Create an object and call instance methods:
+        using var go = GameClass.Resolve("UnityEngine.CoreModule", "UnityEngine", "GameObject")
+                                   .NewObject();
+        Tide.UnityLog($"made GameObject #{go.CallIntMethod("GetInstanceID")}");
     }
 }
 ```
 
-`Tide.UnityLog(...)` calls `UnityEngine.Debug.Log` inside the game; `Tide.InvokeStatic(...)`
-calls any parameterless static method on a game class. Both block until the game main thread
-has run them and return `false` on failure (details in `nami-tide.log`).
+All calls block until the game main thread has run them; failures throw `TideException`
+(details in `nami-tide.log`).
 
 ## 5. Install and run
 
