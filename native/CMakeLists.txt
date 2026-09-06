@@ -27,6 +27,8 @@ target_include_directories(nami_core PUBLIC core)
 add_library(nami_loader SHARED
   loader/loader_main.cpp
   loader/loader_exports.cpp
+  loader/tide_pump.cpp
+  loader/tide_ops.cpp
 )
 set_target_properties(nami_loader PROPERTIES
   OUTPUT_NAME "nami_loader"

@@ -3,6 +3,7 @@ using Nami.Core;
 using Nami.Core.Configuration;
 using Nami.Core.Logging;
 using Nami.Sdk;
+using TideBridge = Nami.Tide.Tide;
 
 namespace Nami.Runtime;
 
@@ -28,23 +29,30 @@ public static class Boot
         hub.Log("boot", LogLevel.Info, $"Nami managed runtime booting (nami_root={namiRoot})");
         hub.Log("boot", LogLevel.Info, $"clr={Environment.Version} os={RuntimeInformation.OSDescription} arch={RuntimeInformation.ProcessArchitecture}");
 
-        // Cross-runtime bridge: OPT-IN (experimental). The CoreCLR↔Mono GC interop is not yet
-        // stable — a native crash here cannot be caught by managed code, so it is disabled
-        // unless the user explicitly enables it in nami.json.
+        // Cross-runtime bridge: OPT-IN. Tide connects mods to the game's Mono runtime.
+        // A native crash here cannot be caught by managed code, so it stays behind the
+        // explicit `enableMonoBridge` flag until it is proven stable on more games.
         var config = NamiConfig.Load(namiRoot);
         if (config.EnableMonoBridge)
         {
-            hub.Log("boot", LogLevel.Info, "attaching mono bridge...");
+            hub.Log("boot", LogLevel.Info, "attaching Tide bridge...");
             try
             {
-                if (MonoBridge.Attach(monoModule, hub))
+                if (TideBridge.IsAvailable)
                 {
-                    MonoBridge.Log("hello from the Nami CoreCLR runtime via the Mono bridge");
+                    var ok = TideBridge.UnityLog("hello from Nami's .NET runtime via Tide");
+                    hub.Log("boot", LogLevel.Info, ok
+                        ? "Tide bridge OK: Unity Debug.Log executed on the game main thread"
+                        : "Tide bridge present but UnityLog failed");
+                }
+                else
+                {
+                    hub.Log("boot", LogLevel.Error, "Tide unavailable: nami_loader not loaded");
                 }
             }
             catch (Exception ex)
             {
-                hub.Log("boot", LogLevel.Error, $"mono bridge attach failed: {ex}");
+                hub.Log("boot", LogLevel.Error, $"tide failed: {ex}");
             }
         }
 

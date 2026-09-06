@@ -10,6 +10,7 @@
     <Project Path="src/Nami.Core/Nami.Core.csproj" />
     <Project Path="src/Nami.Runtime/Nami.Runtime.csproj" />
     <Project Path="src/Nami.Sdk/Nami.Sdk.csproj" />
+    <Project Path="src/Nami.Tide/Nami.Tide.csproj" />
     <Project Path="src/Nami.Wave/Nami.Wave.csproj" />
   </Folder>
   <Folder Name="/tests/">

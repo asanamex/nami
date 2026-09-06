@@ -44,7 +44,12 @@ public sealed class NamiConfig
         try
         {
             var config = JsonSerializer.Deserialize<NamiConfig>(File.ReadAllText(path),
-                new JsonSerializerOptions { ReadCommentHandling = JsonCommentHandling.Skip, AllowTrailingCommas = true });
+                new JsonSerializerOptions
+                {
+                    ReadCommentHandling = JsonCommentHandling.Skip,
+                    AllowTrailingCommas = true,
+                    PropertyNameCaseInsensitive = true
+                });
             if (config is null)
             {
                 return new NamiConfig { RootPath = directory };

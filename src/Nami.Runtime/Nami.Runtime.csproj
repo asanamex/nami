@@ -11,6 +11,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Nami.Core\Nami.Core.csproj" />
+    <ProjectReference Include="..\Nami.Tide\Nami.Tide.csproj" />
     <None Include="Nami.Runtime.runtimeconfig.json" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
 
