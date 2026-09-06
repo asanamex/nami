@@ -7,16 +7,22 @@ namespace Nami.Wave;
 /// <summary>
 /// Wave — Nami's runtime patching engine.
 ///
-/// M1 core:
+/// Two engines share one detour core (<see cref="Internal.Detour"/>):
+///
+/// M1 — native-stub dispatch (this file):
 ///   - x64 inline detours on managed methods (safe prologue relocation, exact restore).
 ///   - Multiple owners per target; callbacks run in chain (LIFO, newest first).
 ///   - Shapes: a "gate" (<c>Func&lt;bool&gt;</c> — return true to skip the original) and an
 ///     "observer" (<c>Action</c> — runs after the original or after a skip).
-///   - The original method is invoked through the detour trampoline with the ORIGINAL
-///     arguments intact — no marshaling, no allocation on the hot path.
+///   - The original method runs through the detour trampoline with the ORIGINAL arguments
+///     intact — no marshaling, no allocation on the hot path.
+///   - Scope: parameterless void methods (the IL-copy engine below covers the rest).
 ///
-/// Scope (M1): parameterless void methods. Value-returning or parameterized targets throw
-/// <see cref="HookException"/> until the IL-emission layer lands (next milestone).
+/// M2 — Harmony-style IL-copy patching (Wave.Patch.cs):
+///   - Copies the target's IL into a generated method and injects prefix/postfix calls, so
+///     ANY signature is patchable: value returns, arguments, instance methods, ref
+///     rewriting, skip semantics. See <see cref="Patch(MethodBase, string, Delegate, Delegate)"/>.
+///
 /// No Harmony/MonoMod/Cecil anywhere.
 /// </summary>
 public static unsafe partial class Wave
@@ -213,6 +219,13 @@ public static unsafe partial class Wave
         if (Sites.TryGetValue(target, out var existing))
         {
             return existing;
+        }
+
+        // A method can be M1-hooked or M2-patched, never both (each installs its own detour
+        // on the same prologue). M1 covers parameterless void; M2 covers everything else.
+        if (M2Sites.ContainsKey(target))
+        {
+            throw new HookException($"cannot hook {target}: an M2 patch is already installed on it");
         }
 
         // Scope check (M1): parameterless void only.

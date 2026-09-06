@@ -7,6 +7,9 @@ Full blueprint: `~/.commandcode/plans/nami-unity-mod-loader.md` (or via `/plans`
 - **M0 — done.** Loader hosts .NET 10 inside a real Unity Mono game; chainloader with ALC
   isolation, quarantine, config, logging.
 - **M1 — done.** Wave (patching engine): x64 inline detours, gate/observer chains.
+- **M1.5 — done.** Wave M2: Harmony-style IL-copy patching — prefix/postfix by convention
+  (`__instance`/`__result`/`__state`/`__args`), skip semantics, result rewriting, any
+  signature; multi-owner chains rebuild the patched body atomically.
 - **M2 — done (Mono slice).** Tide: cross-runtime bridge + **typed game access** — static and
   instance field/property access, typed method calls, live object creation/calls, all on the
   game's main thread. Verified in-game against Project Hardline (Unity 2022.3.27f1 Mono).

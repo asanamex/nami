@@ -16,7 +16,7 @@ dependency on BepInEx, HarmonyX, MonoMod, or Mono.Cecil.
 
 - **[TUTORIAL.md](TUTORIAL.md)** — build Nami, stage it next to a game, write and run your first mod.
 - **[docs/tide.md](docs/tide.md)** — Tide: the Nami↔game bridge (mods call into Unity Mono from .NET 10).
-- **[docs/wave.md](docs/wave.md)** — Wave: Nami's patching engine (inline detours, gate/observer chains, overhead numbers).
+- **[docs/wave.md](docs/wave.md)** — Wave: Nami's patching engine (inline detours, Harmony-style IL-copy patching, overhead numbers).
 - **[docs/technical-difference.md](docs/technical-difference.md)** — point-by-point technical comparison with BepInEx (runtime, isolation, IL2CPP, patching, more).
 - **[docs/vs-bepinex.md](docs/vs-bepinex.md)** — the short, honest "why different / what's missing" read.
 - **[docs/architecture.md](docs/architecture.md)** — how the loader, hosting and bridges fit together.
@@ -46,7 +46,7 @@ src/
   Nami.Core/       Chainloader: discovery, graph, ALCs, quarantine
   Nami.Runtime/    In-game managed bootstrap: Boot.Run
   Nami.Tide/       Typed game access: Tide, GameClass, GameObject, TideValue
-  Nami.Wave/       Patching engine: x64 inline detours, gate/observer chains
+  Nami.Wave/       Patching engine: x64 detours + Harmony-style IL-copy prefix/postfix
   Nami.Cli/        nami command-line tool
   Nami.Interop/    Offline reference-assembly dumper                [later milestone]
 samples/       HelloNami (log-only) + TideProbe (typed game access proof)

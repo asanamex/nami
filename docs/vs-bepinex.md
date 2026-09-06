@@ -45,7 +45,7 @@ shipped — it is the architectural target.)*
 |---|---|---|
 | Unity Mono modding | mature | **works end-to-end** (load, patch, typed game access) |
 | Unity IL2CPP modding | mature | next milestone |
-| Harmony-style method patching | yes (HarmonyX) | **Wave** — in-house detours; parameterless-void targets so far |
+| Harmony-style method patching | yes (HarmonyX) | **Wave** — in-house detours + IL-copy patching: prefix/postfix, skip, `__instance`/`__result`/`__state`, any signature |
 | Calling game code from mods | yes (in-process) | **Tide** — typed static/instance fields, methods, object creation (opt-in) |
 | Ecosystem / existing mods | huge | zero (clean-slate API) |
 | Years of edge-case hardening | yes | no — expect bugs |
