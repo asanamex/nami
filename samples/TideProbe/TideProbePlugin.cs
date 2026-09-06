@@ -54,12 +54,6 @@ public sealed class TideProbePlugin : NamiPlugin
             var go = goClass.NewObject();  // new GameObject() — parameterless ctor
             log.Info($"created GameObject instance (handle={go.HandleValue})");
 
-            // Call instance method: set name via property "name" (instance property set).
-            // GameObject.name is a property with a setter that goes through Unity internal
-            // calls; instead call a pure managed instance method: AddComponent needs a type
-            // arg (unsupported), so call getter-free instance method: Transform? Keep simple:
-            // read instance property via the property path is the risky one; instead call
-            // GetInstanceID() (0-arg, returns int, managed wrapper around native).
             var id = go.CallIntMethod("GetInstanceID");
             log.Info($"GameObject.GetInstanceID() = {id}");
             go.Dispose();
@@ -67,6 +61,38 @@ public sealed class TideProbePlugin : NamiPlugin
         catch (Exception ex)
         {
             log.Error($"instance access failed: {ex.Message}");
+        }
+
+        // 4. Unity internal-call property access (the historical crash case): read AND write
+        //    Time.timeScale, whose getter/setter are Unity internal calls that used to crash
+        //    when invoked from the nested drain.
+        try
+        {
+            var timeClass = GameClass.Resolve("UnityEngine.CoreModule", "UnityEngine", "Time");
+            var original = timeClass.GetStaticFloat("timeScale");
+            log.Info($"Time.timeScale read = {original}");
+            timeClass.SetStaticFloat("timeScale", original);
+            log.Info("Time.timeScale write OK (internal-call property path stable)");
+        }
+        catch (Exception ex)
+        {
+            log.Error($"Time.timeScale property access failed: {ex.Message}");
+        }
+
+        // 5. Scene-object discovery via a known safe static: Camera.main is a plain managed
+        //    static property (no internal-call scene iteration). Full FindObjectOfType needs
+        //    a non-nested main-thread hook (see docs) and is not exposed yet.
+        try
+        {
+            var cameraClass = GameClass.Resolve("UnityEngine.CoreModule", "UnityEngine", "Camera");
+            using var camera = cameraClass.GetStaticObject("main");
+            log.Info(camera is not null
+                ? $"Camera.main found live instance (handle={camera.HandleValue})"
+                : "Camera.main -> none (no active Camera in the scene)");
+        }
+        catch (Exception ex)
+        {
+            log.Error($"Camera.main access failed: {ex.Message}");
         }
 
         log.Info("TideProbe verification complete");

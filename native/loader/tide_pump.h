@@ -15,6 +15,11 @@ bool install_main_thread_drain();
 
 /// Queues <paramref name="fn"/> to run on the game's MAIN thread (via the drain hook) and
 /// blocks until it completes. Returns true if the work ran (timeout_ms <= 0 waits forever).
+/// Re-entrant calls (already on the game main thread, inside a drain) run inline.
 bool run_on_main_thread(TideWorkFn fn, void* arg, int timeout_ms = 0);
+
+/// True when the calling thread is currently inside the Tide drain — i.e. the game main
+/// thread is running queued work. Lets callers avoid queueing-and-waiting (deadlock).
+bool IsTideOnMainThread();
 
 }  // namespace nami::tide

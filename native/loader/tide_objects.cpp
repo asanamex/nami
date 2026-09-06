@@ -21,7 +21,13 @@
 
 namespace nami::tide {
 
+// Keep the native CallRequest layout in sync with the managed mirror (Nami.Tide). On x64
+// natural alignment the struct is 1192 bytes.
+static_assert(sizeof(CallRequest) == 1192, "CallRequest layout changed; update the managed mirror");
+
 namespace {
+
+void* find_method_in_hierarchy(void* klass, const char* name, int argc);  // fwd (used early)
 
 void log_tide(const char* fmt, ...) {
     wchar_t path[MAX_PATH]{};
@@ -53,6 +59,7 @@ struct MonoApi {
     void* (*assembly_get_image)(void*) = nullptr;
     void* (*class_from_name)(void*, const char*, const char*) = nullptr;
     void* (*class_get_method_from_name)(void*, const char*, int) = nullptr;
+    void* (*class_get_methods)(void*, void**) = nullptr;
     void* (*class_get_field_from_name)(void*, const char*) = nullptr;
     void* (*class_get_parent)(void*) = nullptr;
     void* (*class_get_property_from_name)(void*, const char*) = nullptr;
@@ -70,6 +77,18 @@ struct MonoApi {
     void* (*object_unbox)(void*) = nullptr;
     void* (*object_get_class)(void*) = nullptr;
     void* (*object_new)(void*, void*) = nullptr;
+    // Signature reflection (for boxing args to `object`/interface/base-class params).
+    void* (*method_signature)(void*) = nullptr;
+    void* (*method_get_name)(void*) = nullptr;
+    void* (*signature_get_params)(void*, void**) = nullptr;
+    int (*signature_get_param_count)(void*) = nullptr;
+    void* (*class_from_mono_type)(void*) = nullptr;
+    void* (*type_get_class)(void*) = nullptr;
+    int (*type_get_type)(void*) = nullptr;
+    // Type/array reflection (for scene-object discovery + array values).
+    void* (*type_get_object)(void*, void*) = nullptr;
+    void* (*class_get_type)(void*) = nullptr;
+    int (*array_length)(void*) = nullptr;
     void* root_domain = nullptr;
     bool ready = false;
 };
@@ -99,6 +118,7 @@ void resolve_api() {
     LOAD(assembly_get_image);
     LOAD(class_from_name);
     LOAD(class_get_method_from_name);
+    LOAD(class_get_methods);
     LOAD(class_get_field_from_name);
     LOAD(class_get_parent);
     LOAD(class_get_property_from_name);
@@ -124,6 +144,18 @@ void resolve_api() {
     LOAD(object_unbox);
     LOAD(object_get_class);
     LOAD(object_new);
+    // Signature reflection (present on 2022.3 and Unity 6 Mono).
+    LOAD(method_signature);
+    LOAD(method_get_name);
+    LOAD(signature_get_params);
+    LOAD(signature_get_param_count);
+    LOAD(class_from_mono_type);
+    LOAD(type_get_class);
+    LOAD(type_get_type);
+    // Type/array reflection (present on 2022.3 and Unity 6 Mono).
+    LOAD(type_get_object);
+    LOAD(class_get_type);
+    LOAD(array_length);
 #undef LOAD
 
     if (g_api.get_root_domain != nullptr) {
@@ -131,7 +163,40 @@ void resolve_api() {
     }
 
     g_api.ready = g_api.root_domain != nullptr && g_api.class_from_name != nullptr &&
-                  g_api.class_get_field_from_name != nullptr && g_api.field_set_value != nullptr;
+                  g_api.class_get_field_from_name != nullptr && g_api.field_set_value != nullptr &&
+                  g_api.runtime_invoke != nullptr && g_api.gchandle_new != nullptr &&
+                  g_api.gchandle_get_target != nullptr && g_api.gchandle_free != nullptr;
+}
+
+// Writes the Mono exception's ToString() into the request's error_message buffer
+// (best-effort, UTF-8, truncated to fit). Call only when `exc` is non-null.
+void capture_exception(CallRequest& req, void* exc) {
+    if (exc == nullptr) {
+        return;
+    }
+    // exc is a Mono Exception object; calling ToString() on it is the most reliable way to
+    // get a human-readable message (handles the message property + stack trace). ToString is
+    // inherited from System.Exception, so walk the class hierarchy to find it.
+    void* str = nullptr;
+    void* exc_class = g_api.object_get_class(exc);
+    void* tostring = exc_class != nullptr ? find_method_in_hierarchy(exc_class, "ToString", 0)
+                                          : nullptr;
+    if (tostring != nullptr) {
+        void* exc2 = nullptr;
+        void* result = g_api.runtime_invoke(tostring, exc, nullptr, &exc2);
+        if (exc2 == nullptr && result != nullptr) {
+            str = g_api.string_to_utf8(result);
+        }
+    }
+    if (str != nullptr) {
+        std::snprintf(req.error_message, sizeof(req.error_message), "%s",
+                      static_cast<const char*>(str));
+        g_api.mono_free(str);
+    } else {
+        std::snprintf(req.error_message, sizeof(req.error_message),
+                      "<Mono exception (no message)>");
+    }
+    log_tide("tide: exception: %s", req.error_message);
 }
 
 void* find_assembly(const char* name) {
@@ -214,8 +279,243 @@ void* make_string(const TideValue& v) {
     return g_api.string_new(g_api.root_domain, v.data.str.utf8);
 }
 
-// Writes the mono object pointer for a string/object value into `slot` (a void*
-// the caller provides), or boxes a primitive into `box` and returns it.
+// MonoType constants (from mono/metadata/blob.h). We only need to distinguish
+// reference types (object/string/class/array) from value types (I4/I8/R4/R8/BOOLEAN/...).
+enum {
+    MONO_TYPE_END = 0x00,
+    MONO_TYPE_VOID = 0x01,
+    MONO_TYPE_BOOLEAN = 0x02,
+    MONO_TYPE_I4 = 0x08,
+    MONO_TYPE_I8 = 0x0a,
+    MONO_TYPE_R4 = 0x0c,
+    MONO_TYPE_R8 = 0x0d,
+    MONO_TYPE_STRING = 0x0e,
+    MONO_TYPE_OBJECT = 0x1c,
+    MONO_TYPE_CLASS = 0x12,
+    MONO_TYPE_VALUETYPE = 0x11,
+    MONO_TYPE_ARRAY = 0x1d,
+    MONO_TYPE_SZARRAY = 0x1e,
+    MONO_TYPE_GENERICINST = 0x2b,
+};
+
+// True when a mono parameter type is a reference type that requires a BOXED value
+// (object, string, class, array, interface). Value types (including enums) are passed
+// by their raw value via to_mono_arg.
+bool param_type_is_reference(void* param_type) {
+    const int t = g_api.type_get_type(param_type);
+    switch (t) {
+        case MONO_TYPE_OBJECT:
+        case MONO_TYPE_STRING:
+        case MONO_TYPE_CLASS:
+        case MONO_TYPE_ARRAY:
+        case MONO_TYPE_SZARRAY:
+        case MONO_TYPE_GENERICINST:
+            return true;
+        default:
+            return false;
+    }
+}
+
+// Reads the parameter count of a method (from its signature). Returns -1 on failure.
+int method_param_count(void* method) {
+    if (g_api.method_signature == nullptr || method == nullptr) {
+        return -1;
+    }
+    void* sig = g_api.method_signature(method);
+    if (sig == nullptr) {
+        return -1;
+    }
+    return g_api.signature_get_param_count(sig);
+}
+
+// Resolves the param MonoType* at index i (0-based) of a method, or nullptr.
+// mono_signature_get_params returns ONE param per call (iterator API), so advance it
+// `index` times.
+void* method_param_type(void* method, int index) {
+    if (g_api.method_signature == nullptr || g_api.signature_get_params == nullptr ||
+        g_api.signature_get_param_count == nullptr || method == nullptr) {
+        return nullptr;
+    }
+    void* sig = g_api.method_signature(method);
+    if (sig == nullptr) {
+        return nullptr;
+    }
+    int count = g_api.signature_get_param_count(sig);
+    if (index < 0 || index >= count) {
+        return nullptr;
+    }
+    void* iter = nullptr;
+    void* param = nullptr;
+    for (int i = 0; i <= index; i++) {
+        param = g_api.signature_get_params(sig, &iter);
+        if (param == nullptr) {
+            return nullptr;
+        }
+    }
+    return param;
+}
+
+// Boxes a primitive TideValue into a fresh Mono object (for object-typed params).
+// The caller must keep the returned pointer alive until the invoke completes; it is a
+// Mono heap object (GC-tracked), NOT something we free.
+void* box_primitive(const TideValue& v) {
+    switch (v.type) {
+        case TideType_I32: {
+            void* cls = g_api.class_from_name(
+                g_api.assembly_get_image(find_assembly("mscorlib")), "System", "Int32");
+            if (cls == nullptr) {
+                return nullptr;
+            }
+            void* obj = g_api.object_new(g_api.root_domain, cls);
+            if (obj == nullptr) {
+                return nullptr;
+            }
+            *static_cast<int32_t*>(g_api.object_unbox(obj)) = v.data.i32;
+            return obj;
+        }
+        case TideType_Bool: {
+            void* cls = g_api.class_from_name(
+                g_api.assembly_get_image(find_assembly("mscorlib")), "System", "Boolean");
+            if (cls == nullptr) {
+                return nullptr;
+            }
+            void* obj = g_api.object_new(g_api.root_domain, cls);
+            if (obj == nullptr) {
+                return nullptr;
+            }
+            *static_cast<int32_t*>(g_api.object_unbox(obj)) = v.data.boolean ? 1 : 0;
+            return obj;
+        }
+        case TideType_I64: {
+            void* cls = g_api.class_from_name(
+                g_api.assembly_get_image(find_assembly("mscorlib")), "System", "Int64");
+            if (cls == nullptr) {
+                return nullptr;
+            }
+            void* obj = g_api.object_new(g_api.root_domain, cls);
+            if (obj == nullptr) {
+                return nullptr;
+            }
+            *static_cast<int64_t*>(g_api.object_unbox(obj)) = v.data.i64;
+            return obj;
+        }
+        case TideType_R4: {
+            void* cls = g_api.class_from_name(
+                g_api.assembly_get_image(find_assembly("mscorlib")), "System", "Single");
+            if (cls == nullptr) {
+                return nullptr;
+            }
+            void* obj = g_api.object_new(g_api.root_domain, cls);
+            if (obj == nullptr) {
+                return nullptr;
+            }
+            *static_cast<float*>(g_api.object_unbox(obj)) = v.data.r4;
+            return obj;
+        }
+        case TideType_R8: {
+            void* cls = g_api.class_from_name(
+                g_api.assembly_get_image(find_assembly("mscorlib")), "System", "Double");
+            if (cls == nullptr) {
+                return nullptr;
+            }
+            void* obj = g_api.object_new(g_api.root_domain, cls);
+            if (obj == nullptr) {
+                return nullptr;
+            }
+            *static_cast<double*>(g_api.object_unbox(obj)) = v.data.r8;
+            return obj;
+        }
+        default:
+            return nullptr;  // strings/objects are already references
+    }
+}
+
+// Maps a TideValue type to the mono primitive type it marshals as.
+int tide_type_to_mono_type(TideValueType t) {
+    switch (t) {
+        case TideType_I32: return MONO_TYPE_I4;
+        case TideType_I64: return MONO_TYPE_I8;
+        case TideType_R4: return MONO_TYPE_R4;
+        case TideType_R8: return MONO_TYPE_R8;
+        case TideType_Bool: return MONO_TYPE_BOOLEAN;
+        case TideType_String: return MONO_TYPE_STRING;
+        case TideType_Object: return MONO_TYPE_OBJECT;
+        default: return MONO_TYPE_VOID;
+    }
+}
+
+// Finds the method on `klass` (or a base) named `name` with `argc` params whose parameter
+// types best match the given TideValue argument types. Scores exact primitive matches and
+// reference-typed params (which accept boxed primitives). Falls back to the classic
+// name+argc lookup (which may pick an arbitrary overload) when signature info is missing.
+void* find_method_for_args(void* klass, const char* name, int argc,
+                           const TideValue* args) {
+    for (void* k = klass; k != nullptr; k = g_api.class_get_parent(k)) {
+        // Collect candidates with the right name + arity.
+        void* best = nullptr;
+        int best_score = -1;
+
+        void* iter = nullptr;
+        void* method = nullptr;
+        while (g_api.class_get_methods != nullptr &&
+               (method = g_api.class_get_methods(k, &iter)) != nullptr) {
+            const char* mname = static_cast<const char*>(g_api.method_get_name(method));
+            if (mname == nullptr || std::strcmp(mname, name) != 0) {
+                continue;
+            }
+            void* sig = g_api.method_signature(method);
+            if (sig == nullptr) {
+                continue;
+            }
+            const int count = g_api.signature_get_param_count(sig);
+            if (count != argc) {
+                continue;
+            }
+
+            // Score: +2 exact primitive/string/object match; +1 reference param (boxable);
+            // -1 mismatch. Prefer the highest score; keep first on ties.
+            int score = 0;
+            bool usable = true;
+            for (int i = 0; i < argc; i++) {
+                // mono_signature_get_params is an iterator: one param per call.
+                void* pit = nullptr;
+                void* pt = nullptr;
+                for (int j = 0; j <= i; j++) {
+                    pt = g_api.signature_get_params(sig, &pit);
+                    if (pt == nullptr) {
+                        break;
+                    }
+                }
+                if (pt == nullptr) {
+                    usable = false;
+                    break;
+                }
+                const int pt_type = g_api.type_get_type(pt);
+                const int want = tide_type_to_mono_type(args[i].type);
+                if (pt_type == want) {
+                    score += 2;
+                } else if (param_type_is_reference(pt)) {
+                    // Any primitive can box to object; strings/objects pass as-is.
+                    score += 1;
+                } else {
+                    usable = false;
+                    break;
+                }
+            }
+            if (usable && score > best_score) {
+                best = method;
+                best_score = score;
+            }
+        }
+
+        if (best != nullptr) {
+            return best;
+        }
+    }
+
+    // Fallback: classic name+argc lookup (no signature info / no match found).
+    return nullptr;
+}
 bool to_mono_arg(const TideValue& v, void* box, void** mono_out) {
     switch (v.type) {
         case TideType_I32:
@@ -418,6 +718,7 @@ int tide_object_op(void* arg) {
                     g_api.runtime_invoke(setter, obj, args_arr, &exc);
                     if (exc != nullptr) {
                         log_tide("tide: property setter '%s' threw", req->member);
+                        capture_exception(*req, exc);
                         return -2;
                     }
                     if (req->ret != nullptr) {
@@ -471,6 +772,7 @@ int tide_object_op(void* arg) {
                 log_tide("tide: property getter '%s' returned value=%p exc=%p", req->member, (void*)value, (void*)exc);
                 if (exc != nullptr) {
                     log_tide("tide: property getter '%s' threw", req->member);
+                    capture_exception(*req, exc);
                     return -2;
                 }
             } else {
@@ -509,10 +811,17 @@ int tide_object_op(void* arg) {
             }
 
             int method_argc = req->arg_count - value_start;
-            void* method = find_method_in_hierarchy(klass, req->member, method_argc);
+            // Type-aware overload selection: pick the method whose parameter types best match
+            // the passed TideValue types (avoids binding the wrong same-arity overload, e.g.
+            // Debug.Log(string) when an int was passed for Log(object)).
+            const TideValue* method_args = method_argc > 0 ? req->args + value_start : nullptr;
+            void* method = g_api.class_get_methods != nullptr && g_api.method_signature != nullptr
+                               ? find_method_for_args(klass, req->member, method_argc, method_args)
+                               : nullptr;
             if (method == nullptr) {
-                // Try to find the method ignoring count as a fallback? No: mono needs the
-                // exact count to disambiguate overloads; fail clearly.
+                method = find_method_in_hierarchy(klass, req->member, method_argc);
+            }
+            if (method == nullptr) {
                 log_tide("tide: method '%s' with %d args not found on %s.%s",
                          req->member, method_argc, req->ns, req->klass);
                 return -1;
@@ -521,6 +830,22 @@ int tide_object_op(void* arg) {
             for (int i = 0; i < method_argc; i++) {
                 const TideValue& v = req->args[value_start + i];
                 void* box = box_storage + (i * 16);
+                // Signature-aware marshaling: if the target parameter is a reference type
+                // (object/string/class/...), a primitive value must be BOXED into a Mono
+                // object first; a raw value pointer would crash Mono when it treats it as
+                // an object reference (e.g. Debug.Log(object) with an int).
+                void* param_type = method_param_type(method, i);
+                const bool need_box = param_type != nullptr && param_type_is_reference(param_type) &&
+                                      v.type != TideType_String && v.type != TideType_Object;
+                if (need_box) {
+                    void* boxed = box_primitive(v);
+                    if (boxed == nullptr) {
+                        log_tide("tide: failed to box arg %d for reference parameter", i);
+                        return -1;
+                    }
+                    mono_args[i] = boxed;
+                    continue;
+                }
                 if (!to_mono_arg(v, box, &mono_args[i])) {
                     log_tide("tide: unsupported arg type %d at index %d", (int)v.type, i);
                     return -1;
@@ -531,6 +856,7 @@ int tide_object_op(void* arg) {
             void* result = g_api.runtime_invoke(method, obj, method_argc > 0 ? mono_args : nullptr, &exc);
             if (exc != nullptr) {
                 log_tide("tide: invoke '%s' threw", req->member);
+                capture_exception(*req, exc);
                 return -2;
             }
             write_ret(req->ret, result);
@@ -555,6 +881,7 @@ int tide_object_op(void* arg) {
                 g_api.runtime_invoke(ctor, obj, nullptr, &exc);
                 if (exc != nullptr) {
                     log_tide("tide: .ctor threw for %s.%s", req->ns, req->klass);
+                    capture_exception(*req, exc);
                     return -2;
                 }
             }

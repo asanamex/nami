@@ -154,11 +154,11 @@ using Nami;   // Tide, GameClass, GameObject, TideValue
 | `bool Tide.UnityLog(string message)` | Calls `UnityEngine.Debug.Log(object)` on the game main thread. |
 | `bool Tide.InvokeStatic(assembly, ns, name, method)` | Calls a **parameterless** static game method on the main thread; true if it ran without a Mono exception. |
 | `GameClass GameClass.Resolve(assembly, ns, name)` | Resolve a game class once by assembly (with or without `.dll`). |
-| `GetStaticInt/Float/Bool/...` / `SetStatic...` | Typed static **field** read/write (`GetStaticInt/Long/Float/Double/Bool/String`, `SetStatic...`). |
-| `CallStatic(method, args...)` | Call a static method with typed args; returns `void`. |
+| `GetStaticInt/Long/Float/Double/Bool/String/Object` / `SetStatic...` | Typed static **field or property** read/write (primitives + string + live objects via `GetStaticObject`/`SetStaticObject`). |
+| `CallStatic(method, args...)` | Call a static method with typed args; returns `void`. Throws on failure. |
 | `CallStaticValue(method, args, returnType)` | Like `CallStatic` but returns a `TideValue`; pass the expected `TideType`. |
 | `GameObject GameClass.NewObject()` | Create a new instance of the class (runs the parameterless ctor). |
-| `GameObject` | Opaque handle to a live game object. `Call(...)` / `CallIntMethod` instance methods, `GetInt/GetFloat/GetString/...` and `SetInt/...` instance fields, `Dispose()` frees the handle. |
+| `GameObject` | Opaque handle to a live game object. Instance method calls with typed returns: `CallIntMethod`, `CallLongMethod`, `CallFloatMethod`, `CallDoubleMethod`, `CallBoolMethod`, `CallStringMethod`, `CallObjectMethod` (plus void `Call`/`CallVoid`); `GetInt/GetLong/.../GetString/GetObject` + `SetInt/.../SetString/SetObject` instance fields/properties. `Dispose()` is idempotent and frees the GCHandle; use after dispose throws. `GameObject.FromHandle(long)` wraps a raw handle. |
 | `TideValue` | A typed value: `TideValue.FromInt/FromLong/FromFloat/FromDouble/FromBool/FromString/FromHandle`. |
 
 **Blocking semantics**: every call blocks until the game's main thread has executed it (safe:
@@ -167,8 +167,17 @@ in caller-allocated UTF-8 buffers that the managed side frees after the call
 (`FromString`/`FreeStringBuffer`); string **returns** are native buffers (`mono_string_to_utf8`)
 you must copy and free with `TideValue.FreeNativeReturn()` before the next call.
 
-**Failure**: ops that cannot resolve the assembly/class/member throw `TideException`; methods
-that throw a Mono exception return a failure code. Details are logged to `nami-tide.log`.
+**Failure**: **every** failing op throws `TideException` (including void calls — no silent
+failures). `TideException.Code` carries the native result (`-1` not found/invalid, `-2` the
+game method threw a Mono exception, `-3` pump unavailable), and when the game threw, the
+exception's `.Message` includes the Mono exception's ToString (type + message + stack).
+`Tide.IsMonoException` distinguishes the two. Full diagnostics are also in `nami-tide.log`.
+
+**Marshaling**: method calls are **overload- and signature-aware**: the target method is
+selected by matching argument types to the method's parameter types, and primitive values
+passed to reference-typed parameters (`object`, interfaces, base classes) are **boxed
+automatically** — e.g. `CallStatic("Log", TideValue.FromInt(5))` correctly calls
+`Debug.Log(object)` with a boxed `Int32`.
 
 ### Example: a mod that touches the game
 
@@ -213,12 +222,17 @@ share one instance.
 - `install_main_thread_drain()` — resolves `mono_runtime_invoke`, measures its prologue with
   `measure_relocatable_prologue()` (whole instructions ≥ 14 bytes; refuses relative branches
   and RIP-relative operands), builds a trampoline (`build_trampoline`), then writes the
-  14-byte absolute jump under `VirtualProtect(PAGE_EXECUTE_READWRITE)`.
+  14-byte absolute jump under `VirtualProtect(PAGE_EXECUTE_READWRITE)`. Installation is
+  serialized under an SRW lock (concurrent first calls are safe; the queue critical section is
+  initialized once).
 - `drain_queue()` — runs queued ops on the calling thread. Called from the detour, i.e. on
   the game main thread. Each request carries its own `done` event; the drain signals it after
-  the op returns and frees the request.
+  the op returns and frees the request. The drain sets a reentrancy flag while running, so a
+  Tide call made FROM the game main thread (e.g. a mod hook running on it) executes **inline**
+  instead of queueing-and-deadlocking.
 - `run_on_main_thread(fn, arg, timeout)` — enqueues (critical section + atomic pending flag)
-  and waits on the request's event.
+  and waits on the request's event. When called from inside the drain (main thread), it runs
+  `fn` inline instead of waiting on itself.
 - Fast path in the detour: one `InterlockedCompareExchange` on the pending flag; the lock is
   only taken when work is queued.
 
@@ -250,6 +264,12 @@ share one instance.
 - **Hierarchy-aware member lookup**: `mono_class_get_method_from_name`/`field` only search
   the class itself, so inherited members (e.g. `GameObject.GetInstanceID` on
   `UnityEngine.Object`) were missed; Tide walks `mono_class_get_parent` up the chain.
+- **Signature-aware invoke**: before an invoke, Tide reads the target method's signature
+  (`mono_method_signature`/`mono_signature_get_params`) to (a) pick the overload whose
+  parameter types best match the passed value types (same-name/same-arity overloads no longer
+  bind arbitrarily), and (b) **box primitives** into `System.Int32`/etc. objects when the
+  parameter is a reference type (`object`, string, interface, base class) — e.g. an `int`
+  passed to `Debug.Log(object)` is boxed, not passed as a raw value pointer.
 - **Property fallback**: when a "field" name is not a field, Tide resolves it as a property
   and uses its get/set method.
 
@@ -283,10 +303,14 @@ share one instance.
 **Current (verified in-game on Unity Mono 2022.3.5f1 / 2022.3.27f1 / 2022.3.34f1 and
 Unity 6 / 6000.5.4f1):**
 - Windows x64; opt-in via `enableMonoBridge`.
-- Typed static **field** read/write (int/long/float/double/bool/string).
-- Typed static method calls with primitive and string arguments.
-- **Object creation** (`new GameObject()`) and **instance method calls with typed returns**
-  (`GetInstanceID()`), via GC-handle-backed object handles.
+- Typed static **field or property** read/write (int/long/float/double/bool/string/object).
+- Static/instance method calls with typed args; **overload- and signature-aware** (primitive
+  args are boxed automatically for `object`/reference parameters); **typed instance returns**
+  (int/long/float/double/bool/string/object).
+- **Object creation** (`new GameObject()`), object-typed field/property reads of live
+  UnityEngine objects (`Camera.main` etc.), GC-handle-backed handles, idempotent `Dispose`.
+- **No silent failures**: every failing op throws `TideException` with a `Code` and, for Mono
+  exceptions, the exception's ToString (type + message + stack) in the message.
 - `UnityLog`.
 
 In-game evidence (`nami.log`, Parasocial / Unity 2022.3.5f1):
@@ -295,18 +319,23 @@ typed Debug.Log(string) call OK
 typed Debug.Log(int) call OK (primitive arg marshaled)
 created GameObject instance (handle=7640)
 GameObject.GetInstanceID() = 0
+Time.timeScale read/write OK (internal-call property path)
+Camera.main -> none (no active Camera in the menu scene)
 TideProbe verification complete
 game alive and stable (~1.2 GB)
 ```
 
-**Known edge:** Unity internal-call property getters invoked from the drain's nested
-`runtime_invoke` can crash UnityPlayer (observed with `Time.timeScale`). Plain managed
-fields/methods and the instance path work. Fix direction: drain from a non-`runtime_invoke`
-main-thread hook point.
+**Internal-call property edge — resolved on the tested titles.** The historical crash
+("`Time.timeScale` getters crash from the nested drain") does **not** reproduce on any of the
+four verified titles with the current native invoke path: `Time.timeScale` read **and** write
+run cleanly through the drain and the game stays stable. What *does* still crash from the
+nested drain is Unity's **scene-iteration API** (`Object.FindObjectOfType(Type)` — Unity
+aborts with `0xe0000001`), so Tide does not expose that call. Live scene objects are reached
+through safe static accessors (`Camera.main`, static object fields/properties).
 
 **Next:**
-- Fix the internal-call property edge (drain outside nested `runtime_invoke`).
-- `MonoBehaviour`-style instance access on live scene objects (find by type/name).
+- A non-nested main-thread hook point to enable scene-iteration APIs (`FindObjectOfType`,
+  `Resources.FindObjectsOfTypeAll`).
 - Enum and array/collection values.
 - A typed projection layer (generated strongly-typed wrappers over `GameClass`) so mods get
   near-native ergonomics instead of stringly-typed calls.

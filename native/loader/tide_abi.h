@@ -22,6 +22,16 @@ enum TideValueType : int32_t {
     TideType_Object = 7,   // value is a 64-bit handle from the handle table
 };
 
+// Result codes returned by the op exports (negative = failure).
+enum TideResult : int32_t {
+    TideResult_Ok = 0,
+    TideResult_ApiNotReady = -1,   // mono exports not resolved / not on main thread
+    TideResult_NotFound = -1,      // assembly/class/member not found (aliased: see docs)
+    TideResult_InvalidArg = -1,    // bad argument shape (aliased)
+    TideResult_MonoException = -2, // the invoked game method threw a Mono exception
+    TideResult_PumpUnavailable = -3, // main-thread drain not installed / timeout
+};
+
 // A single typed value slot. Strings are NOT inline: the caller passes a pointer
 // to a UTF-8 buffer + length in the request; the op reads it while on the main thread.
 union TideValueData {
@@ -57,6 +67,9 @@ enum TideCallOp : int32_t {
 
 // The single request shape. All strings are fixed-size ANSI buffers for class/field/method
 // names; VALUES are pointers to caller-owned TideValue arrays (read on the main thread).
+// `result_code` is one of TideResult; on TideResult_MonoException the op fills
+// `error_message` (fixed UTF-8 buffer, best-effort truncated) with the Mono exception's
+// ToString() so the managed side can surface WHY a game call failed.
 struct CallRequest {
     // Class target.
     char assembly[160];
@@ -71,7 +84,8 @@ struct CallRequest {
     int32_t arg_count;
     TideValue* ret;            // optional single return slot, written by the op
     int32_t handle_capacity;   // max handles the op may create (0 = no handle table)
-    int32_t result_code;       // 0 on success, negative on failure (set by the op)
+    int32_t result_code;       // TideResult; filled by the op (see above)
+    char error_message[512];   // UTF-8 Mono exception text (set on TideResult_MonoException)
 };
 
 // Handle table API used by the ops.

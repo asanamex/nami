@@ -47,12 +47,20 @@ public sealed unsafe class GameClass
         }
     }
 
+    /// <summary>Reads a static field/property that holds a UnityEngine.Object; caller owns the handle.</summary>
+    public GameObject GetStaticObject(string field)
+    {
+        var v = Call(TideCallOp.GetStaticField, field, TideType.Object);
+        return v.Handle == 0 ? null! : new GameObject(v.Handle);
+    }
+
     public void SetStaticInt(string field, int value) => SetStatic(field, TideValue.FromInt(value));
     public void SetStaticLong(string field, long value) => SetStatic(field, TideValue.FromLong(value));
     public void SetStaticFloat(string field, float value) => SetStatic(field, TideValue.FromFloat(value));
     public void SetStaticDouble(string field, double value) => SetStatic(field, TideValue.FromDouble(value));
     public void SetStaticBool(string field, bool value) => SetStatic(field, TideValue.FromBool(value));
     public void SetStaticString(string field, string? value) => SetStatic(field, TideValue.FromString(value));
+    public void SetStaticObject(string field, GameObject? value) => SetStatic(field, TideValue.FromHandle(value?.HandleValue ?? 0));
 
     private void SetStatic(string field, TideValue value)
     {
@@ -106,32 +114,26 @@ public sealed unsafe class GameClass
 /// <summary>An opaque handle to a live game object (backed by a Mono GCHandle).</summary>
 public sealed unsafe class GameObject : IDisposable
 {
-    /// <summary>The opaque handle value (for diagnostics).</summary>
+    /// <summary>The opaque handle value (for diagnostics / re-wrapping).</summary>
     public long HandleValue => Handle;
 
-    internal long Handle { get; }
+    internal long Handle { get; private set; }
 
     internal GameObject(long handle) => Handle = handle;
+
+    /// <summary>Wraps an existing raw handle (e.g. one obtained via <see cref="TideValue.Handle"/>).</summary>
+    public static GameObject FromHandle(long handle) => handle == 0 ? null! : new GameObject(handle);
+
+    /// <summary>True once <see cref="Dispose"/> has been called.</summary>
+    public bool IsDisposed => Handle == 0;
 
     public void Call(string method) => CallVoid(method, Array.Empty<TideValue>());
     public void Call(string method, TideValue a0) => CallVoid(method, new[] { a0 });
     public void Call(string method, TideValue a0, TideValue a1) => CallVoid(method, new[] { a0, a1 });
 
-    /// <summary>Calls a parameterless instance method returning an int.</summary>
-    public int CallIntMethod(string method)
-    {
-        var withThis = new[] { TideValue.FromHandle(Handle) };
-        unsafe
-        {
-            fixed (TideValue* p = withThis)
-            {
-                return TideObjectOp.CallInstance(TideCallOp.InvokeInstance, Handle, method, p, 1, TideType.I32).Int32;
-            }
-        }
-    }
-
     public void CallVoid(string method, TideValue[] args)
     {
+        ThrowIfDisposed();
         var withThis = new TideValue[args.Length + 1];
         withThis[0] = TideValue.FromHandle(Handle);
         Array.Copy(args, 0, withThis, 1, args.Length);
@@ -144,15 +146,18 @@ public sealed unsafe class GameObject : IDisposable
         }
     }
 
-    public int GetInt(string field) => CallInstance(TideCallOp.GetInstanceField, field, TideType.I32).Int32;
-    public long GetLong(string field) => CallInstance(TideCallOp.GetInstanceField, field, TideType.I64).Int64;
-    public float GetFloat(string field) => CallInstance(TideCallOp.GetInstanceField, field, TideType.R4).Single;
-    public double GetDouble(string field) => CallInstance(TideCallOp.GetInstanceField, field, TideType.R8).Double;
-    public bool GetBool(string field) => CallInstance(TideCallOp.GetInstanceField, field, TideType.Bool).Boolean;
+    // ------------------------------------------------------- typed instance methods
 
-    public string? GetString(string field)
+    public int CallIntMethod(string method) => CallMethod(method, Array.Empty<TideValue>(), TideType.I32).Int32;
+    public int CallIntMethod(string method, TideValue a0) => CallMethod(method, new[] { a0 }, TideType.I32).Int32;
+    public long CallLongMethod(string method) => CallMethod(method, Array.Empty<TideValue>(), TideType.I64).Int64;
+    public float CallFloatMethod(string method) => CallMethod(method, Array.Empty<TideValue>(), TideType.R4).Single;
+    public double CallDoubleMethod(string method) => CallMethod(method, Array.Empty<TideValue>(), TideType.R8).Double;
+    public bool CallBoolMethod(string method) => CallMethod(method, Array.Empty<TideValue>(), TideType.Bool).Boolean;
+
+    public string? CallStringMethod(string method)
     {
-        var v = CallInstance(TideCallOp.GetInstanceField, field, TideType.String);
+        var v = CallMethod(method, Array.Empty<TideValue>(), TideType.String);
         try
         {
             return v.String;
@@ -163,15 +168,67 @@ public sealed unsafe class GameObject : IDisposable
         }
     }
 
+    /// <summary>Calls an instance method returning a UnityEngine.Object; caller owns the handle.</summary>
+    public GameObject CallObjectMethod(string method)
+    {
+        var v = CallMethod(method, Array.Empty<TideValue>(), TideType.Object);
+        return v.Handle == 0 ? null! : new GameObject(v.Handle);
+    }
+
+    private TideValue CallMethod(string method, TideValue[] args, TideType returnType)
+    {
+        ThrowIfDisposed();
+        var withThis = new TideValue[args.Length + 1];
+        withThis[0] = TideValue.FromHandle(Handle);
+        Array.Copy(args, 0, withThis, 1, args.Length);
+        unsafe
+        {
+            fixed (TideValue* p = withThis)
+            {
+                return TideObjectOp.CallInstance(TideCallOp.InvokeInstance, Handle, method, p, withThis.Length, returnType);
+            }
+        }
+    }
+
+    // ------------------------------------------------------- instance fields/properties
+
+    public int GetInt(string field) => GetInstance(TideCallOp.GetInstanceField, field, TideType.I32).Int32;
+    public long GetLong(string field) => GetInstance(TideCallOp.GetInstanceField, field, TideType.I64).Int64;
+    public float GetFloat(string field) => GetInstance(TideCallOp.GetInstanceField, field, TideType.R4).Single;
+    public double GetDouble(string field) => GetInstance(TideCallOp.GetInstanceField, field, TideType.R8).Double;
+    public bool GetBool(string field) => GetInstance(TideCallOp.GetInstanceField, field, TideType.Bool).Boolean;
+
+    public string? GetString(string field)
+    {
+        var v = GetInstance(TideCallOp.GetInstanceField, field, TideType.String);
+        try
+        {
+            return v.String;
+        }
+        finally
+        {
+            v.FreeNativeReturn();
+        }
+    }
+
+    /// <summary>Reads an instance field/property holding a UnityEngine.Object; caller owns the handle.</summary>
+    public GameObject GetObject(string field)
+    {
+        var v = GetInstance(TideCallOp.GetInstanceField, field, TideType.Object);
+        return v.Handle == 0 ? null! : new GameObject(v.Handle);
+    }
+
     public void SetInt(string field, int value) => SetField(field, TideValue.FromInt(value));
     public void SetLong(string field, long value) => SetField(field, TideValue.FromLong(value));
     public void SetFloat(string field, float value) => SetField(field, TideValue.FromFloat(value));
     public void SetDouble(string field, double value) => SetField(field, TideValue.FromDouble(value));
     public void SetBool(string field, bool value) => SetField(field, TideValue.FromBool(value));
     public void SetString(string field, string? value) => SetField(field, TideValue.FromString(value));
+    public void SetObject(string field, GameObject? value) => SetField(field, TideValue.FromHandle(value?.HandleValue ?? 0));
 
     private void SetField(string field, TideValue value)
     {
+        ThrowIfDisposed();
         var args = new[] { TideValue.FromHandle(Handle), value };
         unsafe
         {
@@ -182,9 +239,9 @@ public sealed unsafe class GameObject : IDisposable
         }
     }
 
-    private TideValue CallInstance(TideCallOp op, string member, TideType returnType)
+    private TideValue GetInstance(TideCallOp op, string member, TideType returnType)
     {
-        // Instance field ops need args[0] = the handle.
+        ThrowIfDisposed();
         var args = new[] { TideValue.FromHandle(Handle) };
         unsafe
         {
@@ -195,14 +252,35 @@ public sealed unsafe class GameObject : IDisposable
         }
     }
 
+    private void ThrowIfDisposed()
+    {
+        if (Handle == 0)
+        {
+            throw new ObjectDisposedException(nameof(GameObject));
+        }
+    }
+
+    /// <summary>Frees the underlying Mono GCHandle. Idempotent and safe to call twice.</summary>
     public void Dispose()
     {
-        var args = new[] { TideValue.FromHandle(Handle) };
+        if (Handle == 0)
+        {
+            return;
+        }
+
+        var handle = Handle;
+        Handle = 0;
+        if (!Tide.IsAvailable)
+        {
+            return;  // not in a game process; nothing to free
+        }
+
+        var args = new[] { TideValue.FromHandle(handle) };
         unsafe
         {
             fixed (TideValue* p = args)
             {
-                TideObjectOp.CallInstance(TideCallOp.FreeHandle, Handle, "", p, 1, TideType.Void);
+                TideObjectOp.CallInstance(TideCallOp.FreeHandle, handle, "", p, 1, TideType.Void);
             }
         }
     }

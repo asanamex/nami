@@ -14,16 +14,21 @@ namespace Nami;
 /// thread) and drains a queue of native ops inline. CoreCLR enqueues a typed op and blocks
 /// until the main thread has run it.
 ///
-/// Verified in-game (Unity 2022.3.27f1 Mono, Project Hardline): UnityLog executes
-/// UnityEngine.Debug.Log on the game main thread with the game stable.
+/// Verified in-game across Unity 2022.3.x and Unity 6 Mono titles.
 /// </summary>
 public static unsafe partial class Tide
 {
-    /// <summary>Thrown when Tide cannot reach the game runtime.</summary>
+    /// <summary>Thrown when Tide cannot reach or execute against the game runtime.</summary>
     public sealed class TideException : Exception
     {
         public TideException(string message) : base(message) { }
         public TideException(string message, Exception inner) : base(message, inner) { }
+
+        /// <summary>The native TideResult code (0 ok; -1 not found/invalid; -2 Mono exception; -3 pump).</summary>
+        public int Code { get; init; }
+
+        /// <summary>True when the failure was a Mono exception thrown by the game method.</summary>
+        public bool IsMonoException => Code == -2;
     }
 
     private const string LoaderDll = "nami_loader";
@@ -63,7 +68,7 @@ public static unsafe partial class Tide
 
     private static byte[] Ansi(string s, int max)
     {
-        var bytes = Encoding.ASCII.GetBytes(s ?? string.Empty);
+        var bytes = Encoding.UTF8.GetBytes(s ?? string.Empty);
         if (bytes.Length > max)
         {
             bytes = bytes.AsSpan(0, max).ToArray();
@@ -144,7 +149,7 @@ internal static unsafe class TideObjectOp
 {
     private static void Fill(byte* dst, int capacity, string s)
     {
-        var bytes = System.Text.Encoding.ASCII.GetBytes(s ?? string.Empty);
+        var bytes = Encoding.UTF8.GetBytes(s ?? string.Empty);
         int n = Math.Min(bytes.Length, capacity - 1);
         for (int i = 0; i < n; i++)
         {
@@ -179,9 +184,9 @@ internal static unsafe class TideObjectOp
             req.Ret = returnType == TideType.Void ? null : &ret;
 
             var rc = Tide.NativeObjectOp(&req);
-            if (rc != 0 && returnType != TideType.Void)
+            if (rc != 0)
             {
-                throw new Tide.TideException($"Tide op {op} on {target.Name}.{member} failed (code {rc})");
+                throw Error(op, $"{target.Name}.{member}", rc, req);
             }
 
             return ret;
@@ -210,9 +215,9 @@ internal static unsafe class TideObjectOp
             req.Ret = returnType == TideType.Void ? null : &ret;
 
             var rc = Tide.NativeObjectOp(&req);
-            if (rc != 0 && returnType != TideType.Void)
+            if (rc != 0)
             {
-                throw new Tide.TideException($"Tide op {op} failed (code {rc})");
+                throw Error(op, member, rc, req);
             }
 
             return ret;
@@ -221,6 +226,29 @@ internal static unsafe class TideObjectOp
         {
             FreeArgStrings(args, argCount);
         }
+    }
+
+    private static string ErrorMessage(CallRequest* req)
+    {
+        byte* p = req->ErrorMessage;
+        int len = 0;
+        while (len < 512 && p[len] != 0)
+        {
+            len++;
+        }
+
+        return len > 0 ? Encoding.UTF8.GetString(p, len) : string.Empty;
+    }
+
+    private static Tide.TideException Error(TideCallOp op, string member, int rc, CallRequest req)
+    {
+        var detail = ErrorMessage(&req);
+        var reason = rc == -2
+            ? "the game method threw a Mono exception"
+            : $"code {rc}";
+        var msg = $"Tide op {op} on {member} failed ({reason})" +
+                  (detail.Length > 0 ? $": {detail}" : string.Empty);
+        return new Tide.TideException(msg) { Code = rc };
     }
 
     private static void FreeArgStrings(TideValue* args, int argCount)

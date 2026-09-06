@@ -152,4 +152,5 @@ internal unsafe struct CallRequest
     public TideValue* Ret;
     public int HandleCapacity;
     public int ResultCode;
+    public fixed byte ErrorMessage[512];
 }

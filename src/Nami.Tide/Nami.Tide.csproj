@@ -9,6 +9,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <InternalsVisibleTo Include="Nami.Tide.Tests" />
   </ItemGroup>
 
 </Project>

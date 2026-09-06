@@ -39,6 +39,11 @@ struct QueueState {
 QueueState g_queue{};
 bool g_queue_initialized = false;
 bool g_drain_installed = false;
+SRWLOCK g_install_lock = SRWLOCK_INIT;  // guards install_main_thread_drain
+
+// Set while the drain runs on the game main thread (used to detect re-entrant Tide calls
+// from the main thread and run them inline instead of deadlocking).
+bool g_on_main_thread_drain = false;
 
 using mono_runtime_invoke_fn = void* (*)(void*, void*, void**, void**);
 mono_runtime_invoke_fn g_original_runtime_invoke = nullptr;
@@ -199,6 +204,10 @@ void* build_trampoline(unsigned char* target, int prologue_len) {
 // Executes all queued Tide work on the calling thread. Called from the detour, i.e. on the
 // game's main thread. Returns the number of requests executed.
 int drain_queue() {
+    // Mark the drain active so a re-entrant Tide call (mod code on the game main thread
+    // calling back into Tide) can detect it and run inline instead of queueing+waiting
+    // (which would deadlock the main thread on itself).
+    g_on_main_thread_drain = true;
     int executed = 0;
     for (;;) {
         EnterCriticalSection(&g_queue.lock);
@@ -229,26 +238,44 @@ int drain_queue() {
         delete req;
         executed++;
     }
-
+    g_on_main_thread_drain = false;
     return executed;
 }
 
+// True when the calling thread is currently executing inside the Tide drain — i.e. the
+// game main thread is running queued work right now. Used to detect re-entrant calls.
+bool IsTideOnMainThread() {
+    return g_on_main_thread_drain;
+}
+
 // Installs the mono_runtime_invoke hook so the game main thread drains Tide work.
+// Thread-safe: an SRW lock makes concurrent first calls safe (only one install wins; the
+// rest observe g_drain_installed). Also initializes the queue critical section once.
 bool install_main_thread_drain() {
     if (g_drain_installed) {
         return true;
     }
 
-    InitializeCriticalSection(&g_queue.lock);
-    g_queue_initialized = true;
+    AcquireSRWLockExclusive(&g_install_lock);
+    if (g_drain_installed) {
+        ReleaseSRWLockExclusive(&g_install_lock);
+        return true;
+    }
+
+    if (!g_queue_initialized) {
+        InitializeCriticalSection(&g_queue.lock);
+        g_queue_initialized = true;
+    }
 
     const HMODULE mono = GetModuleHandleW(L"mono-2.0-bdwgc.dll");
     if (mono == nullptr) {
+        ReleaseSRWLockExclusive(&g_install_lock);
         return false;
     }
 
     void* target = reinterpret_cast<void*>(GetProcAddress(mono, "mono_runtime_invoke"));
     if (target == nullptr) {
+        ReleaseSRWLockExclusive(&g_install_lock);
         return false;
     }
 
@@ -257,6 +284,7 @@ bool install_main_thread_drain() {
     // Measure the relocatable prologue (whole instructions covering >= 14 bytes).
     const int prologue_len = measure_relocatable_prologue(p, 14);
     if (prologue_len <= 0) {
+        ReleaseSRWLockExclusive(&g_install_lock);
         return false;
     }
 
@@ -264,6 +292,7 @@ bool install_main_thread_drain() {
     // the detour calls is the trampoline, NOT the patched address (which would recurse).
     g_trampoline = static_cast<unsigned char*>(build_trampoline(p, prologue_len));
     if (g_trampoline == nullptr) {
+        ReleaseSRWLockExclusive(&g_install_lock);
         return false;
     }
 
@@ -272,6 +301,7 @@ bool install_main_thread_drain() {
     // Write a 14-byte absolute jump to the detour: mov rax, imm64; jmp rax.
     DWORD old_protect = 0;
     if (!VirtualProtect(p, 14, PAGE_EXECUTE_READWRITE, &old_protect)) {
+        ReleaseSRWLockExclusive(&g_install_lock);
         return false;
     }
 
@@ -282,26 +312,18 @@ bool install_main_thread_drain() {
 
     VirtualProtect(p, 14, old_protect, &old_protect);
     g_drain_installed = true;
+    ReleaseSRWLockExclusive(&g_install_lock);
     return true;
 }
 
-// Queues work for the game main thread and blocks until it has run (timeout_ms <= 0 = wait
-// forever). The request is heap-allocated and freed by the drain after signaling.
-bool run_on_main_thread(TideWorkFn fn, void* arg, int timeout_ms) {
-    if (!g_drain_installed) {
-        if (!install_main_thread_drain()) {
-            return false;
-        }
-    }
-
-    auto* req = new (std::nothrow) Request{};
-    if (req == nullptr) {
+// Queue a request. Returns false on allocation/event failure (the request is not queued).
+// Must be called by a NON-main thread (callers that are already on the game main thread must
+// run the work inline instead — see run_on_main_thread).
+bool enqueue_request(Request* req) {
+    req->done = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+    if (req->done == nullptr) {
         return false;
     }
-
-    req->fn = fn;
-    req->arg = arg;
-    req->done = CreateEventW(nullptr, FALSE, FALSE, nullptr);
     req->next = nullptr;
 
     EnterCriticalSection(&g_queue.lock);
@@ -314,6 +336,37 @@ bool run_on_main_thread(TideWorkFn fn, void* arg, int timeout_ms) {
     }
     InterlockedExchange(&g_queue.work_pending, 1);
     LeaveCriticalSection(&g_queue.lock);
+    return true;
+}
+
+// Queues work for the game main thread and blocks until it has run (timeout_ms <= 0 = wait
+// forever). The request is heap-allocated and freed by the drain after signaling.
+bool run_on_main_thread(TideWorkFn fn, void* arg, int timeout_ms) {
+    // Reentrancy guard: if the CALLER is already the game main thread (i.e. we are inside a
+    // drain — a mod hook running on the game thread calls Tide), queueing + waiting would
+    // deadlock (the drain can't run while we block it). Run the work inline instead.
+    if (IsTideOnMainThread()) {
+        return fn(arg) == 0;
+    }
+
+    if (!g_drain_installed && !install_main_thread_drain()) {
+        return false;
+    }
+
+    auto* req = new (std::nothrow) Request{};
+    if (req == nullptr) {
+        return false;
+    }
+
+    req->fn = fn;
+    req->arg = arg;
+    req->done = nullptr;
+    req->next = nullptr;
+
+    if (!enqueue_request(req)) {
+        delete req;
+        return false;
+    }
 
     // The hook is on mono_runtime_invoke: the game main thread calls it constantly, so the
     // drain runs soon. Wait for completion.

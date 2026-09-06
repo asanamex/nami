@@ -18,6 +18,7 @@
     <Project Path="tests/Nami.Tests/Nami.Tests.csproj" />
     <Project Path="tests/Nami.Wave.Tests/Nami.Wave.Tests.csproj" />
     <Project Path="tests/Nami.Cli.Tests/Nami.Cli.Tests.csproj" />
+    <Project Path="tests/Nami.Tide.Tests/Nami.Tide.Tests.csproj" />
   </Folder>
   <Folder Name="/tests/fixtures/">
     <Project Path="tests/fixtures/Alpha/Alpha.csproj" />

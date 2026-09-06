@@ -122,6 +122,20 @@ struct InvokeStaticRequest {
     int argc;  // only 0 supported for now (parameterless static)
 };
 
+// Logs the ToString() of a Mono exception object (best-effort; UTF-8, truncated).
+void log_mono_exception(void* exc) {
+    if (exc == nullptr) {
+        return;
+    }
+    void* str = g_api.string_to_utf8(exc);
+    if (str != nullptr) {
+        log_tide("tide op: Mono exception: %s", static_cast<const char*>(str));
+        g_api.mono_free(str);
+    } else {
+        log_tide("tide op: Mono exception (no message)");
+    }
+}
+
 // Resolves an assembly by name (tries with and without .dll), returning the assembly ptr
 // or null. Helper shared by ops.
 void* find_assembly(const char* name) {
@@ -194,6 +208,7 @@ int execute_op(void* arg) {
             g_api.runtime_invoke(log, nullptr, args, &exc);
             if (exc != nullptr) {
                 log_tide("tide op: Debug.Log threw a Mono exception");
+                log_mono_exception(exc);
                 ctx->result = -2;
                 break;
             }
@@ -231,6 +246,7 @@ int execute_op(void* arg) {
             g_api.runtime_invoke(method, nullptr, nullptr, &exc);
             if (exc != nullptr) {
                 log_tide("tide op: '%s' threw a Mono exception", req->method);
+                log_mono_exception(exc);
                 ctx->result = -2;
                 break;
             }
