@@ -12,9 +12,9 @@ namespace Nami.Runtime;
 ///
 /// This is the piece BepInEx does not have on Mono: plugins do NOT run on the game's
 /// ancient embedded Mono. The native core first hosts a modern .NET (CoreCLR) inside the
-/// game process, then calls <see cref="Boot.Run"/> here — and from here we reach BACK into
-/// the game's Mono runtime through raw embedding-API function pointers
-/// (<see cref="MonoBridge"/>), proving a true cross-runtime bridge.
+/// game process, then calls <see cref="Boot.Run"/> here — and from here Tide reaches BACK
+/// into the game's Mono runtime (calls execute on the game's main thread), so mods can
+/// touch the game.
 /// </summary>
 public static class Boot
 {

@@ -28,6 +28,8 @@ public sealed class PluginLoadContext : AssemblyLoadContext
         if (name is not null &&
             (name.StartsWith("Nami.Sdk", StringComparison.Ordinal) ||
              name.StartsWith("Nami.Core", StringComparison.Ordinal) ||
+             name.StartsWith("Nami.Tide", StringComparison.Ordinal) ||
+             name.StartsWith("Nami.Wave", StringComparison.Ordinal) ||
              name.StartsWith("System.", StringComparison.Ordinal) ||
              name.StartsWith("Microsoft.", StringComparison.Ordinal) ||
              name is "netstandard" or "mscorlib"))

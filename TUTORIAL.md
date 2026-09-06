@@ -124,6 +124,41 @@ public sealed class MyMod : NamiPlugin
 `[PluginDependency("other.mod.id")]` declares a dependency; `[PluginIncompatibility(...)]`
 declares a conflict. Dependencies load first; conflicts are resolved at load time.
 
+### Calling into the game (Tide)
+
+A mod that only logs to Nami can't touch the game. **Tide** is the bridge that lets your mod
+call the game's own Mono runtime — every call executes safely on the game's main thread.
+See **[docs/tide.md](docs/tide.md)** for the full story (including why it has to work this
+way). To use it:
+
+1. Add `Nami.Tide.dll` to your mod's references (next to `Nami.Sdk.dll`) and copy it into the
+   game's `nami/` folder next to `Nami.Sdk.dll`.
+2. Enable the bridge in `<game>/nami/nami.json`: `{ "enableMonoBridge": true }`
+3. Call it from your mod:
+
+```csharp
+using Nami.Sdk;
+using Nami.Tide;
+
+[NamiPlugin]
+[PluginInfo("com.example.mymod", "My Mod", "1.0.0")]
+public sealed class MyMod : NamiPlugin
+{
+    public override void OnLoad()
+    {
+        if (Tide.IsAvailable)
+        {
+            Tide.UnityLog("MyMod loaded — this shows up in Unity's own log!");
+            // Tide.InvokeStatic("Assembly-CSharp", "MyGame", "SomeClass", "SomeStaticMethod");
+        }
+    }
+}
+```
+
+`Tide.UnityLog(...)` calls `UnityEngine.Debug.Log` inside the game; `Tide.InvokeStatic(...)`
+calls any parameterless static method on a game class. Both block until the game main thread
+has run them and return `false` on failure (details in `nami-tide.log`).
+
 ## 5. Install and run
 
 ```bat
@@ -168,9 +203,10 @@ Optional file in the nami root. Created with defaults on first boot if absent.
 ```
 
 - `enabledPlugins`: only these load (empty = all).
-- `enableMonoBridge`: **experimental** — bridges into the game's Mono runtime from Nami's .NET
-  so mods can call `UnityEngine.Debug.Log`. Off by default: the CoreCLR↔Mono GC interop is not
-  stable yet and a crash there takes the game down.
+- `enableMonoBridge`: enables **Tide** — the bridge that lets mods call into the game's Mono
+  runtime (every call runs safely on the game's main thread). Off by default because it
+  patches a live game export and is verified on Unity 2022.3 Mono so far; see
+  [docs/tide.md](docs/tide.md).
 
 ## 7. The sample mod
 
@@ -197,11 +233,13 @@ nami list   [gameDir]     list installed mods
 dotnet test tests/Nami.Tests
 ```
 
-## 10. Known limitations (M0)
+## 10. Known limitations
 
-- **Mono games only** — IL2CPP support is the next milestone.
-- No method patching / Harmony-style API yet (design is next).
-- Mods cannot yet touch game objects/types through the bridge (see `enableMonoBridge`).
-- The game must be launched via `nami_boot.exe`; Steam launch options / shortcuts can point at a
-  wrapper script that calls it.
+- **Mono games only** — IL2CPP support is a later milestone.
+- **Tide scope**: mods can `UnityLog` and call parameterless static game methods. Reading/
+  writing game fields and calling methods with arguments (or on live objects) is the next
+  Tide milestone.
+- **Wave scope**: patching supports parameterless void methods so far.
+- The game must be launched via `nami_boot.exe`; Steam launch options / shortcuts can point at
+  a wrapper script that calls it.
 - Do not run alongside BepInEx/Doorstop in the same game folder.

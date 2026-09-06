@@ -28,7 +28,7 @@ marketing sheet.
 | BCL available to plugins | Whatever the game's Mono provides (no `Span`-heavy modern APIs by default, old GC, no modern `AssemblyLoadContext` semantics). | Full modern .NET 10 BCL: current GC/JIT, `Span<T>`, `async`, source generators, `System.Text.Json`, etc. |
 | Runtime for IL2CPP games | Bundles a **.NET 6 CoreCLR** (BepInEx 6) alongside the game's native IL2CPP; plugins run on that. | Planned: the same CoreCLR hosting machinery as Mono, so plugin code and tooling are identical across both backends. |
 | GC coexistence | Mono games: plugins share the game's Boehm GC. IL2CPP: separate CoreCLR GC in-process. | Separate CoreCLR GC in-process in both cases. Mono-game plugin code never allocates in the game's GC. |
-| Calling game code from a plugin | Mono games: trivial — plugin IL runs in the game runtime, so it can call any game method directly. IL2CPP: via generated interop. | Mono games: **not yet** — requires the cross-runtime bridge (`MonoBridge`, experimental, off by default) which currently resolves the Mono root domain and attaches a thread but crashes CoreCLR on first deeper call (CoreCLR↔Mono GC interop research item). This is a current Nami limitation, not an advantage. |
+| Calling game code from a plugin | Mono games: trivial — plugin IL runs in the game runtime, so it can call any game method directly. IL2CPP: via generated interop. | Mono games: **Tide** — plugin code runs on Nami's .NET and calls INTO the game's Mono through a main-thread bridge (`Tide.UnityLog`, `Tide.InvokeStatic`; verified in-game). Still narrower than in-runtime calls: no field access or live-object calls yet. |
 
 ## 3. Plugin isolation & failure handling
 
