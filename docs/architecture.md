@@ -31,10 +31,12 @@ native/                          C++17 (Windows x64 first)
   injector/injector_main.cpp     nami_boot.exe: CreateProcessW(suspended) →
                                 VirtualAllocEx(path) → WriteProcessMemory →
                                 CreateRemoteThread(LoadLibraryW) → ResumeThread
-  loader/loader_exports.cpp      nami_loader.dll: DllMain (empty) + nami_loader_start export
-  loader/loader_main.cpp         boot thread: waits for mono-2.0-bdwgc.dll (30s), UTF-8 root
+  loader/loader_exports.cpp      nami_loader.dll: DllMain spawns the boot thread
+                                (CreateThread) — no separate export is called by the injector
+  loader/loader_main.cpp         boot thread: waits for mono-2.0-bdwgc.dll / mono.dll (30s),
+                                UTF-8 root
   loader/tide_pump.cpp           Tide main-thread executor: mono_runtime_invoke hook + drain
-  loader/tide_ops.cpp            Tide native ops (UnityLog)
+  loader/tide_ops.cpp            Tide native ops (UnityLog, parameterless InvokeStatic)
   loader/tide_objects.cpp        Tide typed game access (field/property/method/object ops)
   core/runtime_host.cpp          hostfxr: initialize_for_runtime_config → get_runtime_delegate(
                                 hdt_load_assembly_and_get_function_pointer) →
@@ -46,8 +48,16 @@ src/Nami.Runtime/                managed in-game bootstrap
   Boot.cs                        LogHub+FileSink (nami.log), config load, chainloader, update loop
 src/Nami.Tide/                   bridge API mods call (see docs/tide.md)
 src/Nami.Core/                   chainloader (ALC per mod, quarantine, resolver, discovery)
-src/Nami.Wave/                   patching engine (x64 inline detours)
+src/Nami.Wave/                   patching engine (x64 inline detours + IL-copy patches)
 src/Nami.Sdk/                    public plugin API ([NamiPlugin], NamiPlugin, PluginInfo, ...)
+src/Nami.Cli/                    `nami` console tool: version/doctor/list + the launcher flow —
+                                 launch set <game.exe> (stored in nami.json), launch [offline|steam]
+                                 (spawns native/nami_boot.exe; Steam relay to steam://rungameid/<id>
+                                 after the game exits), create (self-extracts launchNami.exe +
+                                 run-with-nami.bat into the nami root). Game exe auto-detection picks
+                                 the largest .exe, skipping crash handlers/updaters.
+tools/launch-shim/               launchNami.exe — tiny self-contained console app, embedded in
+                                 Nami.Cli; spawns nami_boot.exe with paths from its own location
 samples/HelloNami/               example mod
 ```
 
@@ -74,11 +84,16 @@ dotnet/host/fxr/<ver>/hostfxr.dll
 dotnet/shared/Microsoft.NETCore.App/<ver>/   (bundled runtime)
 Nami.Runtime.dll  Nami.Runtime.deps.json  Nami.Runtime.runtimeconfig.json
 Nami.Core.dll     Nami.Sdk.dll           Nami.Tide.dll
-native/nami_loader.dll                     (loader derives root as two levels up)
+native/nami_boot.exe  native/nami_loader.dll
+launchNami.exe  run-with-nami.bat        (written by `nami create`)
 mods/*.dll                                 (loose plugin DLLs; .nmod later)
-nami.json                                  (optional config)
+nami.json                                  (optional config; absent → defaults)
 nami.log                                   (runtime log)
 ```
+
+`nami launch`/`launchNami.exe` invoke `native/nami_boot.exe <game.exe> native/nami_loader.dll`;
+the loader derives the root as two levels up and the game executable comes from `nami.json`
+(`gameExe`).
 
 ## Tide (game access, opt-in)
 
@@ -98,14 +113,15 @@ calls — game stable. Opt-in via `"enableMonoBridge": true`. Full details: `doc
   to an already-loaded copy (the hostfxr component ALC in-game, default ALC in tests) so types
   unify. Plugin-to-plugin deps are validated by `DependencyResolver`, not the probe.
 - Each plugin loads into its own collectible `PluginLoadContext`; shared framework refs reuse the
-  already-loaded copy. Quarantine disables a throwing plugin after N consecutive failures.
+  already-loaded copy. Quarantine disables a throwing plugin after N consecutive failures
+  (state `Quarantined`, `OnUnload` called best-effort; the ALC itself is not unloaded).
 - The injected `nami_loader.dll` is fully statically linked (no MinGW runtime DLL deps) so
   `LoadLibraryW` succeeds inside the game process.
 - Logging fans out to sinks (console/file); a broken sink can never crash the host.
 
 ## Future layers
 
-- Tide: static field read/write, calls with args, instance access, typed projection.
+- Tide: scene-object discovery, enum/array values, a typed projection layer.
 - `Nami.Interop` — offline (dev-time) reference assembly generation for IL2CPP modders.
 - IL2CPP bridge — same hosting, plus native metadata reading of `global-metadata.dat`.
 - `.nmod` packaging, hot reload, per-mod profiler, comparative bench gates.

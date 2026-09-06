@@ -6,6 +6,7 @@ namespace Nami.Core.Configuration;
 /// <summary>
 /// Loads and saves Nami's central <c>nami.json</c> configuration with a simple, permissive schema.
 /// Unknown fields are preserved on save. The loader tolerates a missing or malformed file by using defaults.
+/// Keys are written camelCase (and read case-insensitively), e.g. <c>enableMonoBridge</c>.
 /// </summary>
 public sealed class NamiConfig
 {
@@ -32,6 +33,18 @@ public sealed class NamiConfig
     /// the CoreCLR↔Mono GC interop is not yet stable, and a crash here would take the game down.
     /// </summary>
     public bool EnableMonoBridge { get; set; }
+
+    /// <summary>Absolute path to the game executable (set by `nami launch set`; empty = auto-detect).</summary>
+    public string? GameExe { get; set; }
+
+    /// <summary>Steam app id used by `nami launch steam` to relay to a clean Steam session (optional).</summary>
+    public string? SteamAppId { get; set; }
+
+    /// <summary>
+    /// When true, `nami launch steam` (with a SteamAppId set) launches the game directly WITHOUT
+    /// Nami injection, then relaunches through Steam after it exits — for online/anti-cheat games.
+    /// </summary>
+    public bool SteamRelaySkipInjection { get; set; }
 
     public static NamiConfig Load(string directory)
     {
@@ -72,7 +85,8 @@ public sealed class NamiConfig
         var json = JsonSerializer.Serialize(this, new JsonSerializerOptions
         {
             WriteIndented = true,
-            DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingDefault
+            DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingDefault,
+            PropertyNamingPolicy = JsonNamingPolicy.CamelCase
         });
         File.WriteAllText(path, json);
     }

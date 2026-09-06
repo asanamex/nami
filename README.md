@@ -4,13 +4,15 @@
 faster, lighter, and safer than the established loaders, with a clean-slate API and no
 dependency on BepInEx, HarmonyX, MonoMod, or Mono.Cecil.
 
-> **Status: load + patch + bridge + typed game access all working in a real game.** The native
-> core hosts .NET 10 inside Project Hardline (Unity 2022.3.27f1 Mono); Wave patches methods
-> with in-house x64 detours; **Tide** lets mods call into the game — typed static/instance
-> field & property access, typed method calls, and live object creation/calls, all executed on
-> the game's main thread and verified stable in-game. Enable with `"enableMonoBridge": true` in
-> `nami.json`. Remaining for "pick-up modding": packaging/templates/install tooling and a few
-> documented edges (see docs).
+> **Status: load + patch + bridge + typed game access all working in real games.** The native
+> core hosts .NET 10 inside four Unity Mono games — Project Hardline (2022.3.27f1),
+> Parasocial (2022.3.5f1), ROUNDS (2022.3.34f1), and The Gaspy Color War (Unity 6,
+> 6000.5.4f1); Wave patches methods
+> with in-house x64 detours and Harmony-style IL-copy prefix/postfix patching (any signature);
+> **Tide** lets mods call into the game — typed static/instance field access, typed method
+> calls, and live object creation/calls, all executed on the game's main thread and verified
+> stable in-game. Enable with `"enableMonoBridge": true` in `nami.json`. Remaining for
+> "pick-up modding": packaging/templates/install tooling and a few documented edges (see docs).
 
 ## Getting started
 
@@ -31,7 +33,8 @@ dependency on BepInEx, HarmonyX, MonoMod, or Mono.Cecil.
 - **No player-side generation.** Interop/reference dumping is an offline dev tool, never a
   first-launch cost.
 - **Per-mod isolation & crash quarantine.** A throwing mod disables itself; the game keeps
-  running. Mods can be hot-reloaded.
+  running. Mods can be hot-reloaded (collectible ALCs are the foundation; the reload tooling
+  is a later milestone).
 - **Measured.** A benchmark harness compares startup delta and memory overhead against
   BepInEx/MelonLoader on identical fixtures, gating every milestone.
 
@@ -64,11 +67,16 @@ cmake --build native/build
 
 # 2. Stage a nami root next to the game (see docs/architecture.md for the layout):
 #    <game>/nami/{dotnet/, Nami.Runtime.dll, Nami.Core.dll, Nami.Sdk.dll,
-#                 Nami.Tide.dll, native/nami_loader.dll, mods/*.dll,
+#                 Nami.Tide.dll, native/nami_boot.exe + nami_loader.dll, mods/*.dll,
 #                 Nami.Runtime.runtimeconfig.json}
 
 # 3. Inject (launches the game suspended, hosts .NET 10 inside it, loads mods)
 native/build/nami_boot.exe "<game>\Game.exe" "<game>\nami\native\nami_loader.dll"
+
+# ...or, once Nami.Cli is built, let the CLI do it:
+nami launch set Game.exe --steam-id <appid> "<game>"
+nami launch                # runs the game with Nami (auto-detects the exe when unset)
+nami create                # leaves launchNami.exe in <game>/nami for double-click runs
 
 # 4. Watch the loader boot
 type "<game>\nami\nami.log"
@@ -95,20 +103,29 @@ dotnet run --project bench/Nami.Bench -c Release   # headline loader benchmark
 ## CLI
 
 ```
-nami version     print version
-nami doctor      verify an install / report the environment
-nami list        list installed mods and their state
+nami version                        print version
+nami install [gameDir]              stage a Nami root next to a game (roadmap stub)
+nami launch set <game.exe> [--steam-id <appid>] [--force] [gameDir]
+                                    remember which executable is the game
+nami launch [offline|steam] [gameDir]
+                                    run the game with Nami injected (offline, default);
+                                    steam relays to a clean Steam session after exit
+nami create [offline|steam] [gameDir]
+                                    write launchNami.exe + run-with-nami.bat into the nami root
+nami doctor [gameDir]               verify an install / report the environment
+nami list [gameDir]                 list installed mods and their state
 ```
 
-*(install/run/profiles/log-tail/hot-reload/interop/bench arrive with later milestones.)*
+*(`launch` auto-detects the game as the largest `.exe` when none is set. install-with-
+bundled-runtime, profiles/log-tail/hot-reload/interop/bench arrive with later milestones.)*
 
 ## Milestones
 
 See `docs/plan.md` for the full blueprint. Short version: **M0** scaffold & proof of life ·
-**M1** core framework (load order, isolation, quarantine, config, logging) · **M2** Wave
-patching engine + Tide bridge + typed game access · **M3** IL2CPP bridge + offline interop ·
-**M4** packaging/templates/install tooling, hot reload, profiling · **M5** perf hardening +
-comparative bench gates.
+**M1** core framework (load order, isolation, quarantine, config, logging) · **M2** Tide
+bridge + typed game access (M2.5: Wave patching engine) · **M3** dev experience
+(packaging/templates/install) · **M4** IL2CPP bridge + offline interop · **M5** depth
+(hot reload, profiling, comparative bench gates).
 
 ## License
 

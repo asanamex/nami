@@ -28,7 +28,7 @@ marketing sheet.
 | BCL available to plugins | Whatever the game's Mono provides (no `Span`-heavy modern APIs by default, old GC, no modern `AssemblyLoadContext` semantics). | Full modern .NET 10 BCL: current GC/JIT, `Span<T>`, `async`, source generators, `System.Text.Json`, etc. |
 | Runtime for IL2CPP games | Bundles a **.NET 6 CoreCLR** (BepInEx 6) alongside the game's native IL2CPP; plugins run on that. | Planned: the same CoreCLR hosting machinery as Mono, so plugin code and tooling are identical across both backends. |
 | GC coexistence | Mono games: plugins share the game's Boehm GC. IL2CPP: separate CoreCLR GC in-process. | Separate CoreCLR GC in-process in both cases. Mono-game plugin code never allocates in the game's GC. |
-| Calling game code from a plugin | Mono games: trivial — plugin IL runs in the game runtime, so it can call any game method directly. IL2CPP: via generated interop. | Mono games: **Tide** — plugin code runs on Nami's .NET and calls INTO the game's Mono via a main-thread bridge with **typed access** (`GameClass`/`GameObject`: static + instance fields/properties, typed method calls, object creation; verified in-game). Still narrower than in-runtime calls: no scene-object discovery helpers or enum/array values yet, and some Unity internal-call properties are a known edge. |
+| Calling game code from a plugin | Mono games: trivial — plugin IL runs in the game runtime, so it can call any game method directly. IL2CPP: via generated interop. | Mono games: **Tide** — plugin code runs on Nami's .NET and calls INTO the game's Mono via a main-thread bridge with **typed access** (`GameClass`/`GameObject`: static + instance field access, typed method calls with primitive/string args, object creation; verified in-game). Still narrower than in-runtime calls: no scene-object discovery helpers or enum/array values yet, and some Unity internal-call properties are a known edge. |
 
 ## 3. Plugin isolation & failure handling
 
@@ -76,14 +76,14 @@ marketing sheet.
 | Aspect | BepInEx | Nami |
 |---|---|---|
 | Mod distribution | Loose DLL in `BepInEx/plugins` (plus `patchers/`). | Loose DLL in `nami/mods` today; `.nmod` package format (id, semver, deps, game bounds) is planned. |
-| CLI / dev tooling | No first-party CLI for install/inspect (community tools exist). | `nami` CLI (version/doctor/list now; install/profiles/log tail/hot reload/interop dump/bench planned). |
+| CLI / dev tooling | No first-party CLI for install/inspect (community tools exist). | `nami` CLI: version/doctor/list + a player-facing launcher flow — `launch set <game.exe>`, `launch [offline|steam]` (auto-detects the exe; Steam relay to a clean session after exit), `create` (double-click `launchNami.exe` in the nami root). Self-contained `nami install` (bundled runtime) is planned. |
 | Benchmarking | None shipped. | `bench/` harness from M0; comparative gates vs BepInEx/MelonLoader planned for M5. |
 
 ## 9. Platform & target matrix
 
 | Aspect | BepInEx | Nami |
 |---|---|---|
-| Unity Mono | Windows/Linux/macOS, x86/x64 (5.x and 6.x). | **Windows x64 verified** against Unity 2022.3.27 Mono; other OS/arch planned. |
+| Unity Mono | Windows/Linux/macOS, x86/x64 (5.x and 6.x). | **Windows x64 verified** against four Unity Mono titles spanning 2022.3 and Unity 6 (2022.3.5f1, 2022.3.27f1, 2022.3.34f1, 6000.5.4f1); other OS/arch planned. |
 | Unity IL2CPP | Windows/Linux/macOS x64 (6.x be). | Planned (same core; IL2CPP bridge milestone). |
 | Non-Unity .NET apps | Supported (NET Framework / CoreCLR launchers). | Out of scope — Unity games only. |
 | Plugin TFMs | net35/netstandard2.0 (Mono), net6.0 (IL2CPP). | net10.0 everywhere. |
@@ -109,9 +109,9 @@ marketing sheet.
 ## 12. Ecosystem & maturity (where BepInEx wins today)
 
 - **Existing mods**: BepInEx has a massive catalog; Nami's clean-slate API loads none of it (a deliberate choice).
-- **Patching**: HarmonyX's prefix/postfix/transpiler is proven and known to every modder; Nami's engine is not built yet.
+- **Patching**: HarmonyX's prefix/postfix/transpiler is proven and known to every modder; Wave implements a compatible prefix/postfix core, but without HarmonyX's years of edge-case coverage or its transpiler ecosystem.
 - **Documentation & community knowledge**: BepInEx is the default answer; Nami is new.
-- **Edge-case hardening**: BepInEx has years of real-world coverage across thousands of games; Nami has one verified game.
+- **Edge-case hardening**: BepInEx has years of real-world coverage across thousands of games; Nami has four verified games (three Unity 2022.3 Mono, one Unity 6 Mono).
 
 ## Summary
 
@@ -123,9 +123,10 @@ The differences reduce to one architectural bet:
   DLLs in the game root, player-side IL2CPP generation, an old BCL for Mono plugins.
 - **Nami** maximizes isolation and modernity: it brings its own runtime and runs plugins there,
   never touches game assemblies, contains each plugin in an unloadable ALC, quarantines
-  failures, and keeps the game folder pristine — at the cost of not loading existing mods, not
-  yet having patching, and carrying the overhead of a second runtime.
+  failures, and keeps the game folder pristine — at the cost of not loading existing mods, a
+  patcher that is young (Wave) rather than ecosystem-proven, and the overhead of a second
+  runtime.
 
-The long-term bet of Nami is that those costs shrink as the missing pieces land (bridge,
-patcher, packaging), while BepInEx's costs (runtime coupling, generation on the player's
+The long-term bet of Nami is that those costs shrink as the missing pieces land (packaging,
+projection, hot reload), while BepInEx's costs (runtime coupling, generation on the player's
 machine, metadata churn chasing, EOL .NET 6) are structural and only grow as Unity moves on.

@@ -30,7 +30,8 @@ architectural gap.
 
 BepInEx installs a `winhttp.dll` proxy + `doorstop_config.ini` into the game root and
 overrides Unity's DLL resolution. Nami's `nami_boot.exe` launches the game and injects a
-loader — the game folder itself stays **pristine** (everything lives under `nami/`).
+loader (a remote thread calls `LoadLibraryW` on `nami_loader.dll`) — the game folder itself
+stays **pristine** (everything lives under `nami/`).
 
 ### 4. No runtime interop generation on the player's machine
 
@@ -46,10 +47,10 @@ shipped — it is the architectural target.)*
 | Unity Mono modding | mature | **works end-to-end** (load, patch, typed game access) |
 | Unity IL2CPP modding | mature | next milestone |
 | Harmony-style method patching | yes (HarmonyX) | **Wave** — in-house detours + IL-copy patching: prefix/postfix, skip, `__instance`/`__result`/`__state`, any signature |
-| Calling game code from mods | yes (in-process) | **Tide** — typed static/instance fields, methods, object creation (opt-in) |
+| Calling game code from mods | yes (in-process) | **Tide** — typed static/instance field access, typed calls, object creation (opt-in) |
 | Ecosystem / existing mods | huge | zero (clean-slate API) |
 | Years of edge-case hardening | yes | no — expect bugs |
-| Packaging / templates / installer | mature | next milestone |
+| Packaging / templates / installer | mature | next milestone (`nami launch`/`create` player flow already in) |
 
 ## The bet
 

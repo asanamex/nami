@@ -9,7 +9,31 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <InternalsVisibleTo Include="Nami.Cli.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\Nami.Core\Nami.Core.csproj" />
   </ItemGroup>
+
+  <ItemGroup>
+    <!-- The launcher shim (launchNami.exe) is embedded so `nami create` can self-extract it.
+         It is built via the PublishLaunchShim target below; a ProjectReference would be
+         rejected because the shim is self-contained. -->
+    <None Include="..\..\tools\launch-shim\bin\$(Configuration)\net10.0\win-x64\publish\launchNami.exe"
+          Condition="Exists('..\..\tools\launch-shim\bin\$(Configuration)\net10.0\win-x64\publish\launchNami.exe')"
+          Link="launchNami.published.exe"
+          CopyToOutputDirectory="PreserveNewest" />
+    <EmbeddedResource Include="..\..\tools\launch-shim\bin\$(Configuration)\net10.0\win-x64\publish\launchNami.exe"
+                      LogicalName="Nami.Cli.launchNami.exe"
+                      Condition="Exists('..\..\tools\launch-shim\bin\$(Configuration)\net10.0\win-x64\publish\launchNami.exe')" />
+  </ItemGroup>
+
+  <!-- Ensure the self-contained single-file publish runs before Nami.Cli compiles/embeds. -->
+  <Target Name="PublishLaunchShim" BeforeTargets="PrepareForBuild">
+    <MSBuild Projects="..\..\tools\launch-shim\launch-shim.csproj"
+             Targets="Publish"
+             Properties="Configuration=$(Configuration)" />
+  </Target>
 
 </Project>

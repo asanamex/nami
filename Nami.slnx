@@ -17,11 +17,15 @@
   <Folder Name="/tests/">
     <Project Path="tests/Nami.Tests/Nami.Tests.csproj" />
     <Project Path="tests/Nami.Wave.Tests/Nami.Wave.Tests.csproj" />
+    <Project Path="tests/Nami.Cli.Tests/Nami.Cli.Tests.csproj" />
   </Folder>
   <Folder Name="/tests/fixtures/">
     <Project Path="tests/fixtures/Alpha/Alpha.csproj" />
     <Project Path="tests/fixtures/Bad/Bad.csproj" />
     <Project Path="tests/fixtures/Beta/Beta.csproj" />
     <Project Path="tests/fixtures/Gamma/Gamma.csproj" />
+  </Folder>
+  <Folder Name="/tools/">
+    <Project Path="tools/launch-shim/launch-shim.csproj" />
   </Folder>
 </Solution>

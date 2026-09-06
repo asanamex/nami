@@ -6,8 +6,8 @@ methods and routes calls through **owner-scoped chains of prefix/postfix callbac
 
 ```
 src/Nami.Wave/           the engine
-  Wave.cs                M1 public API: Wave.Hook / Unhook / UnhookAll / IsHooked
-  Wave.Patch.cs          M2 public API: Wave.Patch / Unpatch / UnpatchAll / IsPatched
+  Wave.cs                M1 public API: Wave.Hook / Unhook / UnhookAll / IsHooked / UnhookEverything
+  Wave.Patch.cs          M2 public API: Wave.Patch / Unpatch / UnpatchAll / IsPatched / UnpatchEverything
   Internal/Detour.cs     one inline detour: prologue decode → trampoline → patch → restore
   Internal/X64Decoder.cs conservative x64 instruction-length decoder (relocation-safe)
   Internal/RawMemory.cs  W^X virtual-memory helpers (VirtualAlloc/VirtualProtect)
@@ -15,8 +15,9 @@ src/Nami.Wave/           the engine
   Internal/IlReader.cs   raw IL decoder (opcodes, operands, branch targets, EH tables)
   Internal/IlRewriter.cs re-emitter: original IL → generated assembly method (IL copy)
   Internal/PatchedBodyBuilder.cs  prefix/postfix convention binder + ret-rewriting injector
-tests/Nami.Wave.Tests/   38 tests (Release): M1 + M2 semantics, IL-copy fidelity, restore
-bench/Wave.Bench/        hooked-call overhead benchmark
+tests/Nami.Wave.Tests/   38 [Fact] + 1 [Theory] (2 rows) in Release: M1 + M2 semantics,
+                         IL-copy fidelity, restore (the deep M2 suite is #if DEBUG)
+bench/Wave.Bench/        hooked-call overhead benchmark (1M calls)
 ```
 
 ## What it does
@@ -34,7 +35,6 @@ Wave.Hook(method, owner: "my.mod.id", gate: () => !enabled);
 
 // Multiple owners chain on one method; newest runs first (LIFO).
 // Any gate returning true skips the original for the whole chain.
-
 Wave.Unhook(method, "my.mod.id");     // one target
 Wave.UnhookAll("my.mod.id");          // every target you hooked
 ```
@@ -56,7 +56,6 @@ Semantics (documented contract):
 Wave.Patch(takeDamage, owner: "my.mod.id",
     prefix:  (Player __instance, int amount, out object __state) => { Log($"hit for {amount}"); },
     postfix: (ref object __state, ref int __result) => { __result = Math.Min(__result, 1); });
-
 // Return false from a bool prefix to SKIP the original body:
 Wave.Patch(method, "my.mod.id", prefix: () => !modEnabled);
 
@@ -68,17 +67,18 @@ Conventions are resolved from the hook delegate's parameter names:
 | Parameter | Meaning |
 |---|---|
 | `Player __instance` | the receiver (instance targets) |
-| `int amount` | any parameter matched by name to the target's parameters |
-| `ref int __result` | the return value; `ref` lets a postfix rewrite it |
-| `out object __state` / `ref object __state` | per-call state threaded prefix → postfix |
-| `object[] __args` | all arguments (including `this`) as an array |
+| `int amount` | any target parameter matched by name — **by value only** (`ref` hook params are refused) |
+| `ref int __result` / `int __result` | the return value; `ref` lets a postfix rewrite it (postfix only) |
+| `out object __state` / `ref object __state` | per-call state threaded prefix → postfix; must be `object` by ref |
+| `object[] __args` | all arguments (including `this`) as an array — allocates an `object[]` + boxes per call, so use it sparingly |
 | prefix returns `bool` | `false` → the original body is skipped (postfixes still run) |
 | prefix returns `void` | original always runs |
 | postfix returns `void` | always runs — also when the original was skipped |
 
-Multiple owners patch the same method; prefixes run newest-first, postfixes unwind oldest
-last. `Wave.Unpatch(method, owner)` removes one owner and atomically rebuilds the patched
-body for the rest; unpatching the last owner restores the original bytes exactly.
+Multiple owners patch the same method; prefixes run oldest-first (in hook order), postfixes
+unwind newest-first — the chain runs in, then unwinds out in reverse. `Wave.Unpatch(method,
+owner)` removes one owner and atomically rebuilds the patched body for the rest; unpatching the
+last owner restores the original bytes exactly.
 
 ## How it works
 
@@ -148,7 +148,9 @@ restored after unhook    : ~21 ns/call   (exact restore)
 
 The M1 hooked path is: detour jump → stub → one managed dispatch → callback(s) → tail-jump
 → original. No allocations on the hot path. M2's patched body runs the original instructions
-inline plus one managed delegate call per hook — the same order of cost, no marshaling.
+inline plus one managed delegate call per hook — no marshaling on the hot path. (The M2
+*call* path itself allocates nothing; only declaring `__args`, or writing `__state`, allocates
+per call.)
 
 ## Scope & honest limitations
 
@@ -157,7 +159,9 @@ inline plus one managed delegate call per hook — the same order of cost, no ma
 - **M2 targets**: any closed non-generic method with a real body — static or instance, any
   return type, methods with exception handlers, multiple returns, and recursion are all
   handled. Struct instance methods, `calli` bodies and filter-style exception clauses are
-  refused loudly.
+  refused loudly. Hook parameters bound to the target's parameters are **by-value only**
+  (`ref`/`out` bindings throw `NotSupportedException`); `__instance`, `__result` and
+  `__state` are the only by-ref convention parameters.
 - **Platform**: Windows x64. The decoder/detour are x64-specific by design.
 - **Code shape**: Wave targets optimized (Release) JIT output — the code games ship. Debug
   builds may emit prologues the conservative decoder refuses; it throws rather than corrupts.
@@ -172,8 +176,8 @@ inline plus one managed delegate call per hook — the same order of cost, no ma
 
 - Zero third-party dependency: no Cecil IL-weaving at patch time, no MonoMod.
 - Owner-scoped chain and exact byte restore are first-class (not bolted on).
-- The detour, decode and dispatch are ~600 lines you can read; the IL copy layer is another
-  ~700 with a conservative refusal policy instead of a dependency.
+- The detour + decoder + dispatch core is ~1,000 lines you can read; the IL-copy layer is
+  another ~1,000 with a conservative refusal policy instead of a dependency.
 - HarmonyX's model is IL-copy patching with delegate-based prefixes/postfixes; Wave now
   implements the same model on its own detour core, with the same `__instance`/`__result`/
   `__state`/`__args` conventions.

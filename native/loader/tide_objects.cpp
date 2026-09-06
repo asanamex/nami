@@ -110,9 +110,17 @@ void resolve_api() {
     g_api.mono_free = reinterpret_cast<decltype(g_api.mono_free)>(GetProcAddress(mono, "mono_free"));
     LOAD(field_get_value_object);
     LOAD(field_set_value);
-    LOAD(gchandle_new);
-    LOAD(gchandle_get_target);
-    LOAD(gchandle_free);
+    // GCHandle APIs: use the *_v2 variants. Unity's newer Mono (Unity 6) stores handles as
+    // 64-bit encoded pointers into a page table that can live ABOVE 4 GB; the legacy
+    // mono_gchandle_* entry points truncate the handle to 32 bits (mov %ecx) and fault on
+    // such handles. The _v2 variants are full-64-bit and are exported by both old and new
+    // Unity Mono builds.
+    g_api.gchandle_new = reinterpret_cast<decltype(g_api.gchandle_new)>(
+        GetProcAddress(mono, "mono_gchandle_new_v2"));
+    g_api.gchandle_get_target = reinterpret_cast<decltype(g_api.gchandle_get_target)>(
+        GetProcAddress(mono, "mono_gchandle_get_target_v2"));
+    g_api.gchandle_free = reinterpret_cast<decltype(g_api.gchandle_free)>(
+        GetProcAddress(mono, "mono_gchandle_free_v2"));
     LOAD(object_unbox);
     LOAD(object_get_class);
     LOAD(object_new);
@@ -314,7 +322,6 @@ void handle_store_release(int64_t handle) {
     }
     g_api.gchandle_free(reinterpret_cast<void*>(handle));
 }
-
 // ---------------------------------------------------------------------------
 
 int tide_object_op(void* arg) {

@@ -101,31 +101,41 @@ self-test. You should see in `nami.log`:
 ```
 
 > **Why opt-in?** The bridge runs native code that patches a live game export. It is proven
-> on Unity 2022.3 Mono (Windows x64); until more games/versions are verified, it stays behind
-> an explicit flag so a bad interaction can never silently affect a game that didn't ask
-> for it.
+> on Unity Mono (Windows x64) across four titles spanning 2022.3 and Unity 6 (2022.3.5f1,
+> 2022.3.27f1, 2022.3.34f1, 6000.5.4f1); until more games/versions are verified, it stays
+> behind an explicit flag so a bad interaction can never silently affect a game that didn't
+> ask for it.
 
 ---
 
 ## 4. Verified evidence (in-game)
 
-Unity 2022.3.27f1 (Mono), Project Hardline, launched via `nami_boot`:
+Four Unity Mono titles launched via `nami_boot` — Project Hardline (2022.3.27f1), Parasocial
+(2022.3.5f1, a Chilla's Art title), ROUNDS (2022.3.34f1), and The Gaspy Color War (Unity 6 /
+6000.5.4f1). Representative `nami.log` from Parasocial:
 
 ```
-[tide] resolved root=... name_new=... loaded=... class=... invoke=...
-[tide] tide op: Debug.Log executed OK
 [boot] Tide bridge OK: Unity Debug.Log executed on the game main thread
 [chainloader] Loaded dev.nami.samples.hello 0.1.0 (HelloNami.dll)
-[boot] chainloader activated: 1 plugin(s) loaded
+[chainloader] Loaded dev.nami.samples.tideprobe 0.1.0 (TideProbe.dll)
+[dev.nami.samples.tideprobe] typed Debug.Log(string) call OK
+[dev.nami.samples.tideprobe] typed Debug.Log(int) call OK (primitive arg marshaled)
+[dev.nami.samples.tideprobe] created GameObject instance (handle=7640)
+[dev.nami.samples.tideprobe] GameObject.GetInstanceID() = 0
+[dev.nami.samples.tideprobe] TideProbe verification complete
 [dev.nami.samples.hello] HelloNami update tick 120  (running on .NET 10.0.10)
-[dev.nami.samples.hello] HelloNami update tick 240
 ... (ticks continuously)
-game alive and stable (~364 MB) for 35s+ with the hook installed
+game alive and stable (~1.2 GB) with the hook installed
 ```
 
 `UnityEngine.Debug.Log("hello from Nami's .NET runtime via Tide")` executed on the game's
 Mono main thread from Nami's .NET 10, with the game stable and the mod's update loop running
 throughout. Native diagnostics land in `<game>/nami/native/nami-tide.log`.
+
+The same `nami.log` sequence (bridge OK → typed string/int Log → `new GameObject` →
+`GetInstanceID` → `TideProbe verification complete`) was observed on all four titles. Unity 6
+(The Gaspy Color War) initially crashed at the `GetInstanceID` handle-resolve step — see the
+GCHandle ABI note in §6 — and has passed every run since the fix.
 
 ---
 
@@ -142,17 +152,20 @@ using Nami;   // Tide, GameClass, GameObject, TideValue
 |---|---|
 | `bool Tide.IsAvailable` | True when `nami_loader.dll` is loaded (i.e. running in-game under Nami). False in plain unit tests / outside a game. |
 | `bool Tide.UnityLog(string message)` | Calls `UnityEngine.Debug.Log(object)` on the game main thread. |
+| `bool Tide.InvokeStatic(assembly, ns, name, method)` | Calls a **parameterless** static game method on the main thread; true if it ran without a Mono exception. |
 | `GameClass GameClass.Resolve(assembly, ns, name)` | Resolve a game class once by assembly (with or without `.dll`). |
-| `T GetStatic<T>(field)` / `SetStatic<T>(field, value)` | Typed static **field or property** read/write (`GetStaticInt/Float/Bool/String...`, `SetStatic...`). Properties (e.g. `Time.timeScale`) are resolved automatically when no field matches. |
-| `CallStatic(method, args...)` / `CallStaticValue(...)` | Call a static method with typed args; returns a `TideValue`. |
-| `GameObject.NewObject()` | Create a new instance of the class (runs the parameterless ctor). |
-| `GameObject` | Opaque handle to a live game object. `Call(...)` instance methods, `GetInt/GetFloat/GetString/...` and `SetInt/...` instance fields/properties, `Dispose()` frees the handle. |
+| `GetStaticInt/Float/Bool/...` / `SetStatic...` | Typed static **field** read/write (`GetStaticInt/Long/Float/Double/Bool/String`, `SetStatic...`). |
+| `CallStatic(method, args...)` | Call a static method with typed args; returns `void`. |
+| `CallStaticValue(method, args, returnType)` | Like `CallStatic` but returns a `TideValue`; pass the expected `TideType`. |
+| `GameObject GameClass.NewObject()` | Create a new instance of the class (runs the parameterless ctor). |
+| `GameObject` | Opaque handle to a live game object. `Call(...)` / `CallIntMethod` instance methods, `GetInt/GetFloat/GetString/...` and `SetInt/...` instance fields, `Dispose()` frees the handle. |
 | `TideValue` | A typed value: `TideValue.FromInt/FromLong/FromFloat/FromDouble/FromBool/FromString/FromHandle`. |
 
 **Blocking semantics**: every call blocks until the game's main thread has executed it (safe:
-the main thread is always pumping through `mono_runtime_invoke`). String **arguments** are
-freed automatically after the call; string **returns** must be copied before the next call
-(the getter frees them for you).
+the main thread is always pumping through `mono_runtime_invoke`). String **arguments** travel
+in caller-allocated UTF-8 buffers that the managed side frees after the call
+(`FromString`/`FreeStringBuffer`); string **returns** are native buffers (`mono_string_to_utf8`)
+you must copy and free with `TideValue.FreeNativeReturn()` before the next call.
 
 **Failure**: ops that cannot resolve the assembly/class/member throw `TideException`; methods
 that throw a Mono exception return a failure code. Details are logged to `nami-tide.log`.
@@ -171,7 +184,7 @@ public sealed class GreeterPlugin : NamiPlugin
     {
         if (!Tide.IsAvailable) return;
 
-        // Static property read/write (Unity property, auto-resolved):
+        // Static field read/write:
         var time = GameClass.Resolve("UnityEngine.CoreModule", "UnityEngine", "Time");
         float scale = time.GetStaticFloat("timeScale");
         time.SetStaticFloat("timeScale", 0.5f);   // slow motion!
@@ -222,11 +235,18 @@ share one instance.
 - `CallRequest` / `TideValue` (see `tide_abi.h`): one op entry (`nami_tide_object_op`) with
   sub-ops for field/property get/set, static/instance invoke, new-object and handle free.
 - **Object handles**: objects cross the boundary as opaque 64-bit handles backed by Mono
-  GCHandles (`mono_gchandle_new` pinned). CoreCLR never holds raw MonoObject pointers; the
-  game GC keeps handled objects alive.
-- **Values**: typed 16-byte slots (`TideValue`) — i32/i64/r4/r8/bool/string/object. Strings
-  travel as caller-owned UTF-8 buffers read on the main thread; string returns are
-  `mono_string_to_utf8` buffers the managed side frees via `nami_tide_free`.
+  GCHandles (pinned via `mono_gchandle_new_v2`). CoreCLR never holds raw MonoObject pointers;
+  the game GC keeps handled objects alive.
+  - **GCHandle ABI note**: Tide uses the `mono_gchandle_*_v2` variants, not the legacy
+    `mono_gchandle_*` entry points. Newer Unity Mono (Unity 6) stores handles as 64-bit
+    encoded pointers into a page table that can live **above 4 GB**; the legacy entry points
+    truncate the handle to its low 32 bits (`mov %ecx`) and fault on such handles (observed as
+    an AV inside `mono_gchandle_get_target` at boot on Unity 6). The `_v2` variants are
+    full-64-bit and are exported by both old (2022.3) and new (Unity 6) Mono builds.
+- **Values**: typed slots (`TideValue`) — a 4-byte tag plus a 16-byte payload union
+  (i32/i64/r4/r8/bool/string/object). Strings travel as caller-owned UTF-8 buffers read on the
+  main thread; string returns are `mono_string_to_utf8` buffers the managed side frees via
+  `nami_tide_free`.
 - **Hierarchy-aware member lookup**: `mono_class_get_method_from_name`/`field` only search
   the class itself, so inherited members (e.g. `GameObject.GetInstanceID` on
   `UnityEngine.Object`) were missed; Tide walks `mono_class_get_parent` up the chain.
@@ -235,8 +255,8 @@ share one instance.
 
 ### Managed (`Nami.Tide` assembly, `Nami` namespace)
 
-- `Tide` — availability + `UnityLog`.
-- `GameClass` — resolve a class, typed static field/property access, static calls,
+- `Tide` — availability, `UnityLog`, `InvokeStatic` (parameterless static calls).
+- `GameClass` — resolve a class, typed static field access, static calls,
   `NewObject`.
 - `GameObject` — opaque handle; typed instance field/property access, instance method calls,
   `Dispose` (frees the handle).
@@ -252,30 +272,31 @@ share one instance.
 |---|---|
 | `Tide unavailable: nami_loader not loaded` | Not running in a Nami-injected game process (e.g. unit test, or game launched without `nami_boot`). |
 | `Tide bridge present but UnityLog failed` | See `nami-tide.log`. Common: assembly not found under that name (Tide tries common variants) or a Mono exception in `Debug.Log`. |
-| Game crashes on boot with the bridge on | The `mono_runtime_invoke` detour refused the prologue, or the game's Mono differs from 2022.3. Turn the bridge off (`"enableMonoBridge": false`), confirm the game runs, and report the `nami-tide.log`. |
+| Game crashes on boot with the bridge on | The `mono_runtime_invoke` detour refused the prologue, or the game's Mono differs from the verified set (2022.3.x, 6000.x). Turn the bridge off (`"enableMonoBridge": false`), confirm the game runs, and report the `nami-tide.log`. |
 | `TideException: op ... failed (code -1)` | Member not found (check assembly/class/member names, case, arity) or an unsupported value type. Codes are logged in `nami-tide.log`. |
-| Reading a Unity property (e.g. `Time.timeScale`) crashes UnityPlayer | Unity *internal-call* property getters can crash when invoked from a nested `runtime_invoke` (inside the drain hook). Use fields or plain managed methods where possible; this is a known edge (see §8). |
+| Reading a Unity property crashes UnityPlayer | Unity *internal-call* property getters (e.g. `Time.timeScale`) can crash when invoked from a nested `runtime_invoke` (inside the drain hook). Use fields or plain managed methods where possible; this is a known edge (see §8). |
 
 ---
 
 ## 8. Scope & roadmap
 
-**Current (verified in-game, Unity 2022.3.27f1 Mono / Project Hardline):**
+**Current (verified in-game on Unity Mono 2022.3.5f1 / 2022.3.27f1 / 2022.3.34f1 and
+Unity 6 / 6000.5.4f1):**
 - Windows x64; opt-in via `enableMonoBridge`.
-- Typed static **field/property** read/write (int/long/float/double/bool/string).
+- Typed static **field** read/write (int/long/float/double/bool/string).
 - Typed static method calls with primitive and string arguments.
 - **Object creation** (`new GameObject()`) and **instance method calls with typed returns**
   (`GetInstanceID()`), via GC-handle-backed object handles.
 - `UnityLog`.
 
-In-game evidence (`nami.log`):
+In-game evidence (`nami.log`, Parasocial / Unity 2022.3.5f1):
 ```
 typed Debug.Log(string) call OK
 typed Debug.Log(int) call OK (primitive arg marshaled)
-created GameObject instance (handle=7688)
+created GameObject instance (handle=7640)
 GameObject.GetInstanceID() = 0
 TideProbe verification complete
-game alive and stable (~379 MB)
+game alive and stable (~1.2 GB)
 ```
 
 **Known edge:** Unity internal-call property getters invoked from the drain's nested

@@ -36,7 +36,7 @@ Artifacts you need:
 | `nami_boot.exe` | `native/build/` | launches the game and injects Nami |
 | `nami_loader.dll` | `native/build/` | injected into the game; hosts .NET |
 | `Nami.Runtime.dll` (+ `.deps.json`, `.runtimeconfig.json`) | `src/Nami.Runtime/bin/Release/net10.0/` | managed in-game bootstrap |
-| `Nami.Core.dll`, `Nami.Sdk.dll` | same output dir | loader core + plugin API |
+| `Nami.Core.dll`, `Nami.Sdk.dll`, `Nami.Tide.dll` | same output dir | loader core + plugin API + game bridge |
 
 ## 3. Stage a Nami root next to the game
 
@@ -50,12 +50,14 @@ set NAMI=C:\path\to\nami\src\Nami.Runtime\bin\Release\net10.0
 mkdir "%GAME%\nami\native"
 mkdir "%GAME%\nami\mods"
 
+copy native\build\nami_boot.exe   "%GAME%\nami\native\"
 copy native\build\nami_loader.dll  "%GAME%\nami\native\"
 copy "%NAMI%\Nami.Runtime.dll"       "%GAME%\nami\"
 copy "%NAMI%\Nami.Runtime.deps.json" "%GAME%\nami\"
 copy "%NAMI%\Nami.Runtime.runtimeconfig.json" "%GAME%\nami\"
 copy "%NAMI%\Nami.Core.dll" "%GAME%\nami\"
 copy "%NAMI%\Nami.Sdk.dll"  "%GAME%\nami\"
+copy "%NAMI%\Nami.Tide.dll" "%GAME%\nami\"
 ```
 
 Nami hosts its own .NET runtime, so copy a runtime next to it:
@@ -76,9 +78,10 @@ Resulting layout:
     ├── Nami.Runtime.dll / .deps.json / .runtimeconfig.json
     ├── Nami.Core.dll
     ├── Nami.Sdk.dll
-    ├── native/nami_loader.dll
+    ├── Nami.Tide.dll
+    ├── native/nami_boot.exe + nami_loader.dll
     ├── mods/            ← drop your mod DLLs here
-    └── nami.json        ← optional config (created on first run)
+    └── nami.json        ← optional config (defaults are used when absent)
 ```
 
 ## 4. Write a mod
@@ -116,7 +119,7 @@ public sealed class MyMod : NamiPlugin
 
     public override void OnUpdate()
     {
-        // called ~60x/second while the mod is active
+        // called roughly every 16 ms while the mod is active
     }
 }
 ```
@@ -192,12 +195,16 @@ Expected output:
 [boot]        chainloader activated: 1 plugin(s) loaded
 ```
 
+(With `"enableMonoBridge": true`, the log also shows `[boot] Tide bridge OK: Unity Debug.Log
+executed on the game main thread` before the chainloader lines.)
+
 If a mod misbehaves (throws repeatedly in `OnUpdate`), Nami **quarantines** it — disables it,
 calls `OnUnload`, logs the reason, and the game keeps running.
 
 ## 6. Configuration (`nami.json`)
 
-Optional file in the nami root. Created with defaults on first boot if absent.
+Optional file in the nami root. If it is absent (or unreadable), Nami boots with defaults; it
+is not auto-created. Keys are written camelCase and read case-insensitively.
 
 ```json
 {
@@ -212,8 +219,8 @@ Optional file in the nami root. Created with defaults on first boot if absent.
 - `enabledPlugins`: only these load (empty = all).
 - `enableMonoBridge`: enables **Tide** — the bridge that lets mods call into the game's Mono
   runtime (every call runs safely on the game's main thread). Off by default because it
-  patches a live game export and is verified on Unity 2022.3 Mono so far; see
-  [docs/tide.md](docs/tide.md).
+  patches a live game export and is verified on Unity Mono across four titles so far (2022.3
+  and Unity 6); see [docs/tide.md](docs/tide.md).
 
 ## 7. The sample mod
 
@@ -224,15 +231,31 @@ dotnet build samples/HelloNami -c Release
 copy samples\HelloNami\bin\Release\net10.0\HelloNami.dll "%GAME%\nami\mods\"
 ```
 
-It logs once on load and every ~120 update ticks.
+It logs once on load (`HelloNami loaded inside the Nami CoreCLR runtime!`) and then every
+~120 update ticks.
 
 ## 8. CLI
 
 ```
-nami version              print version
-nami doctor [gameDir]     check a Nami install
-nami list   [gameDir]     list installed mods
+nami version                        print version
+nami install [gameDir]              stage a Nami root next to a game (roadmap stub)
+nami launch set <game.exe> [--steam-id <appid>] [--force] [gameDir]
+                                    remember which executable is the game
+nami launch [offline|steam] [gameDir]
+                                    run the game with Nami injected (offline, default)
+nami create [offline|steam] [gameDir]
+                                    write launchNami.exe + run-with-nami.bat into the nami root
+nami doctor [gameDir]               check a Nami install
+nami list   [gameDir]               list installed mods
 ```
+
+`nami launch` runs the game through Nami the same way `nami_boot.exe` does. When no game
+executable has been set, it auto-detects the largest `.exe` in the game folder (skipping
+known crash handlers/updaters). `nami launch steam` runs the game with Nami injected and,
+after the game exits, starts a clean unmodded session via `steam://rungameid/<appid>` (set
+the app id with `nami launch set --steam-id`; without one it falls back to offline).
+`nami create` writes `launchNami.exe` (self-contained) + `run-with-nami.bat` into the nami
+root, so the game can be started with Nami by double-clicking, without the CLI open.
 
 ## 9. Running the test suite
 
@@ -243,10 +266,13 @@ dotnet test tests/Nami.Tests
 ## 10. Known limitations
 
 - **Mono games only** — IL2CPP support is a later milestone.
-- **Tide scope**: mods can `UnityLog` and call parameterless static game methods. Reading/
-  writing game fields and calling methods with arguments (or on live objects) is the next
-  Tide milestone.
-- **Wave scope**: patching supports parameterless void methods so far.
+- **Tide scope**: mods can `UnityLog`, call parameterless static game methods, read/write
+  typed static fields, and create objects and call their methods with typed returns (all
+  primitives + strings). Still missing: enum/array values, scene-object discovery, and typed
+  instance method returns beyond `int`.
+- **Wave scope**: M1 supports parameterless void methods; **M2** (IL-copy) patches any
+  non-generic method with a real body — any signature, prefix/postfix, skip, result
+  rewriting. Windows x64 only.
 - The game must be launched via `nami_boot.exe`; Steam launch options / shortcuts can point at
   a wrapper script that calls it.
 - Do not run alongside BepInEx/Doorstop in the same game folder.

@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AssemblyName>launchNami</AssemblyName>
+    <RootNamespace>Nami.LaunchShim</RootNamespace>
+    <IsPackable>false</IsPackable>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+    <!-- Self-contained single-file: the shortcut must double-click-run with NO siblings next to
+         it (it ships inside the nami root next to a full .NET runtime, but must not depend on
+         cwd, dotnet on PATH, or its own dll/runtimeconfig being present). -->
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>true</SelfContained>
+    <PublishSingleFile>true</PublishSingleFile>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <DebugType>none</DebugType>
+  </PropertyGroup>
+
+</Project>
