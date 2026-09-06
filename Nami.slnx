@@ -1,0 +1,20 @@
+<Solution>
+  <Folder Name="/samples/">
+    <Project Path="samples/HelloNami/HelloNami.csproj" />
+  </Folder>
+  <Folder Name="/src/">
+    <Project Path="src/Nami.Cli/Nami.Cli.csproj" />
+    <Project Path="src/Nami.Core/Nami.Core.csproj" />
+    <Project Path="src/Nami.Runtime/Nami.Runtime.csproj" />
+    <Project Path="src/Nami.Sdk/Nami.Sdk.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Nami.Tests/Nami.Tests.csproj" />
+  </Folder>
+  <Folder Name="/tests/fixtures/">
+    <Project Path="tests/fixtures/Alpha/Alpha.csproj" />
+    <Project Path="tests/fixtures/Bad/Bad.csproj" />
+    <Project Path="tests/fixtures/Beta/Beta.csproj" />
+    <Project Path="tests/fixtures/Gamma/Gamma.csproj" />
+  </Folder>
+</Solution>

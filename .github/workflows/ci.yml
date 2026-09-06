@@ -1,0 +1,48 @@
+name: ci
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  managed:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Restore & build solution
+        run: dotnet build Nami.slnx -c Release
+
+      - name: Run tests
+        run: dotnet test tests/Nami.Tests/Nami.Tests.csproj -c Release --no-build
+
+  native:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup CMake + compiler
+        uses: lukka/get-cmake@latest
+        with:
+          cmakeVersion: 4.4.2
+
+      - name: Configure
+        run: cmake -S native -B native/build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build native/build
+
+      - name: Run smoke
+        run: ctest --test-dir native/build --output-on-failure

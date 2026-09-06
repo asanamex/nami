@@ -1,0 +1,39 @@
+# .NET
+bin/
+obj/
+*.user
+
+# Native build
+native/build/
+native/out/
+*.o
+*.obj
+*.a
+*.lib
+*.so
+*.dylib
+
+# Visual Studio / IDE
+.vs/
+.vscode/
+.idea/
+*.suo
+
+# Test artifacts
+TestResults/
+coverage/
+
+# Local dev fixtures (real games copied in for testing — never committed)
+fixtures-dev/
+
+# Nami runtime artifacts (generated at run time)
+*.nmod
+nami-cache/
+bench/results/
+
+# OS
+Thumbs.db
+.DS_Store
+
+# NuGet
+*.nupkg
