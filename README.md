@@ -4,16 +4,16 @@
 faster, lighter, and safer than the established loaders, with a clean-slate API and no
 dependency on BepInEx, HarmonyX, MonoMod, or Mono.Cecil.
 
-> **Status: M0 complete — Nami runs inside a real Unity game.** The native core (injector +
-> loader) hosts a bundled .NET 10 runtime inside the game process; the chainloader loads mods
-> in isolated ALCs with crash quarantine; the sample `HelloNami` mod runs its update loop
-> inside Project Hardline (Unity 2022.3.27f1, Mono) with the game stable. The experimental
-> CoreCLR→Mono reverse-interop bridge is opt-in (`enableMonoBridge` in nami.json) pending GC
-> interop hardening.
+> **Status: M0 complete + Wave patching engine.** The native core hosts .NET 10 inside a real
+> Unity game (Project Hardline); the chainloader isolates mods in ALCs with quarantine; and
+> **Wave** — Nami's in-house patching engine — installs x64 inline detours with owner-scoped
+> gate/observer chains (~45 ns/call overhead, exact byte restore, 15/15 tests). The
+> experimental CoreCLR→Mono bridge is opt-in pending GC interop hardening.
 
 ## Getting started
 
 - **[TUTORIAL.md](TUTORIAL.md)** — build Nami, stage it next to a game, write and run your first mod.
+- **[docs/wave.md](docs/wave.md)** — Wave: Nami's patching engine (inline detours, gate/observer chains, overhead numbers).
 - **[docs/technical-difference.md](docs/technical-difference.md)** — point-by-point technical comparison with BepInEx (runtime, isolation, IL2CPP, patching, more).
 - **[docs/vs-bepinex.md](docs/vs-bepinex.md)** — the short, honest "why different / what's missing" read.
 - **[docs/architecture.md](docs/architecture.md)** — how the loader, hosting and bridges fit together.
@@ -41,9 +41,9 @@ src/
   Nami.Sdk/        Public plugin API (what mods reference)
   Nami.Core/       Chainloader: discovery, graph, ALCs, quarantine
   Nami.Runtime/    In-game managed bootstrap: Boot.Run + Mono bridge (opt-in)
+  Nami.Wave/       Patching engine: x64 inline detours, gate/observer chains
   Nami.Cli/        nami command-line tool
   Nami.Projection/ Lazy game-type projection                [later milestone]
-  Nami.Patch/      Detour-based patch engine                [later milestone]
   Nami.Interop/    Offline reference-assembly dumper        [later milestone]
 samples/       HelloNami example mod
 tests/         Fixture plugins + unit/integration tests

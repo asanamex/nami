@@ -52,8 +52,8 @@ marketing sheet.
 | Aspect | BepInEx | Nami |
 |---|---|---|
 | Preloader patching | BepInEx 5-era Mono flow: `AssemblyPatcher` **rewrites game assemblies with Cecil before they load** (patcher plugins in `BepInEx/patchers`). This is why patched games can carry `.bak` assembly copies. | **None.** Nami never reads, rewrites, or re-emits a game assembly. All extension happens at runtime in Nami's own runtime. |
-| Runtime patching API | **HarmonyX** (a Harmony fork) — mature prefix/postfix/transpiler ecosystem; the de-facto standard modders know. IL2CPP patching rides on MonoMod detours / Dobby through Il2CppInterop. | **Not shipped yet.** Planned as an in-house detour engine with a HarmonyX-shaped API surface (prefix/postfix/transpiler) but lazy, unloadable and rollback-able, without taking a Harmony/MonoMod dependency. Until it lands, Nami mods cannot patch game methods — a real gap today. |
-| Dependency weight | Core ships HarmonyX + MonoMod + Mono.Cecil regardless of need. | Zero third-party managed dependencies; patching will be a loadable subsystem, not a boot-time cost. |
+| Runtime patching API | **HarmonyX** (a Harmony fork) — mature prefix/postfix/transpiler ecosystem; the de-facto standard modders know. IL2CPP patching rides on MonoMod detours / Dobby through Il2CppInterop. | **Wave** (in-house, this repo): x64 inline detours with owner-scoped gate/observer chains, exact byte restore, ~45 ns/call overhead. M1 scope is parameterless void targets; per-signature dispatch (arbitrary args/returns, Harmony-shaped `__result`-style access) is the next layer. Zero Harmony/MonoMod/Cecil. |
+| Dependency weight | Core ships HarmonyX + MonoMod + Mono.Cecil regardless of need. | Zero third-party managed dependencies; patching is a loadable subsystem (`Nami.Wave`), not a boot-time cost. |
 
 ## 6. IL2CPP interop strategy
 

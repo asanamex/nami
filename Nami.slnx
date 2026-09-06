@@ -1,4 +1,7 @@
 <Solution>
+  <Folder Name="/bench/">
+    <Project Path="bench/Wave.Bench/Wave.Bench.csproj" />
+  </Folder>
   <Folder Name="/samples/">
     <Project Path="samples/HelloNami/HelloNami.csproj" />
   </Folder>
@@ -7,9 +10,11 @@
     <Project Path="src/Nami.Core/Nami.Core.csproj" />
     <Project Path="src/Nami.Runtime/Nami.Runtime.csproj" />
     <Project Path="src/Nami.Sdk/Nami.Sdk.csproj" />
+    <Project Path="src/Nami.Wave/Nami.Wave.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/Nami.Tests/Nami.Tests.csproj" />
+    <Project Path="tests/Nami.Wave.Tests/Nami.Wave.Tests.csproj" />
   </Folder>
   <Folder Name="/tests/fixtures/">
     <Project Path="tests/fixtures/Alpha/Alpha.csproj" />
