@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <RootNamespace>NamiMod</RootNamespace>
+    <AssemblyName>NamiMod</AssemblyName>
+    <!-- Copy Nami's framework DLLs next to the mod so it can be dropped straight into nami/mods. -->
+    <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Reference the Nami plugin SDK + game bridge (Tide no-ops when the loader is absent). -->
+    <PackageReference Include="Nami.Sdk" Version="NAMI_VERSION" />
+    <PackageReference Include="Nami.Tide" Version="NAMI_VERSION" />
+  </ItemGroup>
+
+</Project>

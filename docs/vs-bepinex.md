@@ -50,7 +50,7 @@ shipped — it is the architectural target.)*
 | Calling game code from mods | yes (in-process) | **Tide** — typed fields/properties, calls, objects, a generic `Get<T>`/`Set<T>`/`Call<T>` API, enums, arrays, live scene objects via statics (opt-in) |
 | Ecosystem / existing mods | huge | zero (clean-slate API) |
 | Years of edge-case hardening | yes | no — expect bugs |
-| Packaging / templates / installer | mature | next milestone (`nami launch`/`create` player flow already in) |
+| Packaging / templates / installer | mature | **in** — NuGet packages (`Nami.Sdk`/`Nami.Tide`), `dotnet new nami-mod`, `nami install`/`run`, `nami launch`/`create`; self-contained downloadable installer next |
 
 ## The bet
 

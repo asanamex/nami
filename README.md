@@ -11,8 +11,11 @@ dependency on BepInEx, HarmonyX, MonoMod, or Mono.Cecil.
 > with in-house x64 detours and Harmony-style IL-copy prefix/postfix patching (any signature);
 > **Tide** lets mods call into the game — typed static/instance field access, typed method
 > calls, and live object creation/calls, all executed on the game's main thread and verified
-> stable in-game. Enable with `"enableMonoBridge": true` in `nami.json`. Remaining for
-> "pick-up modding": packaging/templates/install tooling and a few documented edges (see docs).
+> stable in-game. Enable with `"enableMonoBridge": true` in `nami.json`. **M3 dev experience is
+> in**: `Nami.Sdk`/`Nami.Tide` NuGet packages, the `dotnet new nami-mod` template, and
+> `nami install`/`nami run` — a modder goes from template to a running mod without hand
+> staging. Remaining: the self-contained downloadable installer and a few documented edges
+> (see docs).
 
 ## Getting started
 
@@ -51,10 +54,12 @@ src/
   Nami.Runtime/    In-game managed bootstrap: Boot.Run
   Nami.Tide/       Typed game access: Tide, GameClass, GameObject, TideValue
   Nami.Wave/       Patching engine: x64 detours + Harmony-style IL-copy prefix/postfix
-  Nami.Cli/        nami command-line tool (install/launch/create/doctor/list)
+  Nami.Cli/        nami command-line tool (install/launch/run/create/doctor/list)
   Nami.Interop/    Offline reference-assembly dumper                [later milestone]
 tools/
   launch-shim/     launchNami.exe source (embedded into Nami.Cli for `nami create`)
+  templates/       `dotnet new nami-mod` template content
+artifacts/         local NuGet + build outputs (packages/, dotnet/)
 samples/       HelloNami (log-only) + TideProbe (typed game access proof)
 tests/         Unit/integration tests (Core, Wave, Cli, Tide) + plugin fixtures
 bench/         Loader + patching benchmarks (comparative gates vs other loaders: M5)
@@ -64,23 +69,19 @@ docs/          Architecture, Tide, Wave, roadmap
 ## Try it against a real game (Mono, Windows x64)
 
 ```
-# 1. Build the native injector + loader
+# 1. Build Nami (managed + native)
+dotnet build Nami.slnx
 cmake -S native -B native/build -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build native/build
 
-# 2. Stage a nami root next to the game (see docs/architecture.md for the layout):
-#    <game>/nami/{dotnet/, Nami.Runtime.dll, Nami.Core.dll, Nami.Sdk.dll,
-#                 Nami.Tide.dll, native/nami_boot.exe + nami_loader.dll, mods/*.dll,
-#                 Nami.Runtime.runtimeconfig.json}
+# 2. Let the CLI stage a nami root next to the game and remember the game exe
+nami install "<game>"                     # <game>/nami with bundled dotnet/, mods/, nami.json
+nami launch set Game.exe "<game>"         # remember the game exe (add --steam-id <appid>)
 
-# 3. Inject (launches the game suspended, hosts .NET 10 inside it, loads mods)
-native/build/nami_boot.exe "<game>\Game.exe" "<game>\nami\native\nami_loader.dll"
-
-# ...or, once Nami.Cli is built, let the CLI do it (the nami root from step 2 must exist;
-# gameDir is the trailing argument):
-nami launch set Game.exe "<game>"     # remember the game exe (add --steam-id <appid>)
-nami launch "<game>"                  # runs the game with Nami (auto-detects exe when unset)
-nami create "<game>"                  # leaves launchNami.exe in <game>/nami for double-click runs
+# 3. Launch with Nami injected (launches the game suspended, hosts .NET 10 inside it,
+#    loads mods from nami/mods). gameDir is the trailing argument:
+nami launch "<game>"                      # runs the game with Nami (auto-detects exe when unset)
+nami create "<game>"                      # leaves launchNami.exe in <game>/nami for double-click runs
 
 # 4. Watch the loader boot
 type "<game>\nami\nami.log"
@@ -108,7 +109,7 @@ dotnet run --project bench/Nami.Bench -c Release   # headline loader benchmark
 
 ```
 nami version                        print version
-nami install [gameDir]              stage a Nami root next to a game (roadmap stub)
+nami install [gameDir]              stage a Nami root next to a game (from build outputs)
 nami launch set <game.exe> [--steam-id <appid>] [--force] [gameDir]
                                     remember which executable is the game
 nami launch [offline|steam] [gameDir]
@@ -116,20 +117,44 @@ nami launch [offline|steam] [gameDir]
                                     steam relays to a clean Steam session after exit
 nami create [offline|steam] [gameDir]
                                     write launchNami.exe + run-with-nami.bat into the nami root
+nami run <mod.csproj> [gameDir]     build a mod, stage it into nami/mods, launch the game
 nami doctor [gameDir]               verify an install / report the environment
 nami list [gameDir]                 list installed mods (id/version/name + dependencies)
 ```
 
-*(`launch` auto-detects the game as the largest `.exe` when none is set. install-with-
-bundled-runtime, profiles/log-tail/hot-reload/interop/bench arrive with later milestones.)*
+*(`launch` auto-detects the game as the largest `.exe` when none is set. The self-contained
+downloadable "Nami-Install" product, profiles/log-tail/hot-reload/interop arrive with later
+milestones; `bench/` already exists.)*
+
+## Writing a mod (M3 dev experience)
+
+```
+# From a repo checkout, after building:
+dotnet new install tools/templates/nami-mod     # install the mod template
+dotnet new nami-mod -n MyFirstMod               # scaffold a mod (references Nami.Sdk/Tide)
+
+# Produce the NuGet packages into the local feed (NuGet.config points at artifacts/packages;
+# or point the mod's NuGet source at a published Nami.Sdk/Nami.Tide instead):
+dotnet pack src/Nami.Sdk -o artifacts/packages
+dotnet pack src/Nami.Tide -o artifacts/packages
+
+# Stage a root, tell Nami which exe is the game, then build+stage+launch the mod:
+nami install "<game>"
+nami launch set "<game>\Game.exe" "<game>"
+nami run "MyFirstMod\MyFirstMod.csproj" "<game>"   # builds, copies into nami/mods, launches
+```
+
+For a real game you must be able to launch `Game.exe`; `nami run` requires the staged root and
+the configured game exe from the two steps above.
 
 ## Milestones
 
 See `docs/plan.md` for the full blueprint. Short version: **M0** scaffold & proof of life ·
-**M1** core framework (load order, isolation, quarantine, config, logging) · **M2** Tide
-bridge + typed game access (M2.5: Wave patching engine) · **M3** dev experience
-(packaging/templates/install) · **M4** IL2CPP bridge + offline interop · **M5** depth
-(hot reload, profiling, comparative bench gates).
+**M1** core framework (load order, isolation, quarantine, config, logging) · **M1.5** Wave
+patching engine (M2: Harmony-style IL-copy) · **M2** Tide bridge + typed game access ·
+**M3 done** dev experience (NuGet packages, `dotnet new nami-mod`, `nami install`/`run`) ·
+**M4** IL2CPP bridge + offline interop · **M5** depth (hot reload, profiling, comparative
+bench gates).
 
 ## License
 

@@ -41,34 +41,13 @@ Artifacts you need:
 ## 3. Stage a Nami root next to the game
 
 Nami keeps *everything* in one folder inside the game directory — nothing is written into the
-game's own folders. Create `<game>/nami/` and copy:
+game's own folders. The CLI stages it from the repo's build outputs (managed runtime + native
+injector + a bundled .NET runtime copied from your local install):
 
 ```bat
-set GAME=C:\path\to\YourGame
-set NAMI=C:\path\to\nami\src\Nami.Runtime\bin\Release\net10.0
-
-mkdir "%GAME%\nami\native"
-mkdir "%GAME%\nami\mods"
-
-copy native\build\nami_boot.exe   "%GAME%\nami\native\"
-copy native\build\nami_loader.dll  "%GAME%\nami\native\"
-copy "%NAMI%\Nami.Runtime.dll"       "%GAME%\nami\"
-copy "%NAMI%\Nami.Runtime.deps.json" "%GAME%\nami\"
-copy "%NAMI%\Nami.Runtime.runtimeconfig.json" "%GAME%\nami\"
-copy "%NAMI%\Nami.Core.dll" "%GAME%\nami\"
-copy "%NAMI%\Nami.Sdk.dll"  "%GAME%\nami\"
-copy "%NAMI%\Nami.Tide.dll" "%GAME%\nami\"
+:: from the repo root, after the build in step 2:
+nami install "C:\path\to\YourGame"
 ```
-
-Nami hosts its own .NET runtime, so copy a runtime next to it:
-
-```bat
-:: from a .NET 10 install:
-xcopy /e /i "C:\Program Files\dotnet\shared\Microsoft.NETCore.App\10.0.x" "%GAME%\nami\dotnet\shared\Microsoft.NETCore.App\10.0.x\"
-xcopy /e /i "C:\Program Files\dotnet\host\fxr\10.0.x"             "%GAME%\nami\dotnet\host\fxr\10.0.x\"
-```
-
-(Use the same `10.0.x` patch version in both paths; Nami's runtimeconfig rolls forward.)
 
 Resulting layout:
 
@@ -79,14 +58,25 @@ Resulting layout:
     ├── Nami.Core.dll
     ├── Nami.Sdk.dll
     ├── Nami.Tide.dll
+    ├── dotnet/host/fxr/<ver> + dotnet/shared/Microsoft.NETCore.App/<ver>   (bundled runtime)
     ├── native/nami_boot.exe + nami_loader.dll
-    ├── mods/            ← drop your mod DLLs here
-    └── nami.json        ← optional config (defaults are used when absent)
+    ├── mods/            ← your mod DLLs go here
+    └── nami.json        ← config (created by nami install; defaults when absent)
 ```
 
 ## 4. Write a mod
 
-Create a class library targeting `net10.0` that references `Nami.Sdk.dll`:
+Use the `nami-mod` template (installed from the repo) to scaffold a class library that
+references the `Nami.Sdk` and `Nami.Tide` NuGet packages:
+
+```bat
+dotnet new install tools\templates\nami-mod
+dotnet new nami-mod -n MyFirstMod
+```
+
+The generated project looks like this (a `net10.0` class library referencing the packages —
+it also adds `LangVersion latest` and sets `RootNamespace`/`AssemblyName` from the project
+name):
 
 ```xml
 <Project Sdk="Microsoft.NET.Sdk">
@@ -94,38 +84,53 @@ Create a class library targeting `net10.0` that references `Nami.Sdk.dll`:
     <TargetFramework>net10.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <RootNamespace>MyFirstMod</RootNamespace>
+    <AssemblyName>MyFirstMod</AssemblyName>
+    <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
   </PropertyGroup>
   <ItemGroup>
-    <Reference Include="Nami.Sdk">
-      <HintPath>path\to\nami\src\Nami.Sdk\bin\Release\net10.0\Nami.Sdk.dll</HintPath>
-    </Reference>
+    <PackageReference Include="Nami.Sdk" Version="0.1.0" />
+    <PackageReference Include="Nami.Tide" Version="0.1.0" />
   </ItemGroup>
 </Project>
 ```
 
+And `Plugin.cs`:
+
 ```csharp
 using Nami.Sdk;
 
-namespace MyMod;
+namespace MyFirstMod;
 
 [NamiPlugin]
-[PluginInfo("com.example.mymod", "My Mod", "1.0.0", Description = "My first Nami mod.")]
+[PluginInfo("com.example.mymod", "My First Mod", "0.1.0", Description = "A Nami mod.")]
 public sealed class MyMod : NamiPlugin
 {
+    private int _ticks;
+
     public override void OnLoad()
     {
-        Context.Log.Info("MyMod loaded on .NET " + Environment.Version);
+        Context.Log.Info("My First Mod loaded on .NET " + Environment.Version);
     }
 
     public override void OnUpdate()
     {
-        // called roughly every 16 ms while the mod is active
+        // Log every ~2 seconds (120 ticks x 16 ms).
+        if (++_ticks % 120 == 0)
+        {
+            Context.Log.Info("My First Mod tick " + _ticks);
+        }
     }
 }
 ```
 
 `[PluginDependency("other.mod.id")]` declares a dependency; `[PluginIncompatibility(...)]`
 declares a conflict. Dependencies load first; conflicts are resolved at load time.
+
+The template also emits `TideExample.cs` (a commented example of calling into the game).
+Pass `-U false` when scaffolding to leave that file out (the `Nami.Tide` package reference
+stays).
 
 ### Calling into the game (Tide)
 
@@ -134,8 +139,7 @@ call the game's own Mono runtime — every call executes safely on the game's ma
 See **[docs/tide.md](docs/tide.md)** for the full story (including why it has to work this
 way). To use it:
 
-1. Add `Nami.Tide.dll` to your mod's references (next to `Nami.Sdk.dll`) and copy it into the
-   game's `nami/` folder next to `Nami.Sdk.dll`.
+1. Reference the `Nami.Tide` NuGet package (the template already does).
 2. Enable the bridge in `<game>/nami/nami.json`: `{ "enableMonoBridge": true }`
 3. Call it from your mod:
 
@@ -172,14 +176,13 @@ All calls block until the game main thread has run them; failures throw `TideExc
 ## 5. Install and run
 
 ```bat
-:: 1. copy your built mod DLL into the mods folder
-copy MyMod\bin\Release\net10.0\MyMod.dll "%GAME%\nami\mods\"
-
-:: 2. launch the game through Nami (injects and hosts .NET 10 inside the game)
-native\build\nami_boot.exe "%GAME%\YourGame.exe" "%GAME%\nami\native\nami_loader.dll"
+:: 1. build the mod, drop it into nami\mods, and launch the game through Nami
+nami run "MyFirstMod\MyFirstMod.csproj" "%GAME%"
 ```
 
-The game opens normally. Check that Nami booted:
+(The game opens normally, Nami is injected, and your mod is loaded. `nami run` is shorthand
+for: `dotnet build -c Release`, copy the produced DLL into `<game>\nami\mods`, then launch
+via `nami_boot.exe`.) Check that Nami booted:
 
 ```bat
 type "%GAME%\nami\nami.log"
@@ -204,8 +207,9 @@ calls `OnUnload`, logs the reason, and the game keeps running.
 
 ## 6. Configuration (`nami.json`)
 
-Optional file in the nami root. If it is absent (or unreadable), Nami boots with defaults; it
-is not auto-created. Keys are written camelCase and read case-insensitively.
+Optional file in the nami root. `nami install` creates one (with defaults); if it is absent
+(or unreadable), Nami boots with defaults. Keys are written camelCase and read
+case-insensitively.
 
 ```json
 {
@@ -227,11 +231,11 @@ is not auto-created. Keys are written camelCase and read case-insensitively.
 
 ## 7. The sample mod
 
-`samples/HelloNami/` is a ready-made mod:
+`samples/HelloNami/` is a ready-made mod — run it with the same `nami run` flow as any mod
+project:
 
 ```bat
-dotnet build samples/HelloNami -c Release
-copy samples\HelloNami\bin\Release\net10.0\HelloNami.dll "%GAME%\nami\mods\"
+nami run "samples\HelloNami\HelloNami.csproj" "%GAME%"
 ```
 
 It logs once on load (`HelloNami loaded inside the Nami CoreCLR runtime!`) and then every
@@ -241,13 +245,14 @@ It logs once on load (`HelloNami loaded inside the Nami CoreCLR runtime!`) and t
 
 ```
 nami version                        print version
-nami install [gameDir]              stage a Nami root next to a game (roadmap stub)
+nami install [gameDir]              stage a Nami root next to a game (from build outputs)
 nami launch set <game.exe> [--steam-id <appid>] [--force] [gameDir]
                                     remember which executable is the game
 nami launch [offline|steam] [gameDir]
                                     run the game with Nami injected (offline, default)
 nami create [offline|steam] [gameDir]
                                     write launchNami.exe + run-with-nami.bat into the nami root
+nami run <mod.csproj> [gameDir]     build a mod, stage it into nami/mods, launch the game
 nami doctor [gameDir]               check a Nami install
 nami list   [gameDir]               list installed mods
 ```
@@ -259,6 +264,7 @@ after the game exits, starts a clean unmodded session via `steam://rungameid/<ap
 the app id with `nami launch set --steam-id`; without one it falls back to offline).
 `nami create` writes `launchNami.exe` (self-contained) + `run-with-nami.bat` into the nami
 root, so the game can be started with Nami by double-clicking, without the CLI open.
+`nami run` is the modder's loop: build the mod, copy it into `nami/mods`, and launch.
 
 ## 9. Running the test suite
 

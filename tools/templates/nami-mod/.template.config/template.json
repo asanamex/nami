@@ -1,0 +1,55 @@
+{
+  "$schema": "http://json.schemastore.org/template",
+  "author": "Nami",
+  "classifications": [ "Nami", "Unity", "Mod" ],
+  "identity": "Nami.Mod.Template",
+  "name": "Nami mod",
+  "shortName": "nami-mod",
+  "tags": {
+    "language": "C#",
+    "type": "project"
+  },
+  "sourceName": "NamiMod",
+  "preferNameDirectory": true,
+  "symbols": {
+    "NamiVersion": {
+      "type": "parameter",
+      "datatype": "string",
+      "defaultValue": "0.1.0",
+      "replaces": "NAMI_VERSION",
+      "displayName": "Nami NuGet version",
+      "description": "Version of the Nami.Sdk/Nami.Tide packages to reference"
+    },
+    "PluginId": {
+      "type": "parameter",
+      "datatype": "string",
+      "defaultValue": "com.example.mymod",
+      "replaces": "PLUGIN_ID",
+      "displayName": "Plugin id",
+      "description": "Unique id of the mod (reverse-DNS recommended)"
+    },
+    "PluginName": {
+      "type": "parameter",
+      "datatype": "string",
+      "defaultValue": "My Nami Mod",
+      "replaces": "PLUGIN_NAME",
+      "displayName": "Plugin display name"
+    },
+    "UseTide": {
+      "type": "parameter",
+      "datatype": "bool",
+      "defaultValue": "true",
+      "displayName": "Reference Nami.Tide (game bridge)"
+    }
+  },
+  "sources": [
+    {
+      "modifiers": [
+        {
+          "condition": "(!UseTide)",
+          "exclude": [ "TideExample.cs" ]
+        }
+      ]
+    }
+  ]
+}

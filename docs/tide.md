@@ -234,11 +234,11 @@ public sealed class GreeterPlugin : NamiPlugin
 }
 ```
 
-To reference Tide from a mod project, add a reference to `Nami.Tide.dll` (built from
-`src/Nami.Tide`) the same way you reference `Nami.Sdk.dll`, and place the DLL next to
-`Nami.Sdk.dll` in the game's `nami/` folder. Tide is a shared framework assembly: the
-chainloader resolves `Nami.Tide` from the already-loaded copy, so your mod and the runtime
-share one instance.
+To use Tide from a mod project, reference the `Nami.Tide` NuGet package (the `dotnet new
+nami-mod` template already does). Tide is a shared framework assembly: the chainloader
+resolves `Nami.Tide` from the already-loaded copy (the loader ships `Nami.Tide.dll` in the
+nami root), so your mod and the runtime share one instance — `nami run` therefore skips
+copying `Nami.*` DLLs from a mod's output into `mods/`.
 
 ---
 

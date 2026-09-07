@@ -22,6 +22,7 @@ internal static class Program
                 "install" => Install(rest),
                 "launch" => Launch(rest),
                 "create" => Create(rest),
+                "run" => Run(rest),
                 "doctor" => Doctor(rest),
                 "list" => List(rest),
                 "help" or "--help" or "-h" => Help(),
@@ -70,6 +71,20 @@ internal static class Program
         var mode = args.Length > 0 && args[0] is "offline" or "steam" ? args[0] : null;
         var gameDir = mode is null ? ParseGameDir(args, out _) : ParseGameDir(args.Skip(1).ToArray(), out _);
         return CreateCommand.Run(gameDir, mode);
+    }
+
+    private static int Run(string[] args)
+    {
+        // nami run <mod.csproj> [gameDir]  (gameDir must be an existing directory)
+        var gameDir = Directory.GetCurrentDirectory();
+        var positional = args;
+        if (args.Length > 1 && Directory.Exists(args[^1]))
+        {
+            gameDir = Path.GetFullPath(args[^1]);
+            positional = args[..^1];
+        }
+
+        return RunCommand.Run(gameDir, positional);
     }
 
     private static int Doctor(string[] args)
@@ -172,7 +187,7 @@ internal static class Program
 
             commands:
               version                 print the Nami version
-              install  [gameDir]      stage a Nami root next to a game (roadmap stub)
+              install  [gameDir]      stage a Nami root next to a game from the build outputs
               launch   set <game.exe> [--steam-id <appid>] [--force] [gameDir]
                                       remember which executable is the game
               launch   [offline|steam] [gameDir]
@@ -180,6 +195,8 @@ internal static class Program
                                       steam relays to a clean Steam session after exit)
               create   [offline|steam] [gameDir]
                                       write launchNami.exe + run-with-nami.bat into the nami root
+              run      <mod.csproj> [gameDir]
+                                      build a mod, stage it into nami/mods, and launch the game
               doctor   [gameDir]      check a Nami install and report the environment
               list     [gameDir]      list installed plugins and their state
               help                    show this help

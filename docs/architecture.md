@@ -55,15 +55,21 @@ src/Nami.Tide/                   bridge API mods call (see docs/tide.md)
 src/Nami.Core/                   chainloader (ALC per mod, quarantine, resolver, discovery)
 src/Nami.Wave/                   patching engine (x64 inline detours + IL-copy patches)
 src/Nami.Sdk/                    public plugin API ([NamiPlugin], NamiPlugin, PluginInfo, ...)
-src/Nami.Cli/                    `nami` console tool: version/doctor/list + install (roadmap
-                                 stub) + the launcher flow — launch set <game.exe> (stored in
-                                 nami.json), launch [offline|steam] (spawns native/nami_boot.exe;
-                                 Steam relay to steam://rungameid/<id> after the game exits),
-                                 create (self-extracts launchNami.exe + run-with-nami.bat into the
-                                 nami root). Game exe auto-detection picks the largest .exe,
-                                 skipping crash handlers/updaters.
+src/Nami.Cli/                    `nami` console tool: version/doctor/list + install (stages a
+                                 runnable root from build outputs via Stager) + run <mod.csproj>
+                                 (builds a mod, copies it into nami/mods, launches) + the launcher
+                                 flow — launch set <game.exe> (stored in nami.json), launch
+                                 [offline|steam] (spawns native/nami_boot.exe; Steam relay to
+                                 steam://rungameid/<id> after the game exits), create
+                                 (self-extracts launchNami.exe + run-with-nami.bat into the nami
+                                 root). Game exe auto-detection (GameLocator) picks the largest
+                                 .exe, skipping crash handlers/updaters.
+  Stager.cs                      stages <game>/nami from the repo build outputs: managed runtime,
+                                 native injector/loader, bundled .NET runtime, mods/, nami.json
 tools/launch-shim/               launchNami.exe — tiny self-contained console app, embedded in
                                  Nami.Cli; spawns nami_boot.exe with paths from its own location
+tools/templates/nami-mod/        `dotnet new nami-mod` template: a net10.0 mod project referencing
+                                 the Nami.Sdk/Nami.Tide NuGet packages (+ optional TideExample.cs)
 samples/HelloNami/               example mod (log-only)
 samples/TideProbe/               in-game proof of Tide typed access (generic API, enums, arrays,
                                  Camera.main scene access)
@@ -95,11 +101,13 @@ Nami.Core.dll     Nami.Sdk.dll           Nami.Tide.dll
 native/nami_boot.exe  native/nami_loader.dll
 launchNami.exe  run-with-nami.bat        (written by `nami create`)
 mods/*.dll                                 (loose plugin DLLs; .nmod later)
-nami.json                                  (optional config; absent → defaults)
+nami.json                                  (written by `nami install`; `launch set` adds gameExe)
 nami.log                                   (runtime log)
 ```
 
-`nami launch`/`launchNami.exe` invoke `native/nami_boot.exe <game.exe> native/nami_loader.dll`;
+The root is created by `nami install <game>` (Stager stages the managed runtime, native
+injector/loader and a bundled .NET runtime from the repo's build outputs); `nami run`/`nami
+launch`/`launchNami.exe` then invoke `native/nami_boot.exe <game.exe> native/nami_loader.dll`;
 the loader derives the root as two levels up and the game executable comes from `nami.json`
 (`gameExe`).
 

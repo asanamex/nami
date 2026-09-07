@@ -75,8 +75,8 @@ marketing sheet.
 
 | Aspect | BepInEx | Nami |
 |---|---|---|
-| Mod distribution | Loose DLL in `BepInEx/plugins` (plus `patchers/`). | Loose DLL in `nami/mods` today; `.nmod` package format (id, semver, deps, game bounds) is planned. |
-| CLI / dev tooling | No first-party CLI for install/inspect (community tools exist). | `nami` CLI: version/doctor/list + a player-facing launcher flow — `launch set <game.exe>`, `launch [offline|steam]` (auto-detects the exe; Steam relay to a clean session after exit), `create` (double-click `launchNami.exe` in the nami root). Self-contained `nami install` (bundled runtime) is planned. |
+| Mod distribution | Loose DLL in `BepInEx/plugins` (plus `patchers/`). | Mods are built from NuGet (`Nami.Sdk`/`Nami.Tide` packages) and land as loose DLLs in `nami/mods` (via `nami run`); `.nmod` package format (id, semver, deps, game bounds) is planned. |
+| CLI / dev tooling | No first-party CLI for install/inspect (community tools exist). | `nami` CLI: version/doctor/list + `install` (stages a runnable root from build outputs) + `run <mod.csproj>` (build, copy to nami/mods, launch) + a player-facing launcher flow — `launch set <game.exe>`, `launch [offline|steam]` (auto-detects the exe; Steam relay to a clean session after exit), `create` (double-click `launchNami.exe` in the nami root). Plus `dotnet new nami-mod` and NuGet packages. The self-contained downloadable installer (bundled runtime) is planned. |
 | Benchmarking | None shipped. | `bench/` harness from M0; comparative gates vs BepInEx/MelonLoader planned for M5. |
 
 ## 9. Platform & target matrix
@@ -127,6 +127,7 @@ The differences reduce to one architectural bet:
   patcher that is young (Wave) rather than ecosystem-proven, and the overhead of a second
   runtime.
 
-The long-term bet of Nami is that those costs shrink as the missing pieces land (packaging,
-projection, hot reload), while BepInEx's costs (runtime coupling, generation on the player's
-machine, metadata churn chasing, EOL .NET 6) are structural and only grow as Unity moves on.
+The long-term bet of Nami is that those costs shrink as the missing pieces land (downloadable
+installer, projection, hot reload), while BepInEx's costs (runtime coupling, generation on the
+player's machine, metadata churn chasing, EOL .NET 6) are structural and only grow as Unity
+moves on.

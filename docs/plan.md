@@ -17,25 +17,30 @@ Full blueprint: `~/.commandcode/plans/nami-unity-mod-loader.md` (or via `/plans`
   (`Camera.main`), all on the game's main thread. Verified in-game against four Unity Mono
   titles spanning 2022.3 and Unity 6: Project Hardline (2022.3.27f1), Parasocial (2022.3.5f1),
   ROUNDS (2022.3.34f1), and The Gaspy Color War (6000.5.4f1).
-- **M2 remaining:** a Wave-installed per-frame script callback to unlock Unity's
-  scene-iteration scan APIs (`FindObjectOfType` aborts from embedding re-entry); a generated
-  strongly-typed projection layer over the generic API.
+- **M2 remaining:** a public scene-iteration API. The transport is in place — a post-invoke
+  drain (work runs on the main thread after `mono_runtime_invoke` returns) — but Unity's
+  scene-scan entry points still need to run from a real per-frame script callback (Wave
+  patch), and a generated strongly-typed projection layer over the generic API is future.
 
 ## Next
 
-- **M3 — dev experience:** NuGet packaging of `Nami.Sdk`/`Nami.Tide`, `dotnet new nami-mod`
-  template, `nami install <game>` / `nami run`, so a modder goes from idea to running mod
-  without hand-staging.
-  - **Shipped early (launcher slice):** the player-facing `nami launch` flow — `launch set
+- **M3 — done.** Dev experience: `Nami.Sdk`/`Nami.Tide` NuGet packages (dotnet pack), the
+  `dotnet new nami-mod` template (scaffolds a mod referencing the packages, with a
+  Tide-usage example file that `-U false` removes), `nami install <game>` (stages a runnable
+  root from the repo's build outputs, bundling the .NET runtime from the local install), and
+  `nami run <mod.csproj>` (builds the mod, drops it into `nami/mods`, launches the game). A
+  modder now goes idea → template → `nami run` without hand-staging.
+  - **Shipped earlier (launcher slice):** the player-facing `nami launch` flow — `launch set
     <game.exe>`, `launch [offline|steam]` (Steam relay to a clean session after exit),
     `create` (double-click `launchNami.exe` + `run-with-nami.bat` in the nami root), and
     `doctor` reporting the configured game exe. Auto-detects the game as the largest `.exe`.
-  - `nami install` (self-contained: bundles/downloads the .NET runtime + managed artifacts) is
-    still the future "Nami-Install" product.
+  - **Remaining (future "Nami-Install" product):** a self-contained downloadable installer
+    that bundles the .NET runtime into a single artifact for end users (today `nami install`
+    stages from a local build).
 - **M4 — IL2CPP:** native `global-metadata.dat` parsing (golden corpus), lazy projection,
   offline `nami interop dump`; same main-thread-drain pattern for the runtime bridge.
-- **M5 — depth:** hot reload; per-mod profiler; comparative bench gates vs BepInEx/MelonLoader;
-  scene-iteration scan APIs via a Wave-installed per-frame script callback.
+- **M5 — depth:** hot reload; per-mod profiler; comparative bench gates vs BepInEx/MelonLoader.
+  (Scene-iteration scan APIs remain tracked under "M2 remaining" above.)
 
 ## Verified in-game evidence
 
