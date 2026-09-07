@@ -7,5 +7,7 @@
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\src\Nami.Wave\Nami.Wave.csproj" />
+    <!-- Bench-only comparative baseline: BepInEx 6 ships this exact Harmony fork. -->
+    <PackageReference Include="HarmonyX" Version="2.16.1" />
   </ItemGroup>
 </Project>

@@ -35,4 +35,21 @@ bool run_on_main_thread(TideWorkFn fn, void* arg, int timeout_ms = 0,
 /// thread is running queued work. Lets callers avoid queueing-and-waiting (deadlock).
 bool IsTideOnMainThread();
 
+// ---------------------------------------------------------------------------
+// Shared detour toolkit (used by the inex legacy lane for its own targets).
+// ---------------------------------------------------------------------------
+
+/// Measures whole x64 instructions from `target` until >= min_bytes; 0 = unsafe.
+int measure_relocatable_prologue(const unsigned char* target, int min_bytes);
+
+/// Copies the measured prologue into an executable trampoline ending in a jump
+/// back to target+prologue_len; returns its entry (the "original"), or nullptr.
+void* build_trampoline(unsigned char* target, int prologue_len);
+
+/// Installs a 14-byte absolute-jump detour (`mov rax,imm64; jmp rax` + NOPs) over a
+/// native export so <detour> runs instead. Returns the trampoline holding the original
+/// bytes (call through it for the original behavior), or nullptr on any failure.
+/// Thread-safe; at most one install per process per target is the caller's discipline.
+void* install_native_detour(const wchar_t* module_name, const char* export_name, void* detour);
+
 }  // namespace nami::tide

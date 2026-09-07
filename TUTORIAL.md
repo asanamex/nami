@@ -4,8 +4,11 @@ This guide walks you from a clean checkout to a mod running inside a real Unity 
 including calling into the game itself through Tide's typed API.
 
 > **Current scope:** Windows x64, Unity **Mono** and **IL2CPP** games (see
-> [docs/tide.md §9](docs/tide.md) for the IL2CPP backend). BepInEx is **not** required and
-> must **not** be installed (its doorstop proxy conflicts with Nami's launcher).
+> [docs/tide.md §9](docs/tide.md) for the IL2CPP backend). BepInEx is **not** required.
+> Do **not** drop Doorstop's proxy (`winhttp.dll`, or `doorstop_config.ini` with
+> `enabled=true`) into the game folder — it conflicts with Nami's launcher. Unmodified
+> BepInEx 5.x mods are supported only under `nami/inex/` via `nami inex` (§8);
+> IL2CPP / BepInEx 6 titles are not covered.
 
 ---
 
@@ -62,8 +65,13 @@ Resulting layout:
     ├── Nami.Tide.dll
     ├── dotnet/host/fxr/<ver> + dotnet/shared/Microsoft.NETCore.App/<ver>   (bundled runtime)
     ├── native/nami_boot.exe + nami_loader.dll
+    ├── native/nami-inex.log   ← legacy-lane log (only when armed)
     ├── mods/            ← your mod DLLs go here
-    └── nami.json        ← config (created by nami install; defaults when absent)
+    ├── nami.json        ← config (created by nami install; defaults when absent)
+    └── inex/            ← optional legacy lane (`nami inex install`)
+        ├── BepInEx/{core,plugins,patchers,config}   ← payload (cache/ never copied)
+        ├── enabled                     ← sentinel file; absent = pure Nami boot
+        └── BepInEx/LogOutput.log       ← BepInEx's own log (last-run evidence)
 ```
 
 ## 4. Write a mod
@@ -300,6 +308,9 @@ camelCase and read case-insensitively.
   session after exit — for online/anti-cheat games.
 - `gameExe` / `steamAppId`: written by `nami launch set` (which game to run; used by
   `nami launch`/`create`).
+- Legacy lane (`nami inex`) has **no** `nami.json` flag — the switch is the
+  `nami/inex/enabled` file (`nami inex enable` writes it empty, `disable` deletes it,
+  payload kept). Payload staged but sentinel missing = pure Nami boot.
 
 ## 7. The sample mod
 
@@ -330,6 +341,8 @@ nami doctor [gameDir]               basic sanity check of a Nami install
 nami list   [gameDir]               list installed mods
 nami interop images|dump|generate|header [args...] [gameDir]
                                     offline IL2CPP typed-projection tooling (dev-time)
+nami inex install|enable|disable|status [args...] [gameDir]
+                                    legacy BepInEx lane (boots BepInEx 5.x in game Mono)
 nami help                           show help
 ```
 
@@ -343,9 +356,45 @@ injected launch; with `steamRelaySkipInjection: true` it launches without Nami a
 then relays). `nami create` writes `launchNami.exe` (self-contained) + `run-with-nami.bat` into the nami
 root, so the game can be started with Nami by double-clicking, without the CLI open.
 `nami run` is the modder's loop: build the mod, copy it into `nami/mods`, and launch.
+
+### BepInEx mods through nami-inex
+
+Nami boots real BepInEx 5.x mods inside the game's own Mono — no emulation, so
+unmodified legacy mods (including Harmony patchers) run as-is, managed by `nami`
+instead of Doorstop's proxy. Mono titles only; the loader skips the lane on IL2CPP
+(BepInEx 6 needs its own CoreCLR lane):
+
+```bat
+:: 1. copy a working BepInEx 5.x tree (core [+ plugins/patchers/config], never cache/)
+::    source must contain core/BepInEx.Preloader.dll or install refuses it
+nami inex install "C:\path\to\WorkingGame\BepInEx" "%GAME%"
+:: 2. drop BepInEx mod DLLs into <game>\nami\inex\BepInEx\plugins
+:: 3. disable Doorstop in the game folder (doorstop_config.ini: enabled=false)
+nami inex enable "%GAME%"
+nami launch "%GAME%"
+```
+
+`install` validates the preloader and stays disabled until `enable`; `enable` requires
+a staged payload; `disable` deletes only the sentinel (payload kept, next boot is
+pure Nami). Under the hood Nami sets the four `DOORSTOP_*` variables
+(`PROCESS_PATH`, `MANAGED_FOLDER_DIR` derived as `<exe>_Data\Managed`,
+`INVOKE_DLL_PATH` pointing at `nami/inex/BepInEx/core/BepInEx.Preloader.dll`,
+`DLL_SEARCH_DIRS` pointing at `nami/inex/BepInEx/core`) and invokes
+`Doorstop.Entrypoint.Start` — `doorstop_config.ini` is never read.
+
+Rules that differ from Nami mods: a legacy crash is a game crash (no Nami quarantine
+in game Mono — `nami inex disable` returns to a pure Nami boot). Boot timing is dual
+path: a `mono_jit_init` detour attempts Doorstop timing (runs before first managed
+execution); if it misses or the prologue refuses the detour, a background watcher
+fires the drain fallback and a chainloader kick (`Initialize`+`Start`, both guarded)
+once a window is visible and the script domain is stable — so legacy plugins appear
+late (scene live), not at process start. `nami inex status` shows payload+sentinel
+state, a hint when staged-but-disabled, the last 3 lines of `native/nami-inex.log`,
+and `LogOutput.log` presence/size. IL2CPP/BepInEx-6 titles are not covered yet
+(BepInEx 6 needs its own CoreCLR lane).
 `nami doctor` prints root, mods dir, quarantine display, `*.dll` count, the configured or
-auto-detected exe, and any missing launcher files — a smoke check, not a full environment
-report.
+auto-detected exe, any missing launcher files, and the inex payload/sentinel state —
+a smoke check, not a full environment report.
 
 ## 9. Running the test suite
 
@@ -356,7 +405,7 @@ dotnet test Nami.slnx              :: runs all four test projects
 (Or individually: `dotnet test tests/Nami.Tests`, `tests/Nami.Wave.Tests`,
 `tests/Nami.Cli.Tests`, `tests/Nami.Tide.Tests`.) Running the solution in one pass can abort
 the Wave test host (a known runner flake, not test failures) — if that happens, run the Wave
-project on its own; individually all four projects pass (32 + 29 + 35 + 39 tests).
+project on its own; individually all four projects pass (32 + 34 + 35 + 39 tests).
 
 ## 10. Known limitations
 
@@ -375,4 +424,7 @@ project on its own; individually all four projects pass (32 + 29 + 35 + 39 tests
   instance methods, `calli`/filter bodies refused). Windows x64 only.
 - The game must be launched through the Nami injector; use `nami launch` or the
   `launchNami.exe` shortcut `nami create` writes (Steam launch options can point at that).
-- Do not run alongside BepInEx/Doorstop in the same game folder.
+- Do not drop Doorstop's proxy (`winhttp.dll`) or a loose `BepInEx/` tree in the game
+  folder; legacy BepInEx 5.x payloads belong under `nami/inex/` via `nami inex`
+  (with `doorstop_config.ini: enabled=false` if that file is present). `nami inex
+  disable` returns to a pure Nami boot with the payload kept.

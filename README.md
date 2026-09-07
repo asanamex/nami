@@ -1,8 +1,9 @@
 # Nami
 
 **Nami** is a mod loader for Unity games — Mono and IL2CPP — engineered from scratch to be
-faster, lighter, and safer than the established loaders, with a clean-slate API and no
-dependency on BepInEx, HarmonyX, MonoMod, or Mono.Cecil.
+faster, lighter, and safer than the established loaders, with a clean-slate API. Nami core
+has no build dependency on BepInEx, HarmonyX, MonoMod, or Mono.Cecil; the optional
+nami-inex lane boots real BepInEx 5.x for legacy mods (see below).
 
 > **Status: load + patch + bridge + typed game access all working in real games, on Mono AND
 > IL2CPP.** The native
@@ -17,8 +18,10 @@ dependency on BepInEx, HarmonyX, MonoMod, or Mono.Cecil.
 > mod-issued Tide calls route to the auto-detected backend whenever the loader is present. **M3 dev experience is
 > in**: `Nami.Sdk`/`Nami.Tide` NuGet packages, the `dotnet new nami-mod` template, and
 > `nami install`/`nami run` — a modder goes from template to a running mod without hand
-> staging. Remaining: the self-contained downloadable installer and a few documented edges
-> (see docs).
+> staging. **M6 legacy lane shipped (Mono):** `nami inex install|enable|disable|status`
+> stages and boots unmodified BepInEx 5.x mods from `nami/inex/` (verified: Hardline Logger
+> 1.0.0 + Gaspy Menu 3.0.0 on Project Hardline). Remaining: the self-contained downloadable
+> installer, the BepInEx 6 / IL2CPP lane, and a few documented edges (see docs).
 
 ## Getting started
 
@@ -46,15 +49,16 @@ dependency on BepInEx, HarmonyX, MonoMod, or Mono.Cecil.
 - **Built-in per-mod profiler.** Every plugin gets tick timings (avg/p95/max) and a periodic
   summary in the log — available to mods in-process via `Context.Profiler`.
 - **Measured.** `bench/` tracks loader and patching overhead (chainloader load/update,
-  Wave hook cost); comparative gates vs BepInEx/MelonLoader on identical fixtures land with
-  the M5 milestone.
+  Wave hook cost, Wave-M2 vs HarmonyX head-to-head) with regression gates
+  (`NAMI_GATE_*` budgets, nonzero exit on breach).
 
 ## Repository layout
 
 ```
 .github/     CI (managed + native jobs)
 native/      C++17: injector (nami_boot), in-game loader (nami_loader), hostfxr hosting
-             (core/), Tide main-thread drain + object ops, smoke/ toolchain self-test
+             (core/), Tide main-thread drain + object ops, nami-inex legacy bootstrap
+             (loader/inex_bootstrap.h/.cpp), smoke/ toolchain self-test
 src/
   Nami.Sdk/        Public plugin API (what mods reference)
   Nami.Core/       Chainloader: discovery, graph, ALCs, quarantine, hot reload (generations +
@@ -62,7 +66,7 @@ src/
   Nami.Runtime/    In-game managed bootstrap: Boot.Run
   Nami.Tide/       Typed game access: Tide, GameClass, GameObject, TideValue
   Nami.Wave/       Patching engine: x64 detours + Harmony-style IL-copy prefix/postfix
-  Nami.Cli/        nami command-line tool (install/launch/create/run/doctor/list/interop/version/help)
+  Nami.Cli/        nami command-line tool (install/launch/create/run/doctor/list/interop/inex/version/help)
   Nami.Interop/    Offline IL2CPP interop: plaintext global-metadata.dat reader (v24-31) +
                    typed projection generator (`nami interop`)
 tools/
@@ -74,7 +78,7 @@ samples/       HelloNami (log-only) + TideProbe (Mono game access proof) +
                TideProbeIl2Cpp (IL2CPP game access proof)
 tests/         Unit/integration tests (Core, Wave, Cli, Tide) + plugin fixtures
 bench/         Loader (Nami.Bench — not in the solution; run via project path) + patching
-               (Wave.Bench) benchmarks; comparative gates vs other loaders: M5
+               (Wave.Bench, incl. HarmonyX head-to-head) benchmarks with regression gates
 docs/          Architecture, Tide, Wave, roadmap (plan), BepInEx comparisons
 ```
 
@@ -135,13 +139,15 @@ nami doctor [gameDir]               basic sanity check of a Nami install
 nami list [gameDir]                 list installed mods (id/version/name + dependencies)
 nami interop images|dump|generate|header [args...] [gameDir]
                                     offline IL2CPP typed-projection tooling (dev-time)
+nami inex install|enable|disable|status [args...] [gameDir]
+                                    legacy BepInEx 5.x lane (boots in game Mono, no proxy)
 nami help                           show help
 ```
 
 *(`launch` auto-detects the game as the largest `.exe` when none is set. The self-contained
 downloadable "Nami-Install" product and log-tail arrive with later milestones; hot reload,
-the per-mod profiler and the offline interop projection are shipped — see TUTORIAL.md;
-`bench/` comparative gates vs BepInEx/MelonLoader are the remaining M5 item.)*
+the per-mod profiler, the offline interop projection, the bench gates and the nami-inex
+Mono lane are shipped — see TUTORIAL.md.)*
 
 ## Writing a mod (M3 dev experience)
 
@@ -171,8 +177,9 @@ See `docs/plan.md` for the full blueprint. Short version: **M0** scaffold & proo
 patching engine (M2: Harmony-style IL-copy) · **M2** Tide bridge + typed game access ·
 **M3 done** dev experience (NuGet packages, `dotnet new nami-mod`, `nami install`/`run`) ·
 **M4 done** IL2CPP bridge (runtime backend shipped & verified; offline interop projection
-shipped: v24-31 parsing + `nami interop` typed projection) · **M5 mostly done** depth — hot reload + per-mod profiler shipped, comparative
-bench gates remaining.
+shipped: v24-31 parsing + `nami interop` typed projection) · **M5 done** depth — hot reload,
+per-mod profiler, Tide-op wiring, comparative bench gates · **M6 Mono shipped** legacy lane
+(nami-inex: unmodified BepInEx 5.x mods via `nami inex`; BepInEx 6 / IL2CPP lane later).
 
 ## License
 

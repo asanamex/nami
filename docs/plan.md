@@ -58,7 +58,7 @@ Full blueprint: `~/.commandcode/plans/nami-unity-mod-loader.md` (or via `/plans`
     plaintext metadata v24-31 with calibrated struct strides and both type-definition layouts
     (v24.1 92B / v27+ 88B); typed projection emits compilable `GameInterop.g.cs`
     (verified: compiles warning-free on a Unity 6000.0.61 title).
-- **M5 — depth (mostly done):**
+- **M5 — depth (done):**
   - **Shipped — hot reload:** generation-based live reload. A `FileSystemWatcher` (debounced,
     top-level `mods/*.dll` only) detects rebuilt/dropped/deleted mod DLLs; reloads run through
     a command queue drained between update ticks. A reload unloads the target plus all
@@ -73,9 +73,41 @@ Full blueprint: `~/.commandcode/plans/nami-unity-mod-loader.md` (or via `/plans`
     `Context.Profiler` (`IModMetrics`). Config: `profiler.enabled`/`summaryIntervalSeconds`.
     Tide-op latency is wired too: `Tide.Call`/`CallInstance` record into the current
     `OnUpdate` profiler via `TideMetrics` (`UnityLog`/`InvokeStatic` excluded).
-  - **Remaining:** comparative bench gates vs BepInEx/MelonLoader on identical fixtures
-    (`bench/Nami.Bench` currently benchmarks only Nami's own loader).
+  - **Shipped — comparative bench gates:** `bench/Wave.Bench` patches identical
+    `Add(int,int)->int` targets with same-shaped Wave-M2 vs HarmonyX (2.16.1, the exact
+    fork BepInEx 6 ships) prefix+postfix pairs and gates exact restore (±25%), M1/M2
+    absolute budgets, the Wave-vs-Harmony ratio (≤4x; measured ~0.6x on x64 Release),
+    and result equality — nonzero exit on breach, budgets via `NAMI_GATE_*` env.
+    `bench/Nami.Bench` gates load ms/plugin and update ms/frame the same way.
+    Full-loader shootouts (BepInEx/MelonLoader boot-to-playable on a real title) stay a
+    manual protocol — neither loader runs in CI: same game, same mod count, compare
+    boot-to-first-tick from `nami.log` vs `LogOutput.log` plus steady-state RSS.
   (Scene-iteration scan APIs remain tracked under "M2 remaining" above.)
+
+- **M6 — nami-inex legacy lane (Mono late-boot shipped; early-boot timing pending).** Nami
+  boots real BepInEx 5.x inside the game's own Mono — no Doorstop proxy, tree rooted at
+  `nami/inex/`, managed by `nami inex install|enable|disable|status` plus a
+  `nami/inex/enabled` sentinel the native loader reads: four DOORSTOP_* env vars
+  (`PROCESS_PATH`, `MANAGED_FOLDER_DIR` derived as `<exe>_Data\Managed`, `INVOKE_DLL_PATH`
+  pointing at `nami/inex/BepInEx/core/BepInEx.Preloader.dll`, `DLL_SEARCH_DIRS` pointing at
+  `nami/inex/BepInEx/core`) + `Doorstop.Entrypoint.Start` on the game main thread (shared
+  Tide detour toolkit; `mono_jit_init_version`/`mono_jit_init` on `mono-2.0-bdwgc.dll` or
+  `mono.dll` are attempted in order, with the failing target's prologue bytes logged).
+  `measure_relocatable_prologue` refuses relative CALL/JMP, so on builds whose prologue
+  starts with `E8` the jit hook fails and boot falls back to *late* drain-driven boot —
+  never early-boot. Window-visible-gated (as scene-live proxy, 180s timeout) +
+  domain-stability-gated chainloader kick: `mono_domain_get` sampled on the main thread
+  until 5 consecutive stable reads 1s apart (max 120 tries; any domain change resets the
+  Start epoch so the new domain gets exactly one fresh Start), then one atomic drain call
+  runs preloader `Start` + `Initialize(null,false,null)` + `Start()` via `PostInvoke`
+  (outside any nested invoke frame; `Initialize`/`Start` carry BepInEx-side
+  `_initialized`/`_loaded` guards). Verified manually (no in-repo fixture — games are
+  gitignored): Hardline Logger 1.0.0 + Gaspy Menu 3.0.0 load and run on Project Hardline
+  with boot logs identical to the Doorstop baseline; only automated coverage is the CLI
+  file-ops suite (`InexCommandTests`).
+  Remaining: early-boot fidelity (E8-tolerant prologue handling for the jit detour),
+  BepInEx 6 / IL2CPP lane (own CoreCLR, interop orchestration), boot-guard safe mode,
+  legacy-pack distribution.
 
 ## Verified in-game evidence
 

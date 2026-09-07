@@ -1,8 +1,10 @@
-# Wave — Nami's patching engine
+# Wave — Nami's patching engine (CoreCLR side)
 
-Wave is Nami's runtime method-patching engine. It installs **x64 inline detours** on managed
+Wave is Nami's runtime method-patching engine for Nami's own .NET runtime. It installs **x64 inline detours** on managed
 methods and routes calls through **owner-scoped chains of prefix/postfix callbacks** — the
 "patching" layer of the Nami stack, built in-house (no Harmony, no MonoMod, no Cecil).
+It does not touch game Mono: native Mono-export detours live in the `nami::tide` detour
+toolkit, and the legacy inex lane brings its own unmodified BepInEx/Harmony stack.
 
 ```
 src/Nami.Wave/           the engine
@@ -15,7 +17,7 @@ src/Nami.Wave/           the engine
   Internal/IlReader.cs   raw IL decoder (opcodes, operands, branch targets)
   Internal/IlRewriter.cs re-emitter: original IL (incl. EH tables) → generated assembly method (IL copy)
   Internal/PatchedBodyBuilder.cs  prefix/postfix convention binder + ret-rewriting injector
-tests/Nami.Wave.Tests/   37 [Fact] + 1 [Theory] (2 rows) in Release: M1 + M2 semantics,
+tests/Nami.Wave.Tests/   38 [Fact] + 1 [Theory] (2 rows) in Release: M1 + M2 semantics,
                          IL-copy fidelity, restore (the deep M2 suite compiles in Release;
                          in DEBUG only a placeholder runs)
 bench/Wave.Bench/        hooked-call overhead benchmark (1M calls)
@@ -147,6 +149,8 @@ baseline (direct)        : ~21 ns/call
 hooked observer (M1)     : ~66 ns/call   (+45 ns)
 hooked gate-skip (M1)    : ~73 ns/call   (+52 ns)
 restored after unhook    : ~21 ns/call   (exact restore)
+wave M2 prefix+postfix   : ~14 ns/call   (same-shaped pair vs HarmonyX below)
+harmonyX prefix+postfix  : ~24 ns/call   (2.16.1, the BepInEx-6 fork)
 ```
 
 The M1 hooked path is: detour jump → stub → one managed dispatch → callback(s) → tail-jump

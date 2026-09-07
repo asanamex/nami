@@ -1,6 +1,7 @@
 #include "loader.h"
 
 #include "../core/runtime_host.h"
+#include "inex_bootstrap.h"
 #include "tide_il2cpp.h"
 
 #include <windows.h>
@@ -69,6 +70,20 @@ void loader_main(const wchar_t* nami_root) {
         if (len > 0) {
             root.resize(static_cast<size_t>(len - 1));
             WideCharToMultiByte(CP_UTF8, 0, nami_root, -1, root.data(), len, nullptr, nullptr);
+        }
+    }
+
+    // Legacy lane (nami-inex): arms the BepInEx 5.x boot if a payload is staged AND
+    // enabled (nami/inex/enabled sentinel). Non-blocking: game-thread work happens
+    // on the game's own threads. IL2CPP titles skip this (BepInEx 6 needs its own
+    // CoreCLR lane — later).
+    if (!is_il2cpp && !root.empty()) {
+        const int inex = inex::arm(root);
+        if (marker) {
+            std::fwprintf(marker, L"[loader] legacy inex: %ls\n",
+                          inex == 2 ? L"armed" : inex == 1 ? L"payload staged, not enabled"
+                                                           : L"absent");
+            std::fflush(marker);
         }
     }
 

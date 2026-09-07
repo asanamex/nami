@@ -8,8 +8,10 @@ namespace Nami.Bench;
 
 /// <summary>
 /// Headline benchmark: time the managed chainloader (discovery + load + update sweep)
-/// over N synthetic plugins and report per-1000-plugin cost. The comparative harness
-/// against BepInEx/MelonLoader on real Unity fixtures lands in M5.
+/// over N synthetic plugins and report per-1000-plugin cost. Doubles as a regression
+/// gate (env-overridable budgets, generous defaults): nonzero exit on breach.
+/// The in-game comparative harness against BepInEx/MelonLoader on real Unity fixtures
+/// is a documented manual protocol (see docs/plan.md M5) — neither loader runs in CI.
 /// </summary>
 internal static class Program
 {
@@ -47,10 +49,36 @@ internal static class Program
         chainloader.Shutdown();
 
         var loaded = chainloader.Plugins.Count;
+        var msPerPlugin = loadMs / Math.Max(1, loaded);
+        var msPerFrame = updateMs / UpdateFrames;
         Console.WriteLine($"plugins loaded       : {loaded}");
-        Console.WriteLine($"load time            : {loadMs,8:F1} ms  ({loadMs / Math.Max(1, loaded),6:F2} ms/plugin)");
-        Console.WriteLine($"update sweep x{UpdateFrames}    : {updateMs,8:F1} ms  ({updateMs / UpdateFrames,6:F3} ms/frame @ {loaded} plugins)");
+        Console.WriteLine($"load time            : {loadMs,8:F1} ms  ({msPerPlugin,6:F2} ms/plugin)");
+        Console.WriteLine($"update sweep x{UpdateFrames}    : {updateMs,8:F1} ms  ({msPerFrame,6:F3} ms/frame @ {loaded} plugins)");
         Console.WriteLine($"working set          : {rss,8:F0} MB");
+
+        // Regression gates: generous absolute budgets (slow/loaded machines must still
+        // pass); override via environment for tight per-machine tracking.
+        static double Gate(string name, double def) =>
+            double.TryParse(Environment.GetEnvironmentVariable(name), out var v) && v > 0 ? v : def;
+        var loadBudget = Gate("NAMI_GATE_LOAD_MS_PER_PLUGIN", 100);
+        var frameBudget = Gate("NAMI_GATE_UPDATE_MS_PER_FRAME", 0.5);
+        var failures = new List<string>();
+        void Check(bool ok, string message)
+        {
+            Console.WriteLine($"{(ok ? "GATE PASS" : "GATE FAIL")} {message}");
+            if (!ok)
+            {
+                failures.Add(message);
+            }
+        }
+
+        Check(msPerPlugin <= loadBudget, $"load {msPerPlugin:F2}ms/plugin <= {loadBudget}ms");
+        Check(msPerFrame <= frameBudget, $"update {msPerFrame:F3}ms/frame <= {frameBudget}ms");
+
+        foreach (var f in failures)
+        {
+            Console.Error.WriteLine($"bench gate failed: {f}");
+        }
 
         try
         {
@@ -61,7 +89,7 @@ internal static class Program
             // best-effort
         }
 
-        return 0;
+        return failures.Count == 0 ? 0 : 1;
     }
 
     private static void SynthesizePlugins(string modsDir, int count)

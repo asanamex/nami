@@ -7,7 +7,13 @@ its state — rather than only running sandboxed logic in a parallel universe.
 ```
 src/Nami.Tide/              managed API: Tide, GameClass, GameObject, TideValue
 native/loader/tide_pump.cpp native Mono main-thread executor: mono_runtime_invoke hook,
-                            queue, drain, trampoline
+                            pre/post drain queues, trampoline; shared nami::tide detour
+                            toolkit (measure_relocatable_prologue / build_trampoline /
+                            install_native_detour — also used by inex_bootstrap.cpp
+                            for mono_jit_init*)
+native/loader/inex_bootstrap.h/.cpp  nami-inex legacy lane (DOORSTOP_* env, jit detour
+                            attempt, watcher thread, late chainloader kick — a Tide
+                            drain + detour consumer; see docs/architecture.md)
 native/loader/tide_ops.cpp  native ops: UnityLog
 native/loader/tide_objects.cpp  Mono typed game access: field/property/method/object ops
 native/loader/tide_il2cpp.cpp   IL2CPP main-thread executor: window-proc drain (see §9)
@@ -67,8 +73,10 @@ sequenceDiagram
     Tide-->>Mod: true
 ```
 
-1. **Hook.** On first Tide use, `nami_loader.dll` installs a safe native detour over
-   `mono_runtime_invoke` — an export the game's main thread calls constantly. The detour is
+1. **Hook.** On first `run_on_main_thread` — a Tide op *or* the inex lane's late
+   sequence — `nami_loader.dll` installs a safe native detour over
+   `mono_runtime_invoke` — an export the game's main thread calls constantly. (The inex
+   lane's `mono_jit_init*` detours install even earlier at loader boot, before CoreCLR.) The detour is
    built properly: the prologue length is measured by a small x64 decoder (whole instructions
    only, refuses branches/RIP-relative forms), relocated into a trampoline, and the entry is
    patched with `mov rax, imm64; jmp rax` under `VirtualProtect`. No split instructions.
@@ -80,8 +88,10 @@ sequenceDiagram
 4. **Fast path.** When nothing is queued, the detour costs one atomic read. Verified: the
    game runs normally with the hook installed (see §4).
 
-The hook is a single global detour; the queue is guarded by a critical section plus an atomic
-"work pending" flag so the hot path never takes the lock.
+The Tide drain is a single global detour over `mono_runtime_invoke` (the toolkit
+supports additional concurrent detours on other targets — the inex lane hooks
+`mono_jit_init*` the same way, under its own lock); the queue is guarded by a critical section plus an atomic
+"work pending" flag so the hot path never takes the lock (checked pre- and post-invoke).
 
 ---
 
@@ -104,6 +114,9 @@ self-test (this boot gate applies on **both** backends). You should see in `nami
 
 Mod-issued Tide calls don't need the flag beyond that: they route to the auto-detected
 backend (`Tide.ActiveBackend`; `IsAvailable` is true whenever the loader is present).
+Loader ordering, for reference: wait for runtime → (Mono only) `inex::arm` when a payload
+plus the `inex/enabled` sentinel exist → host CoreCLR → managed Tide self-test when
+`enableMonoBridge` is set.
 
 > **Why opt-in?** The Mono bridge runs native code that patches a live game export. It
 > is proven on Unity Mono (Windows x64) across four titles spanning 2022.3 and Unity 6
@@ -258,19 +271,23 @@ copying `Nami.*` DLLs from a mod's output into `mods/`.
 ### Native: `tide_pump.cpp`
 
 - `install_main_thread_drain()` — resolves `mono_runtime_invoke`, measures its prologue with
-  `measure_relocatable_prologue()` (whole instructions ≥ 14 bytes; refuses relative branches
-  and RIP-relative operands), builds a trampoline (`build_trampoline`), then writes the
+  `measure_relocatable_prologue()` (whole instructions ≥ 14 bytes out of a ≤32-byte scan;
+  refuses VEX/EVEX/XOP, relative branches, `ret`/`int3`, all `0F`-prefixed opcodes, and
+  RIP-relative operands), builds a trampoline (`build_trampoline`), then writes the
   14-byte absolute jump under `VirtualProtect(PAGE_EXECUTE_READWRITE)`. Installation is
   serialized under an SRW lock (concurrent first calls are safe; the queue critical section is
-  initialized once).
-- `drain_queue()` — runs queued ops on the calling thread. Called from the detour, i.e. on
-  the game main thread. Each request carries its own `done` event; the drain signals it after
-  the op returns and frees the request. The drain sets a reentrancy flag while running, so a
-  Tide call made FROM the game main thread (e.g. a mod hook running on it) executes **inline**
-  instead of queueing-and-deadlocking.
-- `run_on_main_thread(fn, arg, timeout_ms = 0, flags = PostInvoke?)` — enqueues (critical section + atomic pending flag)
-  and waits on the request's event. When called from inside the drain (main thread), it runs
-  `fn` inline instead of waiting on itself.
+  initialized once). The same measure/build pair backs the generic `install_native_detour`
+  (own SRW lock) used by the inex lane; the drain installer inlines its own patch sequence.
+- `drain_queue()` — runs the pre queue on the calling thread. Called from the detour, i.e. on
+  the game main thread, before the original invoke. `drain_post_queue()` runs the post
+  queue after the original returns (outside the nested frame); it clears the pending flag
+  only when both queues are empty. The drain sets a reentrancy flag while running
+  (`IsTideOnMainThread()`), so a Tide call made FROM the game main thread (e.g. a mod hook
+  running on it) executes **inline** instead of queueing-and-deadlocking.
+- `run_on_main_thread(fn, arg, timeout_ms = 0, flags = RequestFlag_None)` — enqueues
+  (pre queue, or post queue when `flags` has `RequestFlag_PostInvoke`) and waits on the
+  request's event (`timeout_ms <= 0` waits forever). When called from inside the drain
+  (main thread), it runs `fn` inline instead of waiting on itself.
 - Fast path in the detour: one `InterlockedCompareExchange` on the pending flag; the lock is
   only taken when work is queued.
 
@@ -334,9 +351,9 @@ copying `Nami.*` DLLs from a mod's output into `mods/`.
 |---|---|
 | `Tide unavailable: nami_loader not loaded` | Not running in a Nami-injected game process (e.g. unit test, or game launched without `nami_boot`). |
 | `Tide bridge present but UnityLog failed` | See `nami-tide.log`. Common: assembly not found under that name (Tide tries common variants) or a Mono exception in `Debug.Log`. |
-| Game crashes on boot with the bridge on | The `mono_runtime_invoke` detour refused the prologue, or the game's Mono differs from the verified set (2022.3.x, 6000.x). Turn the bridge off (`"enableMonoBridge": false`), confirm the game runs, and report the `nami-tide.log`. |
+| Game crashes on boot with the bridge on | The `mono_runtime_invoke` detour refused the prologue, or the game's Mono differs from the verified set (2022.3.x, 6000.x). Triage the three logs: `nami/native/nami-tide.log` (Tide), `nami/native/nami-inex.log` (legacy lane — including jit-prologue refusal and BepInEx payload issues), `nami/native/nami-loader.log` (which lane armed). Turn the bridge off (`"enableMonoBridge": false`) — note this does **not** disable an enabled inex lane — confirm the game runs, and report the logs. |
 | `TideException: op ... failed (code -1)` | Member not found (check assembly/class/member names, case, arity) or an unsupported value type. Codes are logged in `nami/native/nami-tide.log`. |
-| Calling `Object.FindObjectOfType` (or `FindFirstObjectByType`) aborts the game | Unity does not allow scene-iteration APIs from embedding re-entry — pre- *or* post-invoke (a post-invoke path exists natively but aborts the same way; ABI op `12` is reserved and unimplemented). Use static accessors (`Camera.main`) or static object fields instead — see §8. |
+| Calling `Object.FindObjectOfType` (or `FindFirstObjectByType`) aborts the game | Unity does not allow scene-iteration APIs from embedding re-entry — pre- *or* post-invoke (the post-invoke export itself works and the inex lane uses it for loads and `Awake`; only scene iteration aborts the same way, `0xe0000001`). ABI op `12` (`TideCall_FindObject`) is defined but unhandled, so it returns `-1`. Use static accessors (`Camera.main`) or static object fields instead — see §8. |
 
 ---
 
@@ -391,10 +408,10 @@ callback would unlock the scan APIs (they need a genuine Unity script context, n
 embedding re-entry).
 
 **Next:**
-- A non-nested main-thread hook point (e.g. a Wave-installed per-frame managed callback) to
-  enable scene-iteration APIs (`FindObjectOfType`, `Resources.FindObjectsOfTypeAll`), plus a
-  managed `FindObject` op (native ABI slot `12` is reserved; `CallInstance` currently
-  hardcodes `postInvoke=false`).
+- A non-nested main-thread hook point for scene-iteration APIs (`FindObjectOfType`,
+  `Resources.FindObjectsOfTypeAll`) — a future Mono-side point (Wave patches the CoreCLR
+  side only, so it cannot install one); `Call` already exposes `postInvoke`, only
+  `CallInstance` hardcodes it `false`.
 - Broaden the verified matrix (older/newer Unity Mono, more games); the main-thread-drain
   pattern is expected to carry over.
 

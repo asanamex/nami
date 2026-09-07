@@ -26,6 +26,7 @@ internal static class Program
                 "doctor" => Doctor(rest),
                 "list" => List(rest),
                 "interop" => Interop(rest),
+                "inex" => Inex(rest),
                 "help" or "--help" or "-h" => Help(),
                 _ => Unknown(command)
             };
@@ -231,6 +232,24 @@ internal static class Program
         return picked;
     }
 
+    /// <summary>
+    /// nami inex — legacy lane (nami-inex): stage/enable/disable a real BepInEx 5.x runtime
+    /// that Nami boots inside the game's own Mono (no Doorstop proxy).
+    /// </summary>
+    private static int Inex(string[] args)
+    {
+        // nami inex <sub> [subArgs...] [gameDir]  (gameDir must be an existing directory)
+        var gameDir = Directory.GetCurrentDirectory();
+        var rest = args;
+        if (args.Length > 1 && Directory.Exists(args[^1]))
+        {
+            gameDir = Path.GetFullPath(args[^1]);
+            rest = args[..^1];
+        }
+
+        return InexCommand.Run(gameDir, rest);
+    }
+
     private static int Doctor(string[] args)
     {
         var gameDir = ParseGameDir(args, out _);
@@ -264,6 +283,11 @@ internal static class Program
 
         var missing = Launcher.MissingRootFiles(root);
         Console.WriteLine(missing.Count == 0 ? "launcher  : complete" : $"launcher  : MISSING {string.Join(", ", missing)}");
+
+        var inexPayload = File.Exists(InexCommand.PreloaderPath(root));
+        var inexEnabled = File.Exists(InexCommand.SentinelPath(root));
+        Console.WriteLine($"inex     : {(inexPayload ? "payload staged" : "no payload")}" +
+                          (inexPayload ? (inexEnabled ? " (enabled)" : " (disabled)") : ""));
         return 0;
     }
 
@@ -345,6 +369,8 @@ internal static class Program
               list     [gameDir]      list installed plugins and their state
               interop  images|dump|generate|header [args...] [gameDir]
                                       offline IL2CPP typed-projection tooling (dev-time)
+              inex     install|enable|disable|status [args...] [gameDir]
+                                      legacy BepInEx lane (boots BepInEx 5.x in game Mono)
               help                    show this help
             """);
         return 0;

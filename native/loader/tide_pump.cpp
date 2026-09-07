@@ -77,10 +77,13 @@ void* __stdcall runtime_invoke_detour(void* method, void* obj, void** args, void
     return result;
 }
 
+}  // namespace
+
 // ---------------------------------------------------------------------------
-// Minimal x64 instruction-length decoder for trampoline building. Only needs to measure
-// instructions until the prologue covers >= 14 bytes; refuses (returns 0) on anything it
-// cannot measure safely (branches, RIP-relative, VEX/EVEX, 3-byte escapes).
+// Shared detour toolkit: measure_relocatable_prologue + build_trampoline live in
+// nami::tide (not the anonymous namespace) so the inex legacy lane can detour its
+// own targets. Both cover whole instructions until >= min_bytes and refuse
+// (return 0/nullptr) on anything unsafe to relocate; scans at most 32 bytes.
 // ---------------------------------------------------------------------------
 
 // Returns the total length of whole instructions from `p` until >= min_bytes, or 0 if any
@@ -215,8 +218,6 @@ void* build_trampoline(unsigned char* target, int prologue_len) {
     tramp[prologue_len + 10] = 0xFF; tramp[prologue_len + 11] = 0xE0;
     return tramp;
 }
-
-}  // namespace
 
 // Runs a single request's work and signals its done event. Deletes the request.
 void run_request(Request* req) {
@@ -425,6 +426,57 @@ bool run_on_main_thread(TideWorkFn fn, void* arg, int timeout_ms, int flags) {
     CloseHandle(req->done);
 
     return result == WAIT_OBJECT_0;
+}
+
+namespace detour_toolkit_detail {
+SRWLOCK g_detour_lock = SRWLOCK_INIT;
+}  // namespace detour_toolkit_detail
+
+void* install_native_detour(const wchar_t* module_name, const char* export_name, void* detour) {
+    AcquireSRWLockExclusive(&detour_toolkit_detail::g_detour_lock);
+
+    const HMODULE module = GetModuleHandleW(module_name);
+    if (module == nullptr) {
+        ReleaseSRWLockExclusive(&detour_toolkit_detail::g_detour_lock);
+        return nullptr;
+    }
+
+    auto* target = static_cast<unsigned char*>(
+        reinterpret_cast<void*>(GetProcAddress(module, export_name)));
+    if (target == nullptr) {
+        ReleaseSRWLockExclusive(&detour_toolkit_detail::g_detour_lock);
+        return nullptr;
+    }
+
+    const int prologue_len = measure_relocatable_prologue(target, 14);
+    if (prologue_len <= 0) {
+        ReleaseSRWLockExclusive(&detour_toolkit_detail::g_detour_lock);
+        return nullptr;
+    }
+
+    void* trampoline = build_trampoline(target, prologue_len);
+    if (trampoline == nullptr) {
+        ReleaseSRWLockExclusive(&detour_toolkit_detail::g_detour_lock);
+        return nullptr;
+    }
+
+    DWORD old_protect = 0;
+    if (!VirtualProtect(target, 14, PAGE_EXECUTE_READWRITE, &old_protect)) {
+        ReleaseSRWLockExclusive(&detour_toolkit_detail::g_detour_lock);
+        return nullptr;
+    }
+
+    target[0] = 0x48;
+    target[1] = 0xB8;
+    *reinterpret_cast<uint64_t*>(target + 2) = reinterpret_cast<uint64_t>(detour);
+    target[10] = 0xFF;
+    target[11] = 0xE0;
+    target[12] = 0x90;
+    target[13] = 0x90;
+
+    VirtualProtect(target, 14, old_protect, &old_protect);
+    ReleaseSRWLockExclusive(&detour_toolkit_detail::g_detour_lock);
+    return trampoline;
 }
 
 }  // namespace nami::tide

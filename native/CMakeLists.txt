@@ -27,6 +27,7 @@ target_include_directories(nami_core PUBLIC core)
 add_library(nami_loader SHARED
   loader/loader_main.cpp
   loader/loader_exports.cpp
+  loader/inex_bootstrap.cpp
   loader/tide_pump.cpp
   loader/tide_ops.cpp
   loader/tide_objects.cpp

@@ -15,10 +15,10 @@ observed in the wild — no BepInEx source lives in this repo to check them agai
 
 | Aspect | BepInEx | Nami |
 |---|---|---|
-| Injection mechanism | **Unity Doorstop**: a proxy DLL dropped into the game root (typically `winhttp.dll`) that Windows loads because the game imports it; Doorstop then boots the preloader before Unity's runtime initializes. | **Launcher injection**: `nami_boot.exe` starts the game suspended, writes the loader DLL path into the process, creates a remote thread that runs `LoadLibraryW`, then resumes the game. No proxy file in the game root. |
-| Files placed in the game directory | `winhttp.dll`, `doorstop_config.ini`, `.doorstop_version`, a `BepInEx/` tree; games whose assemblies get preloader-patched also gain `.bak` copies (observed in the wild: `Assembly-CSharp.dll.bak`). | One self-contained `nami/` directory next to the executable. Nothing is written into the game's own folders and **no game assembly is ever modified or backed up**. |
+| Injection mechanism | **Unity Doorstop**: a proxy DLL dropped into the game root (typically `winhttp.dll`) that Windows loads because the game imports it; Doorstop then boots the preloader before Unity's runtime initializes. | **Launcher injection**: `nami_boot.exe` starts the game suspended, writes the loader DLL path into the process, creates a remote thread that runs `LoadLibraryW`, then resumes the game. No proxy file in the game root. The legacy lane reuses the same injector (no `winhttp`/`doorstop_config.ini`): the loader sets `DOORSTOP_*` env and boots BepInEx 5.x via a `mono_jit_init` detour + main-thread invoke. |
+| Files placed in the game directory | `winhttp.dll`, `doorstop_config.ini`, `.doorstop_version`, a `BepInEx/` tree; games whose assemblies get preloader-patched also gain `.bak` copies (observed in the wild: `Assembly-CSharp.dll.bak`). | One self-contained `nami/` directory next to the executable (`nami/mods` + `nami.log` for native mods; `nami/inex/BepInEx/` + sentinel + `native/nami-inex.log` + `inex/BepInEx/LogOutput.log` when the legacy lane is enabled). Nothing is written into the game's own folders and **no game assembly is ever modified or backed up**. |
 | Uninstall | Remove Doorstop files + `BepInEx/`; must verify no assembly was left patched. | Delete the `nami/` folder. |
-| When the loader runs | At process start, *before* Unity initializes (Doorstop hook). | After the process starts; the loader thread waits for the game's runtime to appear (`mono-2.0-bdwgc.dll`/`mono.dll` on Mono titles, `GameAssembly.dll` on IL2CPP titles), then proceeds — the game boots normally and Nami hooks in beside it. |
+| When the loader runs | At process start, *before* Unity initializes (Doorstop hook). | After the process starts; the loader thread waits for the game's runtime to appear (`mono-2.0-bdwgc.dll`/`mono.dll` on Mono titles, `GameAssembly.dll` on IL2CPP titles), then proceeds — the game boots normally and Nami hooks in beside it. Legacy mods boot late (first scene live), not at process start — see the nami-inex timing in `docs/architecture.md`. |
 | Reliance on name collision | Yes — a DLL the game imports must be shadowed (`winhttp.dll`), which is detectable and can conflict with other software using that name. | No name collision; injection is explicit and scoped to the launched process. |
 
 ## 2. Runtime model (the big one)
@@ -35,9 +35,9 @@ observed in the wild — no BepInEx source lives in this repo to check them agai
 
 | Aspect | BepInEx | Nami |
 |---|---|---|
-| Isolation between plugins | Mono games: all plugins share the game's single AppDomain — shared statics, shared assembly resolution, exceptions and `static` state can bleed between plugins and the game. | Every plugin loads into its **own unloadable `AssemblyLoadContext`**: isolated statics, isolated resolution; plugin assemblies are distinct instances even when names collide. |
+| Isolation between plugins | Mono games: all plugins share the game's single AppDomain — shared statics, shared assembly resolution, exceptions and `static` state can bleed between plugins and the game. | Native lane: every plugin loads into its **own unloadable `AssemblyLoadContext`**: isolated statics, isolated resolution; plugin assemblies are distinct instances even when names collide. Legacy lane = BepInEx-column behavior (shared AppDomain, no isolation). |
 | Unloading / hot reload | Not supported on Mono (plugins live for the process lifetime). IL2CPP: process-lifetime component contexts. | **Shipped.** Collectible ALCs plus a debounced file watcher over top-level `mods/*.dll`: rebuild/drop/delete a mod DLL and it swaps to a new generation live — dependents reload with it, mod files are never locked, and mods can self-reload via `Context.RequestReload()`. Subdirectory DLLs (`.nmod`-installed `mods/<id>/`) are discovered but not watched. |
-| A crashing plugin | An exception escaping a plugin's update can take down the game or corrupt shared state; no structured quarantine. | **Crash quarantine**: a plugin that throws N consecutive times is disabled (`Quarantined`), `OnUnload` is called, the reason is logged, the game keeps running. Verified by test (`ChainloaderTests`, `HotReloadTests`). |
+| A crashing plugin | An exception escaping a plugin's update can take down the game or corrupt shared state; no structured quarantine. | Native lane — **crash quarantine**: a plugin that throws N consecutive times is disabled (`Quarantined`), `OnUnload` is called, the reason is logged, the game keeps running. Verified by test (`ChainloaderTests`, `HotReloadTests`). Legacy lane: a legacy crash is a game crash; `nami inex disable` returns to pure Nami. |
 | Assembly identity conflicts | Two plugins shipping the same dependency fight over one AppDomain resolution. | Each ALC resolves its own copy; only the Nami framework assemblies unify (by design, so plugin↔loader types match). |
 
 ## 4. Discovery, load order, dependencies
@@ -52,8 +52,8 @@ observed in the wild — no BepInEx source lives in this repo to check them agai
 
 | Aspect | BepInEx | Nami |
 |---|---|---|
-| Preloader patching | BepInEx 5-era Mono flow: `AssemblyPatcher` **rewrites game assemblies with Cecil before they load** (patcher plugins in `BepInEx/patchers`). This is why patched games can carry `.bak` assembly copies. | **None.** Nami never reads, rewrites, or re-emits a game assembly. All extension happens at runtime in Nami's own runtime. |
-| Runtime patching API | **HarmonyX** (a Harmony fork) — mature prefix/postfix/transpiler ecosystem; the de-facto standard modders know. IL2CPP patching rides on MonoMod detours / Dobby through Il2CppInterop. | **Wave** (in-house, this repo): x64 inline detours with owner-scoped chains, exact byte restore, ~+45 ns/call M1 observer overhead measured by `bench/Wave.Bench` (x64 Release/.NET 10; varies by machine — see `docs/wave.md`). Two engines: M1 native-stub gate/observer dispatch for parameterless void targets, and M2 **IL-copy patching** — any closed method with a real body, Harmony-shaped conventions (`__instance`/`__result`/`__state`/`__args`), skip semantics and result rewriting. Zero Harmony/MonoMod/Cecil. |
+| Preloader patching | BepInEx 5-era Mono flow: `AssemblyPatcher` **rewrites game assemblies with Cecil before they load** (patcher plugins in `BepInEx/patchers`). This is why patched games can carry `.bak` assembly copies. | Native lane: **none.** Nami never reads, rewrites, or re-emits a game assembly. All extension happens at runtime in Nami's own runtime. (Legacy lane executes BepInEx 5.x patchers as-is inside game Mono.) |
+| Runtime patching API | **HarmonyX** (a Harmony fork) — mature prefix/postfix/transpiler ecosystem; the de-facto standard modders know. IL2CPP patching rides on MonoMod detours / Dobby through Il2CppInterop. | **Wave** (in-house, this repo): x64 inline detours with owner-scoped chains, exact byte restore, ~+45 ns/call M1 observer overhead measured by `bench/Wave.Bench` (x64 Release/.NET 10; varies by machine — see `docs/wave.md`). Two engines: M1 native-stub gate/observer dispatch for parameterless void targets, and M2 **IL-copy patching** — any closed method with a real body, Harmony-shaped conventions (`__instance`/`__result`/`__state`/`__args`), skip semantics and result rewriting. Native patching is Wave-only (zero Harmony/MonoMod/Cecil); the legacy lane brings real HarmonyX via BepInEx 5.x (Mono only). |
 | Dependency weight | Core ships HarmonyX + MonoMod + Mono.Cecil regardless of need. | Zero third-party managed dependencies; patching is a loadable subsystem (`Nami.Wave`), not a boot-time cost. |
 
 ## 6. IL2CPP interop strategy
@@ -76,23 +76,23 @@ on-demand in-process materialization remains design intent, not shipped behavior
 
 | Aspect | BepInEx | Nami |
 |---|---|---|
-| Loader config | `doorstop_config.ini` in the game root + `BepInEx/config/` per-plugin `.cfg` **INI** files via `ConfigFile`. | `nami.json` in the nami root (JSON, tolerant parsing, defaults on missing/malformed file; I/O errors still throw). Per-plugin config shipped: `pluginConfig.<id>` sections via `Context.Config`. |
-| Logging | `Logger` → `DiskLogListener` writes `BepInEx/LogOutput.log`; console via `ConsoleManager`; per-plugin `ManualLogSource`. | `LogHub` fan-out to sinks; `FileSink` writes `nami/nami.log`; per-plugin `ILog` tags records with the plugin id. Sinks are isolated so a broken sink can't crash the host. |
+| Loader config | `doorstop_config.ini` in the game root + `BepInEx/config/` per-plugin `.cfg` **INI** files via `ConfigFile`. | `nami.json` in the nami root (JSON, tolerant parsing, defaults on missing/malformed file; I/O errors still throw). Per-plugin config shipped: `pluginConfig.<id>` sections via `Context.Config`. Legacy lane: BepInEx `.cfg` files live under `nami/inex/BepInEx/config/`; the switch is the `nami/inex/enabled` file, and no `doorstop_config.ini` is needed (Nami sets `DOORSTOP_*` env directly — Doorstop itself must stay `enabled=false` if present). |
+| Logging | `Logger` → `DiskLogListener` writes `BepInEx/LogOutput.log`; console via `ConsoleManager`; per-plugin `ManualLogSource`. | `LogHub` fan-out to sinks; `FileSink` writes `nami/nami.log`; per-plugin `ILog` tags records with the plugin id. Sinks are isolated so a broken sink can't crash the host. Legacy lane adds `nami/native/nami-inex.log` + `nami/inex/BepInEx/LogOutput.log` (see `nami inex status`). |
 
 ## 8. Packaging, CLI, tooling
 
 | Aspect | BepInEx | Nami |
 |---|---|---|
-| Mod distribution | Loose DLL in `BepInEx/plugins` (plus `patchers/`). | Mods are built from NuGet (`Nami.Sdk`/`Nami.Tide` packages) and land as loose DLLs in `nami/mods` (via `nami run`); `.nmod` (zip + `mod.json`: id/name/version/description/authors/deps/incompatibilities — no game-bounds field) installs to `mods/<id>/` via the `NamiPackage` library (auto-install/CLI wiring future). |
-| CLI / dev tooling | No first-party CLI for install/inspect (community tools exist). | `nami` CLI: version/doctor/list/help + `install` (stages a runnable root from build outputs) + `run <mod.csproj>` (build, copy to nami/mods, launch) + `interop images|dump|generate|header` (offline IL2CPP projection, dev-time) + a player-facing launcher flow — `launch set <game.exe>`, `launch [offline|steam]` (auto-detects the exe; Steam relay to a clean session after exit, or uninjected relay with `steamRelaySkipInjection`), `create` (double-click `launchNami.exe` in the nami root). Plus `dotnet new nami-mod` and NuGet packages. The self-contained downloadable installer (bundled runtime) is planned. |
-| Benchmarking | None shipped. | `bench/` harness from M0; comparative gates vs BepInEx/MelonLoader planned for M5. |
+| Mod distribution | Loose DLL in `BepInEx/plugins` (plus `patchers/`). | Native mods are built from NuGet (`Nami.Sdk`/`Nami.Tide` packages) and land as loose DLLs in `nami/mods` (via `nami run`); `.nmod` (zip + `mod.json`: id/name/version/description/authors/deps/incompatibilities — no game-bounds field) installs to `mods/<id>/` via the `NamiPackage` library (auto-install/CLI wiring future). Legacy mods: BepInEx 5.x tree → `nami/inex/BepInEx` via `nami inex install` (cache/ skipped), DLLs into `nami/inex/BepInEx/plugins`. |
+| CLI / dev tooling | No first-party CLI for install/inspect (community tools exist). | `nami` CLI: version/doctor/list/help + `install` (stages a runnable root from build outputs) + `run <mod.csproj>` (build, copy to nami/mods, launch) + `interop images|dump|generate|header` (offline IL2CPP projection, dev-time) + a player-facing launcher flow — `launch set <game.exe>`, `launch [offline|steam]` (auto-detects the exe; Steam relay to a clean session after exit, or uninjected relay with `steamRelaySkipInjection`), `create` (double-click `launchNami.exe` in the nami root) + `inex install|enable|disable|status` (legacy BepInEx 5.x lane; `doctor` reports its payload/sentinel state). Plus `dotnet new nami-mod` and NuGet packages. The self-contained downloadable installer (bundled runtime) is planned. |
+| Benchmarking | None shipped. | `bench/` harness from M0 with regression gates (Wave-vs-HarmonyX ratio + absolute budgets, `NAMI_GATE_*`); full-loader shootouts stay a manual protocol (see plan.md M5). |
 
 ## 9. Platform & target matrix
 
 | Aspect | BepInEx | Nami |
 |---|---|---|
 | Unity Mono | Windows/Linux/macOS, x86/x64 (5.x and 6.x). | **Windows x64 verified** against four Unity Mono titles spanning 2022.3 and Unity 6 (2022.3.5f1, 2022.3.27f1, 2022.3.34f1, 6000.5.4f1); other OS/arch planned. |
-| Unity IL2CPP | Windows/Linux/macOS x64 (6.x be). | **Shipped** (Windows x64): Tide's IL2CPP backend verified live on D1AL-ogue (Unity 6000.0.61); probing also done on 2020.3.18 and 6000.4 titles. |
+| Unity IL2CPP | Windows/Linux/macOS x64 (6.x be). | **Shipped** (Windows x64): Tide's IL2CPP backend verified live on D1AL-ogue (Unity 6000.0.61); probing also done on 2020.3.18 and 6000.4 titles. Legacy BepInEx compat is Mono/BepInEx-5 only; IL2CPP titles skip `inex::arm`. |
 | Non-Unity .NET apps | Supported (NET Framework / CoreCLR launchers). | Out of scope — Unity games only. |
 | Plugin TFMs | net35/netstandard2.0 (Mono), net6.0 (IL2CPP). | net10.0 everywhere. |
 
@@ -102,7 +102,7 @@ on-demand in-process materialization remains design intent, not shipped behavior
 |---|---|---|
 | Third-party runtime deps | Doorstop, HarmonyX, MonoMod.RuntimeDetour/Utils, Mono.Cecil, Cpp2IL, Il2CppInterop, bundled .NET 6. | No third-party managed packages (verified: no `PackageReference` in any `src/*.csproj`; only tests use xunit/coverlet); native side uses only the Windows API + the bundled .NET 10 runtime. Patching is shipped in-house (Wave); the IL2CPP runtime bridge (Tide backend) and the offline projection emitter (`nami interop`) are shipped in-house too. |
 | Injection surface | Doorstop (separate project, C++). | In-repo C++ (`native/`, ~3.7k LOC total — ≈265 injector+boot, the rest the Tide bridge): injector + loader. `nami_loader.dll` is fully static-linked (no MinGW runtime DLLs to resolve in a foreign process); `nami_boot.exe` is MinGW-linked. |
-| IL tooling | Mono.Cecil everywhere (discovery, patching, interop). | None (by design); reflection-based discovery; IL2CPP access via the game's own `il2cpp_*` runtime exports (Tide IL2CPP backend). |
+| IL tooling | Mono.Cecil everywhere (discovery, patching, interop). | None in the native lane (by design); reflection-based discovery; IL2CPP access via the game's own `il2cpp_*` runtime exports (Tide IL2CPP backend). The legacy lane runs BepInEx's own Cecil/Harmony stack unmodified. |
 
 ## 11. Operational & observable differences (verified)
 
@@ -111,15 +111,15 @@ on-demand in-process materialization remains design intent, not shipped behavior
 | Game folder after install | Doorstop files + `BepInEx/` + possible `.bak` assemblies. | Only `nami/`. |
 | Startup added latency (Mono) | Small (Doorstop boot + preloader patch pass). | Small (module wait + CoreCLR host init). One extra in-process CoreCLR is a real, measurable cost — measure per title. |
 | RAM overhead (Mono) | Near zero beyond plugins (they run in the game's runtime). | One modern runtime in-process — a real, measurable cost; the trade for isolation + modern BCL. |
-| Crash containment | Plugin exception ⇒ game may crash / corrupt shared state. | Plugin exception ⇒ quarantine path, game continues. |
-| Can it run alongside the other | N/A | Untested combination — don't install Nami and BepInEx in one game folder (both hook the launch path). |
+| Crash containment | Plugin exception ⇒ game may crash / corrupt shared state. | Native plugin exception ⇒ quarantine path, game continues. Legacy lane: a legacy crash is a game crash (`nami inex disable` returns to pure Nami). |
+| Can it run alongside the other | N/A | Supported via the nami-inex lane (Mono only): stage a BepInEx 5.x tree to `nami/inex/BepInEx` + `nami inex enable`; Nami and BepInEx then run side by side, Nami injecting. Only Doorstop's `winhttp` proxy in the game root stays forbidden. |
 
 ## 12. Ecosystem & maturity (where BepInEx wins today)
 
-- **Existing mods**: BepInEx has a massive catalog; Nami's clean-slate API loads none of it (a deliberate choice).
+- **Existing mods**: BepInEx has a massive catalog; Nami's native clean-slate API loads none of it — but the nami-inex lane loads unmodified BepInEx 5.x Mono mods from `nami/inex/BepInEx/plugins` (verified: Hardline Logger + Gaspy Menu).
 - **Patching**: HarmonyX's prefix/postfix/transpiler is proven and known to every modder; Wave implements a compatible prefix/postfix core, but without HarmonyX's years of edge-case coverage or its transpiler ecosystem.
 - **Documentation & community knowledge**: BepInEx is the default answer; Nami is new.
-- **Edge-case hardening**: BepInEx has years of real-world coverage across thousands of games; Nami has five verified games (three Unity 2022.3 Mono, one Unity 6 Mono, one Unity 6 IL2CPP).
+- **Edge-case hardening**: BepInEx has years of real-world coverage across thousands of games; Nami has five verified games (three Unity 2022.3 Mono, one Unity 6 Mono, one Unity 6 IL2CPP) plus Project Hardline via the legacy lane.
 
 ## Summary
 
@@ -131,12 +131,13 @@ The differences reduce to one architectural bet:
   DLLs in the game root, player-side IL2CPP generation, an old BCL for Mono plugins.
 - **Nami** maximizes isolation and modernity: it brings its own runtime and runs plugins there,
   never touches game assemblies, contains each plugin in an unloadable ALC, quarantines
-  failures, and keeps the game folder pristine — at the cost of not loading existing mods, a
-  patcher that is young (Wave) rather than ecosystem-proven, and the overhead of a second
-  runtime.
+  failures, and keeps the game folder pristine — at the cost of a young (Wave) rather than
+  ecosystem-proven patcher for native mods, and the overhead of a second
+  runtime. The existing BepInEx catalog is reachable through the nami-inex legacy lane instead
+  of the native API.
 
 The long-term bet of Nami is that those costs shrink as the remaining pieces land (downloadable
-installer — hot reload, the per-mod profiler, the IL2CPP runtime bridge and the offline
-projection emitter are already shipped), while
+installer — hot reload, the per-mod profiler, the IL2CPP runtime bridge, the offline
+projection emitter and the nami-inex Mono legacy lane are already shipped), while
 BepInEx's costs (runtime coupling, generation on the player's machine, metadata churn chasing,
 EOL .NET 6) are structural and only grow as Unity moves on.
