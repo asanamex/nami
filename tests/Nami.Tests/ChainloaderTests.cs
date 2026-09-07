@@ -71,7 +71,9 @@ public class ChainloaderTests
         var beta = chainloader.Plugins.Single(p => p.Manifest.Id == "dev.nami.fixtures.beta");
 
         Assert.NotSame(alpha.Instance.GetType().Assembly, beta.Instance.GetType().Assembly);
-        Assert.NotEqual(alpha.Instance.GetType().Assembly.Location, beta.Instance.GetType().Assembly.Location);
+        // Assemblies are byte-loaded (hot reload keeps mod files unlocked), so Location is
+        // empty; isolation is proven by each plugin living in a distinct ALC.
+        Assert.NotSame(alpha.LoadContext, beta.LoadContext);
         chainloader.Shutdown();
     }
 

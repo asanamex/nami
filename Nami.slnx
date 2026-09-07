@@ -10,6 +10,7 @@
   <Folder Name="/src/">
     <Project Path="src/Nami.Cli/Nami.Cli.csproj" />
     <Project Path="src/Nami.Core/Nami.Core.csproj" />
+    <Project Path="src/Nami.Interop/Nami.Interop.csproj" />
     <Project Path="src/Nami.Runtime/Nami.Runtime.csproj" />
     <Project Path="src/Nami.Sdk/Nami.Sdk.csproj" />
     <Project Path="src/Nami.Tide/Nami.Tide.csproj" />

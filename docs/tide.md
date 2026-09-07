@@ -1,7 +1,7 @@
 # Tide — the Nami ↔ game bridge
 
 Tide connects mods running on Nami's hosted .NET (CoreCLR) to the game's own managed runtime
-(Unity Mono). It is the layer that lets a mod actually *touch the game* — call its code, read
+(Unity Mono, or IL2CPP — see §9). It is the layer that lets a mod actually *touch the game* — call its code, read
 its state — rather than only running sandboxed logic in a parallel universe.
 
 ```
@@ -96,18 +96,22 @@ Tide is **opt-in**. Add to `<game>/nami/nami.json`:
 ```
 
 On boot, Nami's runtime attaches Tide and fires a `Debug.Log` through the bridge as a
-self-test. You should see in `nami.log`:
+self-test (this boot gate applies on **both** backends). You should see in `nami.log`:
 
 ```
 [boot] Tide bridge OK: Unity Debug.Log executed on the game main thread
 ```
 
-> **Why opt-in (Mono)?** The Mono bridge runs native code that patches a live game export. It
+Mod-issued Tide calls don't need the flag beyond that: they route to the auto-detected
+backend (`Tide.ActiveBackend`; `IsAvailable` is true whenever the loader is present).
+
+> **Why opt-in?** The Mono bridge runs native code that patches a live game export. It
 > is proven on Unity Mono (Windows x64) across four titles spanning 2022.3 and Unity 6
 > (2022.3.5f1, 2022.3.27f1, 2022.3.34f1, 6000.5.4f1); until more games/versions are verified,
 > it stays behind an explicit flag so a bad interaction can never silently affect a game that
-> didn't ask for it. The IL2CPP backend (see §9) needs no flag — it patches nothing (it only
-> subclasses the game's window) and is auto-detected from the presence of `GameAssembly.dll`.
+> didn't ask for it. The IL2CPP backend (see §9) needs no code patching (it only
+> subclasses the game's window) and is auto-detected from the presence of `GameAssembly.dll`
+> — but the boot self-test above still requires the flag there too.
 
 ---
 
@@ -166,49 +170,52 @@ using Nami;   // Tide, GameClass, GameObject, TideValue, TideTypes, TideArrays
 
 | Member | Description |
 |---|---|
-| `bool Tide.IsAvailable` | True when `nami_loader.dll` is loaded (i.e. running in-game under Nami). False in plain unit tests / outside a game. |
-| `bool Tide.UnityLog(string message)` | Calls `UnityEngine.Debug.Log(object)` on the game main thread. |
-| `bool Tide.InvokeStatic(assembly, ns, name, method)` | Calls a **parameterless** static game method on the main thread; true if it ran without a Mono exception. |
+| `bool Tide.IsAvailable` | True when `nami_loader.dll` is loaded (i.e. running in-game under Nami). False in plain unit tests / outside a game. `Tide.ActiveBackend` (`Mono`/`Il2Cpp`), `IsReady`, and `EnsureReady()` report/drive backend readiness. |
+| `bool Tide.UnityLog(string message)` | Calls `UnityEngine.Debug.Log(object)` on the game main thread (**Mono backend only**). |
+| `bool Tide.InvokeStatic(assembly, ns, klass, method)` | Calls a **parameterless** static game method on the main thread (**Mono backend only** — on IL2CPP call `GameClass.CallStatic("Log", …)` instead); true if it ran without a game exception. |
 | `GameClass GameClass.Resolve(assembly, ns, name)` | Resolve a game class once by assembly (with or without `.dll`). |
 | `GetStaticInt/Long/Float/Double/Bool/String/Object` / `SetStatic...` | Typed static **field or property** read/write (primitives + string + live objects via `GetStaticObject`/`SetStaticObject`). |
-| `T? Get<T>(field)` / `Set<T>(field, value)` | **Generic typed access** (static): `T` may be int/long/float/double/bool/string/`GameObject`/any enum (int-backed). No hand-picking `TideType`. |
+| `T? Get<T>(field)` / `Set<T>(field, value)` | **Generic typed access** (static): `T` may be int/long/float/double/bool/string/`GameObject`/any enum (`I32`, or `I64` for `long` enums). No hand-picking `TideType`. |
 | `TResult? Call<TResult>(method, params TideValue[])` | Generic typed static call: maps `TResult` to the right `TideType` and converts the result (incl. enums). |
-| `CallStatic(method, args...)` | Call a static method with typed args; returns `void`. Throws on failure. |
+| `CallStatic(method, args...)` | Call a static method with typed args (0–3 args via overloads; N-args via `CallStaticVoid(method, TideValue[])`); returns `void`. Throws on failure. |
 | `CallStaticValue(method, args, returnType)` | Like `CallStatic` but returns a `TideValue`; pass the expected `TideType`. |
 | `GameObject GameClass.NewObject()` | Create a new instance of the class (runs the parameterless ctor). |
-| `GameObject` | Opaque handle to a live game object. Instance method calls with typed returns: `CallIntMethod`, `CallLongMethod`, `CallFloatMethod`, `CallDoubleMethod`, `CallBoolMethod`, `CallStringMethod`, `CallObjectMethod` (plus void `Call`/`CallVoid`); `GetInt/GetLong/.../GetString/GetObject` + `SetInt/.../SetString/SetObject`; **generic** `Get<T>`/`Set<T>`/`Call<TResult>`. `Dispose()` is idempotent; use after dispose throws. `GameObject.FromHandle(long)` wraps a raw handle. |
-| `TideValue` | A typed value. Factories: `FromInt/FromLong/FromFloat/FromDouble/FromBool/FromString/FromHandle`. Readers: `Int32/Int64/Single/Double/Boolean/Handle/String`. Ownership: `FreeNativeReturn()` (frees a native string return) and `FreeStringBuffer()` (frees an argument buffer created by `FromString`). |
-| `TideTypes.Of<T>()` | Maps a CLR type to its `TideType` (primitives, string, `GameObject`, enums → underlying int). |
-| `TideArrays` | Read/write a game-side `System.Array` handle: `GetLength`, typed element reads (`GetInt/GetLong/GetFloat/GetDouble/GetBool/GetEnum/GetString/GetObject`) and writes (`SetInt/.../SetString/SetObject`). Works for value-type, enum, string and reference arrays. |
+| `GameObject` | Opaque handle to a live game object. Instance method calls with typed returns: `CallIntMethod` (0- or 1-arg) and 0-arg `CallLong/Float/Double/Bool/String/ObjectMethod` (N-args via generic `Call<TResult>(method, params TideValue[])`); void `Call` (0–2 args) / `CallVoid(method, TideValue[])`; `GetInt/GetLong/.../GetString/GetObject` + `SetInt/.../SetString/SetObject`; **generic** `Get<T>`/`Set<T>`/`Call<TResult>`. `Dispose()` is idempotent; use after dispose throws. `GameObject.FromHandle(long)` wraps a raw handle (`0` → `null`). |
+| `TideValue` | A typed value. Factories: `FromInt/FromLong/FromFloat/FromDouble/FromBool/FromString/FromHandle`. Readers: `Int32/Int64/Single/Double/Boolean/Handle/String`. Ownership: `FreeNativeReturn()` (frees a native string return after copying) and `FreeStringBuffer()` (only if you retain a `FromString` buffer manually — `Call`/`CallInstance` auto-free arg buffers in a `finally`). |
+| `TideTypes.Of<T>()` | Maps a CLR type to its `TideType` (primitives, string, `GameObject`, enums → underlying int, or `I64` for `long` enums). |
+| `TideArrays` | Read/write a game-side `System.Array` handle: `GetLength`, typed element reads (`GetInt/GetLong/GetFloat/GetDouble/GetBool/GetEnum/GetString/GetObject`) and writes (`SetInt/SetLong/SetFloat/SetDouble/SetBool/SetString/SetObject` — enum writes via `SetInt`). Works for value-type, enum, string and reference arrays. |
 
-**Blocking semantics**: every call blocks until the game's main thread has executed it (safe:
-the main thread is always pumping through `mono_runtime_invoke`). String **arguments** travel
-in caller-allocated UTF-8 buffers that the managed side frees after the call
-(`FromString`/`FreeStringBuffer`); string **returns** are native buffers (`mono_string_to_utf8`)
-you must copy and free with `TideValue.FreeNativeReturn()` before the next call.
+**Blocking semantics**: every call blocks until the game's main thread has executed it (Mono:
+pumped through `mono_runtime_invoke`; IL2CPP: drained from the window procedure — see §9).
+String **arguments** travel in caller-allocated UTF-8 buffers that `Call`/`CallInstance`
+free automatically; string **returns** are native buffers you must copy and free with
+`TideValue.FreeNativeReturn()` (Mono: `mono_string_to_utf8` + `nami_tide_free`; IL2CPP:
+`malloc`'d UTF-8 + `nami_il2cpp_free`).
 
 **Failure**: **every** failing op throws `TideException` (including void calls — no silent
-failures). `TideException.Code` carries the native result (`-1` not found/invalid, `-2` the
-game method threw a Mono exception, `-3` pump unavailable), and when the game threw, the
-exception's `.Message` includes the Mono exception's ToString (type + message + stack).
+failures). `TideException.Code` carries the native result (`-1` aliases not-found/invalid-arg/not-ready,
+`-2` the game method threw — Mono or IL2CPP, `-3` pump unavailable), and when the game threw, the
+exception's `.Message` includes the game exception's ToString (type + message + stack).
 `TideException.IsMonoException` distinguishes the two. Full diagnostics are also in
-`nami-tide.log`.
+`nami/native/nami-tide.log`.
 
-**Marshaling**: method calls are **overload- and signature-aware**: the target method is
+**Marshaling (Mono)**: method calls are **overload- and signature-aware**: the target method is
 selected by matching argument types to the method's parameter types (exact matches win;
 `object` params accept boxed primitives; impossible bindings like a primitive→`string` are
 rejected), and primitive values passed to reference-typed parameters (`object`, interfaces,
 base classes) are **boxed automatically** — e.g. `CallStatic("Log", TideValue.FromInt(5))`
-correctly calls `Debug.Log(object)` with a boxed `Int32`.
+correctly calls `Debug.Log(object)` with a boxed `Int32`. (IL2CPP binds the first overload
+of matching arity and boxes only the 1-arg `Debug.Log(object)` case.)
 
 **Enums**: int-backed game enums are read/written through the integer accessors
 (`GetStaticInt`/`Get<int>`/`GetEnum`) — the value is the underlying `int`. Enum-typed method
-arguments are passed as their underlying value. (Read an enum as `long`/`Int64` only when its
-underlying type is actually 64-bit; reading an int-backed enum as `I64` returns no value.)
+arguments are passed as their underlying value. `long`-backed enums map to `I64`;
+reading an int-backed enum as `I64` yields no value (native `Void`, managed `0`).
 
 **Arrays**: an array-typed field/property/method return arrives as a `GameObject` handle;
 use `TideArrays` for length and typed element access. Element reads use
-`System.Array.GetValue` under the hood, so they are safe and layout-independent.
+`System.Array.GetValue` on Mono; on IL2CPP they go through native `Il2CppArray` access
+(`+0x20`), because `GetValue/SetValue` throw there.
 
 ### Example: a mod that touches the game
 
@@ -261,7 +268,7 @@ copying `Nami.*` DLLs from a mod's output into `mods/`.
   the op returns and frees the request. The drain sets a reentrancy flag while running, so a
   Tide call made FROM the game main thread (e.g. a mod hook running on it) executes **inline**
   instead of queueing-and-deadlocking.
-- `run_on_main_thread(fn, arg, timeout)` — enqueues (critical section + atomic pending flag)
+- `run_on_main_thread(fn, arg, timeout_ms = 0, flags = PostInvoke?)` — enqueues (critical section + atomic pending flag)
   and waits on the request's event. When called from inside the drain (main thread), it runs
   `fn` inline instead of waiting on itself.
 - Fast path in the detour: one `InterlockedCompareExchange` on the pending flag; the lock is
@@ -291,7 +298,7 @@ copying `Nami.*` DLLs from a mod's output into `mods/`.
 - **Values**: typed slots (`TideValue`) — a 4-byte tag plus a 16-byte payload union
   (i32/i64/r4/r8/bool/string/object). Strings travel as caller-owned UTF-8 buffers read on the
   main thread; string returns are `mono_string_to_utf8` buffers the managed side frees via
-  `nami_tide_free`.
+  `nami_tide_free` (IL2CPP: `malloc`'d UTF-8 via `nami_il2cpp_free`).
 - **Hierarchy-aware member lookup**: `mono_class_get_method_from_name`/`field` only search
   the class itself, so inherited members (e.g. `GameObject.GetInstanceID` on
   `UnityEngine.Object`) were missed; Tide walks `mono_class_get_parent` up the chain.
@@ -306,7 +313,8 @@ copying `Nami.*` DLLs from a mod's output into `mods/`.
 
 ### Managed (`Nami.Tide` assembly, `Nami` namespace)
 
-- `Tide` — availability, `UnityLog`, `InvokeStatic` (parameterless static calls).
+- `Tide` — availability (`IsAvailable`, `ActiveBackend`, `IsReady`, `EnsureReady`),
+  `UnityLog`, `InvokeStatic` (parameterless static calls).
 - `GameClass` — resolve a class, typed static field/property access, static calls,
   `NewObject`, generic `Get<T>`/`Set<T>`/`Call<TResult>`.
 - `GameObject` — opaque handle; typed instance field/property access, typed instance method
@@ -327,8 +335,8 @@ copying `Nami.*` DLLs from a mod's output into `mods/`.
 | `Tide unavailable: nami_loader not loaded` | Not running in a Nami-injected game process (e.g. unit test, or game launched without `nami_boot`). |
 | `Tide bridge present but UnityLog failed` | See `nami-tide.log`. Common: assembly not found under that name (Tide tries common variants) or a Mono exception in `Debug.Log`. |
 | Game crashes on boot with the bridge on | The `mono_runtime_invoke` detour refused the prologue, or the game's Mono differs from the verified set (2022.3.x, 6000.x). Turn the bridge off (`"enableMonoBridge": false`), confirm the game runs, and report the `nami-tide.log`. |
-| `TideException: op ... failed (code -1)` | Member not found (check assembly/class/member names, case, arity) or an unsupported value type. Codes are logged in `nami-tide.log`. |
-| Calling `Object.FindObjectOfType` aborts the game | Unity does not allow scene-iteration APIs from embedding re-entry (aborts `0xe0000001`). Use static accessors (`Camera.main`) or static object fields instead — see §8. |
+| `TideException: op ... failed (code -1)` | Member not found (check assembly/class/member names, case, arity) or an unsupported value type. Codes are logged in `nami/native/nami-tide.log`. |
+| Calling `Object.FindObjectOfType` (or `FindFirstObjectByType`) aborts the game | Unity does not allow scene-iteration APIs from embedding re-entry — pre- *or* post-invoke (a post-invoke path exists natively but aborts the same way; ABI op `12` is reserved and unimplemented). Use static accessors (`Camera.main`) or static object fields instead — see §8. |
 
 ---
 
@@ -384,9 +392,9 @@ embedding re-entry).
 
 **Next:**
 - A non-nested main-thread hook point (e.g. a Wave-installed per-frame managed callback) to
-  enable scene-iteration APIs (`FindObjectOfType`, `Resources.FindObjectsOfTypeAll`).
-- A generated strongly-typed projection layer over `GameClass` (the generic `Get<T>`/`Set<T>`
-  API is the runtime foundation for it).
+  enable scene-iteration APIs (`FindObjectOfType`, `Resources.FindObjectsOfTypeAll`), plus a
+  managed `FindObject` op (native ABI slot `12` is reserved; `CallInstance` currently
+  hardcodes `postInvoke=false`).
 - Broaden the verified matrix (older/newer Unity Mono, more games); the main-thread-drain
   pattern is expected to carry over.
 
@@ -394,9 +402,10 @@ embedding re-entry).
 
 ## 9. IL2CPP backend (Unity IL2CPP titles)
 
-Nami also runs on **IL2CPP** games (`GameAssembly.dll` present, no Mono). The managed
-`Nami.Tide` API is identical — `Tide.ActiveBackend` reports `Il2Cpp`, and every `GameClass` /
-`GameObject` / `TideValue` call routes to the IL2CPP backend automatically.
+Nami also runs on **IL2CPP** games (`GameAssembly.dll` present, no Mono). The typed
+`GameClass` / `GameObject` / `TideValue` API is identical — `Tide.ActiveBackend` reports `Il2Cpp`,
+and every typed op (`TideObjectOp.Call`/`CallInstance`) routes to the IL2CPP backend automatically.
+(`Tide.UnityLog`/`InvokeStatic` stay Mono-only; on IL2CPP use `GameClass` typed calls.)
 
 **Execution model (empirically established on real IL2CPP titles — Arrow a Row 2020.3.18,
 D1AL-ogue 6000.0.61):** IL2CPP compiles game scripts to native code, so unlike Mono there is

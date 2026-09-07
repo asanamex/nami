@@ -6,6 +6,8 @@ namespace Nami.Core.Plugins;
 /// <summary>
 /// Loads and owns a single plugin assembly in its own unloadable load context,
 /// and resolves shared references (the SDK and any Nami runtime assemblies) from the default context.
+/// Assemblies are loaded from raw bytes so the on-disk files are never locked — a mod can be
+/// rebuilt in place while the game runs, which is what makes hot reload possible.
 /// </summary>
 public sealed class PluginLoadContext : AssemblyLoadContext
 {
@@ -20,7 +22,7 @@ public sealed class PluginLoadContext : AssemblyLoadContext
         _resolver = new AssemblyDependencyResolver(assemblyPath);
     }
 
-    public Assembly LoadPluginAssembly() => LoadFromAssemblyPath(_assemblyPath);
+    public Assembly LoadPluginAssembly() => LoadWithoutFileLock(_assemblyPath);
 
     protected override Assembly? Load(AssemblyName assemblyName)
     {
@@ -63,12 +65,33 @@ public sealed class PluginLoadContext : AssemblyLoadContext
         }
 
         var resolved = _resolver.ResolveAssemblyToPath(assemblyName);
-        return resolved is null ? null : LoadFromAssemblyPath(resolved);
+        return resolved is null ? null : LoadWithoutFileLock(resolved);
     }
 
     protected override IntPtr LoadUnmanagedDll(string unmanagedDllName)
     {
         var path = _resolver.ResolveUnmanagedDllToPath(unmanagedDllName);
         return path is null ? IntPtr.Zero : LoadUnmanagedDllFromPath(path);
+    }
+
+    private Assembly LoadWithoutFileLock(string path)
+    {
+        var bytes = File.ReadAllBytes(path);
+        var pdbPath = Path.ChangeExtension(path, ".pdb");
+        var pdb = File.Exists(pdbPath) ? File.ReadAllBytes(pdbPath) : null;
+        return pdb is null ? Assembly.Load(bytes) : Assembly.Load(bytes, pdb);
+    }
+
+    private WeakReference? _weak;
+
+    /// <summary>
+    /// Captures a fresh weak reference to this context. Called by the chainloader after
+    /// dropping the plugin from the active set, so collectibility can be reported:
+    /// <c>IsAlive</c> flips false once the ALC and its assemblies have actually been collected.
+    /// </summary>
+    public WeakReference CollectWeakReference()
+    {
+        _weak = new WeakReference(this, trackResurrection: false);
+        return _weak;
     }
 }

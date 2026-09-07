@@ -9,12 +9,12 @@ dependency on BepInEx, HarmonyX, MonoMod, or Mono.Cecil.
 > core hosts .NET 10 inside five verified Unity games — four Mono: Project Hardline
 > (2022.3.27f1), Parasocial (2022.3.5f1), ROUNDS (2022.3.34f1), The Gaspy Color War (Unity 6,
 > 6000.5.4f1); one IL2CPP: D1AL-ogue (Unity 6, 6000.0.61); Wave patches methods
-> with in-house x64 detours and Harmony-style IL-copy prefix/postfix patching (any signature);
+> with in-house x64 detours and Harmony-style IL-copy prefix/postfix patching (closed methods);
 > **Tide** lets mods call into the game — typed static/instance field access, typed method
 > calls, and live object creation/calls, all executed on the game's main thread and verified
-> stable in-game, on both backends (Mono and IL2CPP auto-detected). Enable with
-> `"enableMonoBridge": true` in `nami.json` (Mono titles); IL2CPP titles are detected
-> automatically. **M3 dev experience is
+> stable in-game, on both backends (Mono and IL2CPP auto-detected). The flag
+> `"enableMonoBridge": true` in `nami.json` gates the boot self-test on both backends;
+> mod-issued Tide calls route to the auto-detected backend whenever the loader is present. **M3 dev experience is
 > in**: `Nami.Sdk`/`Nami.Tide` NuGet packages, the `dotnet new nami-mod` template, and
 > `nami install`/`nami run` — a modder goes from template to a running mod without hand
 > staging. Remaining: the self-contained downloadable installer and a few documented edges
@@ -33,14 +33,18 @@ dependency on BepInEx, HarmonyX, MonoMod, or Mono.Cecil.
 
 - **One modern .NET runtime** (net10.0 LTS) embedded on *both* Mono and IL2CPP games — plugins
   are never stuck on a game's ancient bundled runtime.
-- **Lazy type projection** instead of eagerly preloading hundreds of interop assemblies —
-  game types materialize only when a mod touches them (kills the 100–400 MB / multi-second
-  overhead of the classic IL2CPP interop preload).
+- **Lazy type projection** (design intent) instead of eagerly preloading hundreds of interop
+  assemblies — today that means the dev-time `nami interop generate` source emitter plus
+  runtime name-based resolution through Tide (no 100–400 MB / multi-second interop preload
+  on the player's machine).
 - **No player-side generation.** Interop/reference dumping is an offline dev tool, never a
   first-launch cost.
 - **Per-mod isolation & crash quarantine.** A throwing mod disables itself; the game keeps
-  running. Mods can be hot-reloaded (collectible ALCs are the foundation; the reload tooling
-  is a later milestone).
+  running. Mods **hot-reload live**: rebuild or drop a top-level DLL into `nami/mods` and it
+  swaps into a new generation without restarting the game (unloadable ALCs + a file watcher +
+  mod files loaded without file locks).
+- **Built-in per-mod profiler.** Every plugin gets tick timings (avg/p95/max) and a periodic
+  summary in the log — available to mods in-process via `Context.Profiler`.
 - **Measured.** `bench/` tracks loader and patching overhead (chainloader load/update,
   Wave hook cost); comparative gates vs BepInEx/MelonLoader on identical fixtures land with
   the M5 milestone.
@@ -49,24 +53,29 @@ dependency on BepInEx, HarmonyX, MonoMod, or Mono.Cecil.
 
 ```
 .github/     CI (managed + native jobs)
-native/      C++17: injector (nami_boot), in-game loader (nami_loader), hostfxr hosting,
-             Tide main-thread drain + object ops
+native/      C++17: injector (nami_boot), in-game loader (nami_loader), hostfxr hosting
+             (core/), Tide main-thread drain + object ops, smoke/ toolchain self-test
 src/
   Nami.Sdk/        Public plugin API (what mods reference)
-  Nami.Core/       Chainloader: discovery, graph, ALCs, quarantine
+  Nami.Core/       Chainloader: discovery, graph, ALCs, quarantine, hot reload (generations +
+                   file watcher), per-mod profiler (Profiling/ModProfiler.cs)
   Nami.Runtime/    In-game managed bootstrap: Boot.Run
   Nami.Tide/       Typed game access: Tide, GameClass, GameObject, TideValue
   Nami.Wave/       Patching engine: x64 detours + Harmony-style IL-copy prefix/postfix
-  Nami.Cli/        nami command-line tool (install/launch/run/create/doctor/list)
-  Nami.Interop/    Offline reference-assembly dumper                [later milestone]
+  Nami.Cli/        nami command-line tool (install/launch/create/run/doctor/list/interop/version/help)
+  Nami.Interop/    Offline IL2CPP interop: plaintext global-metadata.dat reader (v24-31) +
+                   typed projection generator (`nami interop`)
 tools/
   launch-shim/     launchNami.exe source (embedded into Nami.Cli for `nami create`)
   templates/       `dotnet new nami-mod` template content
-artifacts/         local NuGet + build outputs (packages/, dotnet/)
-samples/       HelloNami (log-only) + TideProbe (typed game access proof)
+artifacts/         local NuGet feed (packages/); `artifacts/dotnet/` if present, else the
+                   runtime is bundled from your local .NET 10 install
+samples/       HelloNami (log-only) + TideProbe (Mono game access proof) +
+               TideProbeIl2Cpp (IL2CPP game access proof)
 tests/         Unit/integration tests (Core, Wave, Cli, Tide) + plugin fixtures
-bench/         Loader + patching benchmarks (comparative gates vs other loaders: M5)
-docs/          Architecture, Tide, Wave, roadmap
+bench/         Loader (Nami.Bench — not in the solution; run via project path) + patching
+               (Wave.Bench) benchmarks; comparative gates vs other loaders: M5
+docs/          Architecture, Tide, Wave, roadmap (plan), BepInEx comparisons
 ```
 
 ## Try it against a real game (Mono, Windows x64)
@@ -79,7 +88,7 @@ cmake --build native/build
 
 # 2. Let the CLI stage a nami root next to the game and remember the game exe
 nami install "<game>"                     # <game>/nami with bundled dotnet/, mods/, nami.json
-nami launch set Game.exe "<game>"         # remember the game exe (add --steam-id <appid>)
+nami launch set "<game>\Game.exe" "<game>"  # remember the game exe (add --steam-id <appid>)
 
 # 3. Launch with Nami injected (launches the game suspended, hosts .NET 10 inside it,
 #    loads mods from nami/mods). gameDir is the trailing argument:
@@ -93,13 +102,14 @@ type "<game>\nami\nami.log"
 ## Prerequisites
 
 - .NET SDK 10.0+
-- CMake 3.20+ and a C++17 compiler (MinGW / MSVC / Clang) — only needed for the `native/` tree
+- CMake 3.20+, Ninja (for `-G Ninja` below), and a C++17 compiler (MinGW-w64 —
+  MSVC/Clang are untested with these link flags) — only needed for the `native/` tree
 
 ## Build & test
 
 ```
-dotnet build Nami.slnx              # managed solution (SDK/Core/CLI/tests/fixtures)
-dotnet test  Nami.slnx              # all test projects (Core, Wave, Cli, Tide)
+dotnet build Nami.slnx              # everything: src + tests + fixtures + samples + Wave.Bench + launch-shim
+dotnet test  Nami.slnx              # all test projects (Nami.Tests, Nami.Wave.Tests, Nami.Cli.Tests, Nami.Tide.Tests)
 
 cmake -S native -B native/build     # native core (optional for managed-only work)
 cmake --build native/build
@@ -121,13 +131,17 @@ nami launch [offline|steam] [gameDir]
 nami create [offline|steam] [gameDir]
                                     write launchNami.exe + run-with-nami.bat into the nami root
 nami run <mod.csproj> [gameDir]     build a mod, stage it into nami/mods, launch the game
-nami doctor [gameDir]               verify an install / report the environment
+nami doctor [gameDir]               basic sanity check of a Nami install
 nami list [gameDir]                 list installed mods (id/version/name + dependencies)
+nami interop images|dump|generate|header [args...] [gameDir]
+                                    offline IL2CPP typed-projection tooling (dev-time)
+nami help                           show help
 ```
 
 *(`launch` auto-detects the game as the largest `.exe` when none is set. The self-contained
-downloadable "Nami-Install" product, profiles/log-tail/hot-reload/interop arrive with later
-milestones; `bench/` already exists.)*
+downloadable "Nami-Install" product and log-tail arrive with later milestones; hot reload,
+the per-mod profiler and the offline interop projection are shipped — see TUTORIAL.md;
+`bench/` comparative gates vs BepInEx/MelonLoader are the remaining M5 item.)*
 
 ## Writing a mod (M3 dev experience)
 
@@ -156,8 +170,9 @@ See `docs/plan.md` for the full blueprint. Short version: **M0** scaffold & proo
 **M1** core framework (load order, isolation, quarantine, config, logging) · **M1.5** Wave
 patching engine (M2: Harmony-style IL-copy) · **M2** Tide bridge + typed game access ·
 **M3 done** dev experience (NuGet packages, `dotnet new nami-mod`, `nami install`/`run`) ·
-**M4 in progress** IL2CPP bridge **shipped** (runtime backend; offline interop projection
-next) · **M5** depth (hot reload, profiling, comparative bench gates).
+**M4 done** IL2CPP bridge (runtime backend shipped & verified; offline interop projection
+shipped: v24-31 parsing + `nami interop` typed projection) · **M5 mostly done** depth — hot reload + per-mod profiler shipped, comparative
+bench gates remaining.
 
 ## License
 

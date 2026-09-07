@@ -20,4 +20,9 @@
     <InternalsVisibleTo Include="Nami.Tide.Tests" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- For TideMetrics (op timing sink) so the per-mod profiler can receive op latencies. -->
+    <ProjectReference Include="..\Nami.Sdk\Nami.Sdk.csproj" />
+  </ItemGroup>
+
 </Project>

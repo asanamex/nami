@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>Nami.Interop</RootNamespace>
+    <IsPackable>false</IsPackable>
+    <Description>Nami offline IL2CPP interop: plaintext global-metadata.dat reader + typed projection generator (dev-time tooling; the runtime bridge never uses it).</Description>
+  </PropertyGroup>
+
+</Project>

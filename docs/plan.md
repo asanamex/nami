@@ -12,21 +12,23 @@ Full blueprint: `~/.commandcode/plans/nami-unity-mod-loader.md` (or via `/plans`
   signature; multi-owner chains rebuild the patched body atomically.
 - **M2 — done (Mono slice).** Tide: cross-runtime bridge + **typed game access** — static and
   instance field/property access, typed method calls, live object creation/calls, **generic
-  typed API** (`Get<T>`/`Set<T>`/`Call<T>`), **enum values** (as underlying int), **array
+   typed API** (`Get<T>`/`Set<T>`/`Call<T>`), **enum values** (as underlying int;
+   `long`-backed enums surface as `I64`), **array
   values** (`TideArrays`), and **live scene-object access** via static accessors
   (`Camera.main`), all on the game's main thread. Verified in-game against four Unity Mono
   titles spanning 2022.3 and Unity 6: Project Hardline (2022.3.27f1), Parasocial (2022.3.5f1),
   ROUNDS (2022.3.34f1), and The Gaspy Color War (6000.5.4f1).
-- **M2 remaining:** a public scene-iteration API. The transport is in place — a post-invoke
-  drain (work runs on the main thread after `mono_runtime_invoke` returns) — but Unity's
+- **M2 remaining:** a public scene-iteration API. Native transport exists (pre/post-invoke
+  queues in `tide_pump.cpp`, `TideCall_FindObject` ABI slot reserved) — but Unity's
   scene-scan entry points still need to run from a real per-frame script callback (Wave
-  patch), and a generated strongly-typed projection layer over the generic API is future.
+  patch), and the managed side has no `FindObject` op yet (`TideCallOp` 1-11;
+  `CallInstance` hardcodes `postInvoke=false`).
 
 ## Next
 
 - **M3 — done.** Dev experience: `Nami.Sdk`/`Nami.Tide` NuGet packages (dotnet pack), the
-  `dotnet new nami-mod` template (scaffolds a mod referencing the packages, with a
-  Tide-usage example file that `-U false` removes), `nami install <game>` (stages a runnable
+   `dotnet new nami-mod` template (scaffolds a mod referencing the packages, with a
+   Tide-usage example file that `--UseTide false` excludes), `nami install <game>` (stages a runnable
   root from the repo's build outputs, bundling the .NET runtime from the local install), and
   `nami run <mod.csproj>` (builds the mod, drops it into `nami/mods`, launches the game). A
   modder now goes idea → template → `nami run` without hand-staging.
@@ -37,7 +39,7 @@ Full blueprint: `~/.commandcode/plans/nami-unity-mod-loader.md` (or via `/plans`
   - **Remaining (future "Nami-Install" product):** a self-contained downloadable installer
     that bundles the .NET runtime into a single artifact for end users (today `nami install`
     stages from a local build).
-- **M4 — IL2CPP (in progress):** same main-thread drain pattern for the runtime bridge.
+- **M4 — done (runtime bridge).** Same main-thread drain pattern for the runtime bridge.
   - **Shipped:** a working IL2CPP backend — loader auto-detects `GameAssembly.dll`, the
     managed Tide layer routes to `nami_il2cpp_*` exports, and ops run on the game's main
     thread inside its window procedure (subclassed drain). Verified live on D1AL-ogue
@@ -52,9 +54,27 @@ Full blueprint: `~/.commandcode/plans/nami-unity-mod-loader.md` (or via `/plans`
     game's main thread inside its window proc — verified stable. `domain_assembly_open`
     returns an assembly, not an image (use `il2cpp_assembly_get_image`); GC handles are
     full 64-bit page-table indices (truncating to 32 bits AVs, as on Unity 6 Mono).
-  - **Remaining:** offline `global-metadata.dat` parsing + `nami interop dump` (deferred;
-    runtime type access covers mod needs).
-- **M5 — depth:** hot reload; per-mod profiler; comparative bench gates vs BepInEx/MelonLoader.
+  - **Shipped:** offline `global-metadata.dat` parsing + `nami interop` (images/dump/generate/header):
+    plaintext metadata v24-31 with calibrated struct strides and both type-definition layouts
+    (v24.1 92B / v27+ 88B); typed projection emits compilable `GameInterop.g.cs`
+    (verified: compiles warning-free on a Unity 6000.0.61 title).
+- **M5 — depth (mostly done):**
+  - **Shipped — hot reload:** generation-based live reload. A `FileSystemWatcher` (debounced,
+    top-level `mods/*.dll` only) detects rebuilt/dropped/deleted mod DLLs; reloads run through
+    a command queue drained between update ticks. A reload unloads the target plus all
+    transitive dependents (reverse load order), releases the ALC, and loads the new generation
+    in dependency order; a not-yet-loaded id (fresh drop) loads fresh. DLLs in subdirectories
+    (`.nmod`-installed `mods/<id>/`) are discovered but not watched — reload via
+    `Context.RequestReload()` or restart. Mod assemblies load from bytes, so files are never
+    locked. Mods can self-reload via `Context.RequestReload()`. Verified by 7 dedicated tests
+    (transitive reload, queued request, fresh drop, removal, watcher auto-load/auto-reload).
+  - **Shipped — per-mod profiler:** histogram tick timings (avg/p95/max, allocation-free hot
+    path), periodic summaries in `nami.log` under the `profiler` source, exposed to mods as
+    `Context.Profiler` (`IModMetrics`). Config: `profiler.enabled`/`summaryIntervalSeconds`.
+    Tide-op latency is wired too: `Tide.Call`/`CallInstance` record into the current
+    `OnUpdate` profiler via `TideMetrics` (`UnityLog`/`InvokeStatic` excluded).
+  - **Remaining:** comparative bench gates vs BepInEx/MelonLoader on identical fixtures
+    (`bench/Nami.Bench` currently benchmarks only Nami's own loader).
   (Scene-iteration scan APIs remain tracked under "M2 remaining" above.)
 
 ## Verified in-game evidence

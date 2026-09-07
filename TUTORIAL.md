@@ -16,13 +16,14 @@ including calling into the game itself through Tide's typed API.
   `GameAssembly.dll`) or **IL2CPP** (game folder has `GameAssembly.dll` + a
   `*_Data/il2cpp_data/` directory; most Unity 6 titles and many 2019–2022 titles)
 - [.NET SDK 10.0+](https://dotnet.microsoft.com/download)
-- CMake 3.20+ and a C++17 compiler (MinGW or MSVC) — only to build the native injector
+- CMake 3.20+, Ninja (for the `-G Ninja` invocation below), and a C++17 compiler
+  (MinGW-w64 — MSVC/Clang are untested with these link flags) — only to build the native injector
 - (Optional) a second copy of the game for testing, so the original stays pristine
 
 ## 2. Build Nami
 
 ```bat
-:: managed projects (SDK / Core / Runtime / CLI / tests)
+:: everything (src + tests + fixtures + samples + Wave.Bench + launch-shim)
 dotnet build Nami.slnx
 
 :: native injector + loader
@@ -130,7 +131,7 @@ public sealed class MyMod : NamiPlugin
 declares a conflict. Dependencies load first; conflicts are resolved at load time.
 
 The template also emits `TideExample.cs` (a commented example of calling into the game).
-Pass `-U false` when scaffolding to leave that file out (the `Nami.Tide` package reference
+Pass `--UseTide false` when scaffolding to leave that file out (the `Nami.Tide` package reference
 stays).
 
 ### Calling into the game (Tide)
@@ -172,7 +173,7 @@ public sealed class MyMod : NamiPlugin
 ```
 
 All calls block until the game main thread has run them; failures throw `TideException`
-(details in `nami-tide.log`).
+(details in `nami/native/nami-tide.log`).
 
 ## 5. Install and run
 
@@ -182,8 +183,9 @@ nami run "MyFirstMod\MyFirstMod.csproj" "%GAME%"
 ```
 
 (The game opens normally, Nami is injected, and your mod is loaded. `nami run` is shorthand
-for: `dotnet build -c Release`, copy the produced DLL into `<game>\nami\mods`, then launch
-via `nami_boot.exe`.) Check that Nami booted:
+for: `dotnet build -c Release`, copy the produced DLLs (all non-`Nami.*` outputs) into
+`<game>\nami\mods`, then launch via `nami_boot.exe`. It requires a staged root and a
+configured game exe — run `nami install` + `nami launch set` first.) Check that Nami booted:
 
 ```bat
 type "%GAME%\nami\nami.log"
@@ -206,11 +208,52 @@ chainloader lines.)
 If a mod misbehaves (throws repeatedly in `OnUpdate`), Nami **quarantines** it — disables it,
 calls `OnUnload`, logs the reason, and the game keeps running.
 
+### Hot reload: iterate without restarting the game
+
+With `hotReload.enabled` (default on) you never relaunch to update a mod:
+
+- **Rebuild in place** — `dotnet build` your mod straight into `nami/mods` (or copy the new
+  DLL over the old one). Nami notices the file changed and swaps the mod to a new generation:
+  `OnUnload` runs, the old `AssemblyLoadContext` is released, and the fresh assembly loads
+  with state reset.
+- **Drop a new DLL** into `nami/mods` — it is discovered and loaded automatically.
+- **Delete a DLL** — the mod is unloaded. (Dependents of a deleted mod are not force-unloaded;
+  they reload as a set the next time any of them changes.)
+- Dependants reload too: if mod A changes, everything depending on A (transitively) reloads
+  in dependency order. A mod can trigger its own reload with `Context.RequestReload()`.
+- Rapid successive writes (a build) are collapsed by a debounce (`hotReload.debounceMs`,
+  default 500), so a rebuild reloads once.
+
+The `nami.log` shows each step: `Hot reload: <ids>`, `Unloaded '...' (gen N)`, then
+`Reloaded '...' gen N -> gen M`.
+
+### Per-mod profiler
+
+`Context.Profiler` (an `IModMetrics`) gives your mod its own live performance snapshot —
+useful for a debug overlay or adaptive quality:
+
+```csharp
+public override void OnUpdate()
+{
+    var m = Context.Profiler;
+    if (m.TickCount > 0 && m.P95Ms > 8.0)
+    {
+        Context.Log.Warn($"slow frame budget: p95={m.P95Ms:F2}ms max={m.MaxMs:F2}ms");
+    }
+}
+```
+
+`TickCount`, `LastMs`, `AvgMs`, `P95Ms`, `MaxMs` come from the chainloader's per-tick timing
+(histogram-based, allocation-free on the hot path); `ToSummaryLine()` renders it all. The
+same numbers are logged periodically under the `profiler` source (see the `profiler` config
+section below). Tide-op latency (`TideOpCount`/`TideOpAvgMs`) is recorded for
+`Tide.Call`/`CallInstance` while a mod's `OnUpdate` runs (`UnityLog`/`InvokeStatic` excluded).
+
 ## 6. Configuration (`nami.json`)
 
 Optional file in the nami root. `nami install` creates one (with defaults); if it is absent
-(or unreadable), Nami boots with defaults. Keys are written camelCase and read
-case-insensitively.
+(or malformed JSON), Nami boots with defaults (I/O errors still throw). Keys are written
+camelCase and read case-insensitively.
 
 ```json
 {
@@ -218,19 +261,45 @@ case-insensitively.
   "quarantineThreshold": 5,
   "logLevel": "Info",
   "enabledPlugins": ["com.example.mymod"],
-  "enableMonoBridge": false
+  "enableMonoBridge": false,
+  "steamRelaySkipInjection": false,
+  "profiler": { "enabled": true, "summaryIntervalSeconds": 30.0 },
+  "hotReload": { "enabled": true, "autoWatch": true, "debounceMs": 500 },
+  "pluginConfig": { "com.example.mymod": { "greeting": "hi" } }
 }
 ```
 
-- `enabledPlugins`: only these load (empty = all).
+- `quarantineEnabled`: currently always on — the flag is stored (and shown by `nami doctor`)
+  but not yet read; quarantine trips at `quarantineThreshold` consecutive `OnUpdate` throws.
+- `enabledPlugins`: exact plugin-id match only (no wildcards); empty = all discovered plugins load.
 - `logLevel`: accepted and stored, but not yet wired to the runtime's minimum level (the
   loader logs at Info); planned.
-- `enableMonoBridge`: enables **Tide** on Mono titles — the bridge that lets mods call into
-  the game's Mono runtime (every call runs safely on the game's main thread). Off by default
-  because it patches a live game export and is verified on Unity Mono across four titles so far
-  (2022.3 and Unity 6); see [docs/tide.md](docs/tide.md). On **IL2CPP** titles no flag is
-  needed: Tide auto-detects `GameAssembly.dll` and uses the window-proc executor (no code
-  patching) — see [docs/tide.md §9](docs/tide.md).
+- `enableMonoBridge`: enables **Tide** — the bridge that lets mods call into
+  the game (every call runs safely on the game's main thread). The flag gates the boot
+  self-test (`[boot] attaching Tide bridge...`) on both backends; mod-issued Tide calls
+  route to the auto-detected backend (Mono, or IL2CPP via `GameAssembly.dll`) whenever
+  the loader is present. Off by default because the Mono path patches a live game export
+  and is verified on Unity Mono across four titles so far (2022.3 and Unity 6); see
+  [docs/tide.md](docs/tide.md). The IL2CPP backend patches nothing (window-proc executor).
+- `profiler`: the built-in per-mod profiler. When `enabled` (default), each `OnUpdate` is
+  timed and a summary line (`ticks/last/avg/p95/max` per mod, generation included) is logged
+  under the `profiler` source every `summaryIntervalSeconds`. Mods read their own metrics
+  in-process via `Context.Profiler` (`IModMetrics`).
+- `hotReload`: live mod reload. When `enabled` (default), the chainloader supports generation
+  reloads; when `autoWatch` (default) it also watches top-level `nami/mods/*.dll` and
+  automatically reloads a mod whose DLL is rebuilt/replaced (or loads one newly dropped)
+  after a `debounceMs` quiet window. DLLs in subdirectories (e.g. `.nmod`-installed
+  `mods/<id>/`) are discovered but not watched — touch them via rebuild of a top-level
+  DLL, `Context.RequestReload()`, or restart. Mod files are never locked — you can
+  rebuild in place while the game runs. Disable both to pin a session to its mods until restart.
+- `pluginConfig`: per-plugin sections (`pluginConfig.<id>`) read via `Context.Config`
+  (`GetString/GetInt/GetDouble/GetBool`, all with fallbacks); missing keys/sections yield
+  defaults, never throw.
+- `steamRelaySkipInjection`: when true, `nami launch steam` (with a `steamAppId` set)
+  launches the game directly *without* Nami injection, then relays to a clean Steam
+  session after exit — for online/anti-cheat games.
+- `gameExe` / `steamAppId`: written by `nami launch set` (which game to run; used by
+  `nami launch`/`create`).
 
 ## 7. The sample mod
 
@@ -242,7 +311,8 @@ nami run "samples\HelloNami\HelloNami.csproj" "%GAME%"
 ```
 
 It logs once on load (`HelloNami loaded inside the Nami CoreCLR runtime!`) and then every
-~120 update ticks.
+~120 update ticks. (`samples/TideProbe/` and `samples/TideProbeIl2Cpp/` are the Tide
+bridge probes for Mono and IL2CPP.)
 
 ## 8. CLI
 
@@ -256,18 +326,26 @@ nami launch [offline|steam] [gameDir]
 nami create [offline|steam] [gameDir]
                                     write launchNami.exe + run-with-nami.bat into the nami root
 nami run <mod.csproj> [gameDir]     build a mod, stage it into nami/mods, launch the game
-nami doctor [gameDir]               check a Nami install
+nami doctor [gameDir]               basic sanity check of a Nami install
 nami list   [gameDir]               list installed mods
+nami interop images|dump|generate|header [args...] [gameDir]
+                                    offline IL2CPP typed-projection tooling (dev-time)
+nami help                           show help
 ```
 
 `nami launch` runs the game through Nami the same way `nami_boot.exe` does. When no game
-executable has been set, it auto-detects the largest `.exe` in the game folder (skipping
-known crash handlers/updaters). `nami launch steam` runs the game with Nami injected and,
+executable has been set, it auto-detects the largest `.exe` directly in the game folder
+(skipping known helpers like crash handlers/updaters; falls back to immediate subfolders
+excluding `*_Data/` and `nami/`). `nami launch steam` runs the game with Nami injected and,
 after the game exits, starts a clean unmodded session via `steam://rungameid/<appid>` (set
-the app id with `nami launch set --steam-id`; without one it falls back to offline).
-`nami create` writes `launchNami.exe` (self-contained) + `run-with-nami.bat` into the nami
+the app id with `nami launch set --steam-id`; without one it falls back to an offline
+injected launch; with `steamRelaySkipInjection: true` it launches without Nami at all,
+then relays). `nami create` writes `launchNami.exe` (self-contained) + `run-with-nami.bat` into the nami
 root, so the game can be started with Nami by double-clicking, without the CLI open.
 `nami run` is the modder's loop: build the mod, copy it into `nami/mods`, and launch.
+`nami doctor` prints root, mods dir, quarantine display, `*.dll` count, the configured or
+auto-detected exe, and any missing launcher files — a smoke check, not a full environment
+report.
 
 ## 9. Running the test suite
 
@@ -276,20 +354,25 @@ dotnet test Nami.slnx              :: runs all four test projects
 ```
 
 (Or individually: `dotnet test tests/Nami.Tests`, `tests/Nami.Wave.Tests`,
-`tests/Nami.Cli.Tests`, `tests/Nami.Tide.Tests`.)
+`tests/Nami.Cli.Tests`, `tests/Nami.Tide.Tests`.) Running the solution in one pass can abort
+the Wave test host (a known runner flake, not test failures) — if that happens, run the Wave
+project on its own; individually all four projects pass (32 + 29 + 35 + 39 tests).
 
 ## 10. Known limitations
 
 - **Tide scope**: typed access covers static and instance fields/properties (primitives,
-  strings, live objects, enums as their underlying int), a generic `Get<T>`/`Set<T>`/`Call<T>`
-  API, arrays (`TideArrays`), object creation, and live scene objects via static accessors
-  (`Camera.main`). On **IL2CPP** titles the same API runs through the IL2CPP backend
-  (auto-detected; see [docs/tide.md §9](docs/tide.md)). Still missing on both backends:
-  Unity's scene-iteration scan APIs (`Object.FindObjectOfType` — Unity aborts these from
-  foreign re-entry) and a generated strongly-typed projection layer.
-- **Wave scope**: M1 supports parameterless void methods; **M2** (IL-copy) patches any
-  non-generic method with a real body — any signature, prefix/postfix, skip, result
-  rewriting. Windows x64 only.
+  strings, live objects, enums as their underlying int — `long`-backed enums surface as
+  `I64`), a generic `Get<T>`/`Set<T>`/`Call<T>` API, arrays (`TideArrays`), object creation
+  (parameterless ctor), and live scene objects via static accessors (`Camera.main`). On
+  **IL2CPP** titles the same typed API runs through the IL2CPP backend (auto-detected; see
+  [docs/tide.md §9](docs/tide.md)). Dev-time typed projections come from
+  `nami interop generate` (see [docs/tide.md §9](docs/tide.md) and `nami interop --help`).
+  Still missing on both backends: Unity's scene-iteration scan APIs
+  (`Object.FindObjectOfType` — Unity aborts these from foreign re-entry).
+- **Wave scope**: M1 supports parameterless void methods (gate/observer); **M2** (IL-copy)
+  patches any closed method with a real body — prefix/postfix, skip, result
+  rewriting (`__instance` by value; `__result`/`__state` by ref; open generics, struct
+  instance methods, `calli`/filter bodies refused). Windows x64 only.
 - The game must be launched through the Nami injector; use `nami launch` or the
   `launchNami.exe` shortcut `nami create` writes (Steam launch options can point at that).
 - Do not run alongside BepInEx/Doorstop in the same game folder.

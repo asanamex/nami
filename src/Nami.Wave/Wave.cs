@@ -12,8 +12,8 @@ namespace Nami.Wave;
 /// M1 — native-stub dispatch (this file):
 ///   - x64 inline detours on managed methods (safe prologue relocation, exact restore).
 ///   - Multiple owners per target; callbacks run in chain (LIFO, newest first).
-///   - Shapes: a "gate" (<c>Func&lt;bool&gt;</c> — return true to skip the original) and an
-///     "observer" (<c>Action</c> — runs after the original or after a skip).
+///     - Shapes: a "gate" (<c>Func&lt;bool&gt;</c> — return true to skip the original) and an
+///     "observer" (<c>Action</c> — runs before the original or before a skip).
 ///   - The original method runs through the detour trampoline with the ORIGINAL arguments
 ///     intact — no marshaling, no allocation on the hot path.
 ///   - Scope: parameterless void methods (the IL-copy engine below covers the rest).

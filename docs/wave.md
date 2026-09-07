@@ -12,8 +12,8 @@ src/Nami.Wave/           the engine
   Internal/X64Decoder.cs conservative x64 instruction-length decoder (relocation-safe)
   Internal/RawMemory.cs  W^X virtual-memory helpers (VirtualAlloc/VirtualProtect)
   Internal/NativeInterop.cs  method-code resolution incl. tiered-JIT jump-stub following
-  Internal/IlReader.cs   raw IL decoder (opcodes, operands, branch targets, EH tables)
-  Internal/IlRewriter.cs re-emitter: original IL → generated assembly method (IL copy)
+  Internal/IlReader.cs   raw IL decoder (opcodes, operands, branch targets)
+  Internal/IlRewriter.cs re-emitter: original IL (incl. EH tables) → generated assembly method (IL copy)
   Internal/PatchedBodyBuilder.cs  prefix/postfix convention binder + ret-rewriting injector
 tests/Nami.Wave.Tests/   37 [Fact] + 1 [Theory] (2 rows) in Release: M1 + M2 semantics,
                          IL-copy fidelity, restore (the deep M2 suite compiles in Release;
@@ -45,12 +45,12 @@ Semantics (documented contract):
 | Piece | Behavior |
 |---|---|
 | `gate` | Runs before the original. Returns `true` → the original is skipped. All gates run; any `true` wins. |
-| `observer` | Runs before the original (or before a skip), after the gates. Never prevents anything. |
-| order | LIFO — the most recently hooked owner runs first. |
+| `observer` | Runs before the original (or before a skip), right after its own owner's gate. Never prevents anything. |
+| order | LIFO — the most recently hooked owner runs first; each owner's `gate` then `observer` run back-to-back. |
 | owner | A string id (the mod id). One owner per target; duplicate throws. |
 | safety | A throwing callback is swallowed (best-effort); the game must not die because a mod callback threw. |
 
-### M2 — Harmony-style IL-copy patching (any signature)
+### M2 — Harmony-style IL-copy patching (closed methods)
 
 ```csharp
 // Patch Player.TakeDamage(int amount) -> int: watch the args, rewrite the result.
@@ -118,8 +118,9 @@ notes at the end), Wave **copies the target's IL**:
 
 1. The target's IL, locals, and exception handlers are decoded (`IlReader`) and re-emitted
    (`IlRewriter`) into a public static method on a generated type in a fresh dynamic
-   assembly — tokens resolved from the original module, `IgnoresAccessChecksTo` applied so
-   private/internal members stay reachable. The generated method is a real managed method
+   assembly — tokens resolved from the original module, `IgnoresAccessChecksTo` applied for
+   the Wave and target assemblies (third-assembly privates referenced by the IL can still
+   fail). The generated method is a real managed method
    with a real `MethodHandle`, so its native entry is a valid detour target.
 2. **Prefixes are injected at the entry**, and **every `ret` is rewritten** into a postfix
    tail that stores the return value, runs the postfix chain (which may rewrite it via
@@ -134,11 +135,12 @@ notes at the end), Wave **copies the target's IL**:
 
 Because the original body is *inlined* into the patched copy, patching semantics match
 HarmonyX: skip via prefix, result rewriting via postfix `ref __result`, instance access via
-`__instance` — with no per-call allocations on the happy path.
+`__instance` — with no per-call allocations on the happy path (declaring `__args`, or
+writing `__state`, allocates per call).
 
 ## Measured overhead (x64, Release, .NET 10)
 
-From `bench/Wave.Bench` (1M calls, noinline barrier):
+Exemplar numbers from `bench/Wave.Bench` (1M calls, noinline barrier — varies by machine):
 
 ```
 baseline (direct)        : ~21 ns/call
@@ -151,18 +153,20 @@ The M1 hooked path is: detour jump → stub → one managed dispatch → callbac
 → original. No allocations on the hot path. M2's patched body runs the original instructions
 inline plus one managed delegate call per hook — no marshaling on the hot path. (The M2
 *call* path itself allocates nothing; only declaring `__args`, or writing `__state`, allocates
-per call.)
+per call.) GC/EH-safe through ~1M-call horizons; past multi-10M tight loops, unwinding
+across the stub's unmanaged frame is the known edge.
 
 ## Scope & honest limitations
 
 - **M1 targets**: parameterless `void` methods (kept for its zero-allocation hot path and
   native skip semantics).
-- **M2 targets**: any closed non-generic method with a real body — static or instance, any
-  return type, methods with exception handlers, multiple returns, and recursion are all
-  handled. Struct instance methods, `calli` bodies and filter-style exception clauses are
-  refused loudly. Hook parameters bound to the target's parameters are **by-value only**
-  (`ref`/`out` bindings throw `NotSupportedException`); `__instance`, `__result` and
-  `__state` are the only by-ref convention parameters.
+- **M2 targets**: any closed method with a real body (open generics are refused) — static or
+  instance, any return type (ref returns untested), methods with exception handlers, multiple
+  returns, and recursion are all handled. Struct instance methods, `calli` bodies and
+  filter-style exception clauses are refused loudly. Hook parameters bound to the target's
+  parameters are **by-value only** (`ref`/`out` bindings throw `NotSupportedException`);
+  `__instance` is by value, `__result` and `__state` are the by-ref convention parameters
+  (`__state` must be `object` by ref; postfixes must return `void`).
 - **Platform**: Windows x64. The decoder/detour are x64-specific by design.
 - **Code shape**: Wave targets optimized (Release) JIT output — the code games ship. Debug
   builds may emit prologues the conservative decoder refuses; it throws rather than corrupts.
@@ -170,15 +174,16 @@ per call.)
   method body (promotion *after* hooking), the hook can be bypassed — the classic inline-
   detour limitation on modern .NET. Warm the method before hooking.
 - **Tiny methods**: a body smaller than the 14-byte jump cannot be detoured inline (refused).
-- **Generated assemblies**: each patched body lives in its own dynamic assembly, kept alive
-  for the process lifetime (patch sites are rare; rebuilds are cheap).
+- **Generated assemblies**: each patched-body *build* gets its own dynamic assembly, kept
+  alive for the process lifetime (old builds are retained on rebuild — a slow leak per
+  patch/unpatch cycle; patch sites are rare and rebuilds cheap, so this stays negligible).
 
 ## Why in-house (vs HarmonyX)
 
 - Zero third-party dependency: no Cecil IL-weaving at patch time, no MonoMod.
 - Owner-scoped chain and exact byte restore are first-class (not bolted on).
-- The detour + decoder + dispatch core is ~1,000 lines you can read; the IL-copy layer is
-  another ~1,000 with a conservative refusal policy instead of a dependency.
+- The detour + decoder + dispatch core is ~1.4k lines you can read; the IL-copy layer is
+  another ~1.3k with a conservative refusal policy instead of a dependency.
 - HarmonyX's model is IL-copy patching with delegate-based prefixes/postfixes; Wave now
   implements the same model on its own detour core, with the same `__instance`/`__result`/
   `__state`/`__args` conventions.

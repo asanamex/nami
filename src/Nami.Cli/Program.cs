@@ -25,6 +25,7 @@ internal static class Program
                 "run" => Run(rest),
                 "doctor" => Doctor(rest),
                 "list" => List(rest),
+                "interop" => Interop(rest),
                 "help" or "--help" or "-h" => Help(),
                 _ => Unknown(command)
             };
@@ -85,6 +86,149 @@ internal static class Program
         }
 
         return RunCommand.Run(gameDir, positional);
+    }
+
+    /// <summary>
+    /// nami interop — offline IL2CPP typed-projection tooling (dev-time; plaintext metadata only).
+    /// Reads <c>global-metadata.dat</c> directly; never touches a running game.
+    /// </summary>
+    private static int Interop(string[] args)
+    {
+        // nami interop images [gameDir]
+        // nami interop dump [imageName] [gameDir]
+        // nami interop generate <imageName> [out.cs] [gameDir]
+        // nami interop header [gameDir]
+        var sub = args.FirstOrDefault()?.ToLowerInvariant();
+        var rest = args.Skip(1).ToArray();
+        var gameDir = Directory.GetCurrentDirectory();
+        var positional = rest;
+        if (rest.Length > 0 && Directory.Exists(rest[^1]))
+        {
+            gameDir = Path.GetFullPath(rest[^1]);
+            positional = rest[..^1];
+        }
+
+        var metadataPath = FindMetadata(gameDir);
+        if (metadataPath is null)
+        {
+            Console.Error.WriteLine($"nami interop: no global-metadata.dat found under '{gameDir}' (is this an IL2CPP game?)");
+            return 1;
+        }
+
+        try
+        {
+            if (sub == "header")
+            {
+                // Diagnostic: dump the raw (offset,size) pairs (which regions exist and how
+                // large they are). Never parses structs, so it works on unsupported versions.
+                var version = Nami.Interop.Il2CppMetadata.ReadVersion(metadataPath);
+                var pairs = Nami.Interop.Il2CppMetadata.DumpHeaderPairs(metadataPath);
+                Console.WriteLine($"metadata: {metadataPath} (version {version}, {pairs.Count} pairs)");
+                for (var i = 0; i < pairs.Count; i++)
+                {
+                    Console.WriteLine($"  pair {i + 1,2}: offset={pairs[i].Offset,10} size={pairs[i].Size,9}");
+                }
+
+                return 0;
+            }
+
+            var metadata = Nami.Interop.Il2CppMetadata.Load(metadataPath);
+            Console.WriteLine($"metadata: {metadataPath} (version {metadata.MetadataVersion})");
+
+            switch (sub)
+            {
+                case "images":
+                {
+                    foreach (var image in metadata.Images())
+                    {
+                        Console.WriteLine($"  {image.Name}");
+                    }
+
+                    return 0;
+                }
+
+                case "dump":
+                {
+                    var imageName = positional.FirstOrDefault() ?? "Assembly-CSharp.dll";
+                    var types = metadata.TypesInImage(imageName);
+                    Console.WriteLine($"{imageName}: {types.Count} top-level type(s)");
+                    foreach (var type in types.OrderBy(t => t.FullName, StringComparer.OrdinalIgnoreCase))
+                    {
+                        Console.WriteLine($"  {type.FullName}");
+                        foreach (var method in metadata.MethodsOf(type).OrderBy(m => m.Name, StringComparer.Ordinal))
+                        {
+                            Console.WriteLine($"      {(method.IsStatic ? "static " : "")}{method.Name}({method.ParameterCount})");
+                        }
+                    }
+
+                    return 0;
+                }
+
+                case "generate":
+                {
+                    if (positional.Length == 0)
+                    {
+                        Console.Error.WriteLine("usage: nami interop generate <imageName> [out.cs] [gameDir]");
+                        return 1;
+                    }
+
+                    var imageName = positional[0];
+                    var outPath = positional.Length > 1 ? positional[1] : Path.Combine(Directory.GetCurrentDirectory(), "GameInterop.g.cs");
+                    var source = Nami.Interop.ProjectionWriter.Generate(metadata, imageName);
+                    Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(outPath))!);
+                    File.WriteAllText(outPath, source);
+                    Console.WriteLine($"wrote {outPath} ({metadata.TypesInImage(imageName).Count} top-level type(s) from {imageName})");
+                    return 0;
+                }
+
+                default:
+                    Console.WriteLine("""
+                        usage: nami interop <command> [args...] [gameDir]
+
+                          images                     list the metadata's images (assemblies)
+                          dump [imageName]           print an image's public type/method surface
+                          generate <imageName> [out.cs]
+                                                     emit a compile-time-typed projection source file
+                          header                     dump raw header (offset,size) pairs for diagnostics
+                        """);
+                    return sub is null ? 0 : 1;
+            }
+        }
+        catch (Nami.Interop.MetadataFormatException ex)
+        {
+            Console.Error.WriteLine($"nami interop: {ex.Message}");
+            Console.Error.WriteLine("hint: run `nami interop header [gameDir]` to dump the raw layout for this file");
+            return 1;
+        }
+    }
+
+    /// <summary>
+    /// Locates global-metadata.dat, preferring the canonical IL2CPP output path so multi-game
+    /// directories resolve deterministically instead of depending on enumeration order.
+    /// </summary>
+    private static string? FindMetadata(string gameDir)
+    {
+        var candidates = Directory.EnumerateFiles(gameDir, "global-metadata.dat", SearchOption.AllDirectories)
+            .OrderBy(p => p, StringComparer.OrdinalIgnoreCase)
+            .Take(16)
+            .ToList();
+        if (candidates.Count == 0)
+        {
+            return null;
+        }
+
+        if (candidates.Count == 1)
+        {
+            return candidates[0];
+        }
+
+        var canonical = candidates.FirstOrDefault(p =>
+            p.Replace('\\', '/').Contains("/il2cpp_data/metadata/", StringComparison.OrdinalIgnoreCase));
+        var picked = canonical ?? candidates[0];
+        Console.Error.WriteLine(
+            $"nami interop: {candidates.Count} metadata files found; using '{picked}'" +
+            (canonical is null ? " (no canonical il2cpp_data/Metadata path among them)" : string.Empty));
+        return picked;
     }
 
     private static int Doctor(string[] args)
@@ -199,6 +343,8 @@ internal static class Program
                                       build a mod, stage it into nami/mods, and launch the game
               doctor   [gameDir]      check a Nami install and report the environment
               list     [gameDir]      list installed plugins and their state
+              interop  images|dump|generate|header [args...] [gameDir]
+                                      offline IL2CPP typed-projection tooling (dev-time)
               help                    show this help
             """);
         return 0;

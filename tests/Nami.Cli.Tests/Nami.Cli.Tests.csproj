@@ -16,6 +16,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\Nami.Cli\Nami.Cli.csproj" />
+    <ProjectReference Include="..\..\src\Nami.Interop\Nami.Interop.csproj" />
   </ItemGroup>
 
   <ItemGroup>

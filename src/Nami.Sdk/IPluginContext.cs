@@ -10,6 +10,24 @@ public interface IPluginContext
 
     /// <summary>Mod logger; writes to the Nami log with this plugin's tag.</summary>
     ILog Log { get; }
+
+    /// <summary>
+    /// Built-in performance metrics for this plugin (tick timings and Tide-op latency).
+    /// Always available; cheap to read.
+    /// </summary>
+    IModMetrics Profiler { get; }
+
+    /// <summary>
+    /// Requests a hot reload of this plugin (and any plugins that depend on it) at the
+    /// next safe point. Returns true if the request was queued.
+    /// </summary>
+    bool RequestReload();
+
+    /// <summary>
+    /// This plugin's configuration section (<c>pluginConfig.&lt;pluginId&gt;</c> from
+    /// <c>nami.json</c>). Always non-null; missing sections behave as empty.
+    /// </summary>
+    IPluginConfig Config { get; }
 }
 
 /// <summary>Levels for <see cref="ILog"/>.</summary>

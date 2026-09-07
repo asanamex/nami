@@ -63,6 +63,10 @@ public static class Boot
             var loaded = chainloader.LoadAll();
             hub.Log("boot", LogLevel.Info, $"chainloader activated: {loaded.Count} plugin(s) loaded");
 
+            // Live reload: watch the mods directory so rebuilt/edited mods swap into a new
+            // generation without restarting the game (opt out via hotReload.enabled=false).
+            chainloader.StartHotReload();
+
             // Spin: keep the managed runtime (and any plugin update loops) alive on this thread.
             while (true)
             {

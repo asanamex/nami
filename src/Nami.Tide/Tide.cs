@@ -296,7 +296,15 @@ internal static unsafe class TideObjectOp
             req.Ret = returnType == TideType.Void ? null : &ret;
 
             var backend = Tide.ActiveBackend;
+            var timed = Nami.Sdk.TideMetrics.HasSink;
+            var sw = timed ? System.Diagnostics.Stopwatch.StartNew() : null;
             var rc = RunOp(backend, postInvoke, &req);
+            if (sw is not null)
+            {
+                sw.Stop();
+                Nami.Sdk.TideMetrics.Record(sw.Elapsed.TotalMilliseconds);
+            }
+
             if (rc != 0)
             {
                 throw Error(op, $"{target.Name}.{member}", rc, req);
@@ -328,7 +336,15 @@ internal static unsafe class TideObjectOp
             req.Ret = returnType == TideType.Void ? null : &ret;
 
             var backend = Tide.ActiveBackend;
+            var timed = Nami.Sdk.TideMetrics.HasSink;
+            var sw = timed ? System.Diagnostics.Stopwatch.StartNew() : null;
             var rc = RunOp(backend, false, &req);
+            if (sw is not null)
+            {
+                sw.Stop();
+                Nami.Sdk.TideMetrics.Record(sw.Elapsed.TotalMilliseconds);
+            }
+
             if (rc != 0)
             {
                 throw Error(op, member, rc, req);

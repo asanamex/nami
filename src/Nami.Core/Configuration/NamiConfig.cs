@@ -46,6 +46,18 @@ public sealed class NamiConfig
     /// </summary>
     public bool SteamRelaySkipInjection { get; set; }
 
+    /// <summary>Built-in per-plugin performance profiler (tick timings, Tide-op latency).</summary>
+    public ProfilerConfig Profiler { get; set; } = new();
+
+    /// <summary>Hot reload: watches the mods directory and reloads changed plugin DLLs into a new generation.</summary>
+    public HotReloadConfig HotReload { get; set; } = new();
+
+    /// <summary>
+    /// Per-plugin configuration sections: <c>"pluginConfig": { "&lt;pluginId&gt;": { ... } }</c>.
+    /// Each plugin sees its own section (camelCase-safe: plugin-id keys are preserved verbatim).
+    /// </summary>
+    public Dictionary<string, Dictionary<string, JsonElement>>? PluginConfig { get; set; }
+
     public static NamiConfig Load(string directory)
     {
         var path = Path.Combine(directory, FileName);
@@ -90,4 +102,27 @@ public sealed class NamiConfig
         });
         File.WriteAllText(path, json);
     }
+}
+
+/// <summary>Settings for the built-in per-plugin profiler.</summary>
+public sealed class ProfilerConfig
+{
+    /// <summary>Measure OnUpdate durations per plugin and log periodic summaries.</summary>
+    public bool Enabled { get; set; } = true;
+
+    /// <summary>Seconds between "profiler" log summaries (per-plugin ticks/avg/p95/max lines).</summary>
+    public double SummaryIntervalSeconds { get; set; } = 30.0;
+}
+
+/// <summary>Settings for mod hot reload (file-watch based live reload of plugin DLLs).</summary>
+public sealed class HotReloadConfig
+{
+    /// <summary>Master switch: enables the reload machinery (watching, queue, generations).</summary>
+    public bool Enabled { get; set; } = true;
+
+    /// <summary>Start watching the mods directory automatically when the chainloader boots.</summary>
+    public bool AutoWatch { get; set; } = true;
+
+    /// <summary>Debounce window (ms) collapsing bursts of file events (a build) into one reload scan.</summary>
+    public int DebounceMs { get; set; } = 500;
 }

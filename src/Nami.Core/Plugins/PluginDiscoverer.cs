@@ -30,7 +30,10 @@ public static class PluginDiscoverer
             return result;
         }
 
-        foreach (var dll in Directory.EnumerateFiles(modsDirectory, "*.dll", SearchOption.TopDirectoryOnly))
+        // Recurse so package-installed mods (mods/<package-id>/ from .nmod extraction) are
+        // discovered too. Non-plugin DLLs (dependencies, native hosts) return null from the
+        // probe and are skipped silently.
+        foreach (var dll in Directory.EnumerateFiles(modsDirectory, "*.dll", SearchOption.AllDirectories))
         {
             try
             {
@@ -55,7 +58,7 @@ public static class PluginDiscoverer
         var probeContext = new ProbeLoadContext();
         try
         {
-            var assembly = probeContext.LoadFromAssemblyPath(path);
+            var assembly = probeContext.LoadAssemblyNoLock(path);
             var pluginType = FindPluginType(assembly);
             if (pluginType is null)
             {

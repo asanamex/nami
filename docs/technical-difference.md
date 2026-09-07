@@ -6,7 +6,8 @@ BepInEx refers to the **5.x stable (Mono-era)** and **6.0.0-be.\* bleeding-edge*
 Nami refers to the architecture implemented and verified in this repo.
 
 Where BepInEx is ahead, that is stated plainly. The goal is a decision document, not a
-marketing sheet.
+marketing sheet. (BepInEx-column facts follow BepInEx 5.x / 6.0.0-be docs and behavior
+observed in the wild — no BepInEx source lives in this repo to check them against.)
 
 ---
 
@@ -28,15 +29,15 @@ marketing sheet.
 | BCL available to plugins | Whatever the game's Mono provides (no `Span`-heavy modern APIs by default, old GC, no modern `AssemblyLoadContext` semantics). | Full modern .NET 10 BCL: current GC/JIT, `Span<T>`, `async`, source generators, `System.Text.Json`, etc. |
 | Runtime for IL2CPP games | Bundles a **.NET 6 CoreCLR** (BepInEx 6) alongside the game's native IL2CPP; plugins run on that. | **Shipped**: the same hosted .NET 10 CoreCLR as Mono titles. The loader auto-detects `GameAssembly.dll` and Tide gains an IL2CPP backend — plugins are byte-identical across Mono and IL2CPP. |
 | GC coexistence | Mono games: plugins share the game's Boehm GC. IL2CPP: separate CoreCLR GC in-process. | Separate CoreCLR GC in-process in both cases. Mono-game plugin code never allocates in the game's GC. |
-| Calling game code from a plugin | Mono games: trivial — plugin IL runs in the game runtime, so it can call any game method directly. IL2CPP: via generated interop. | Mono and IL2CPP games: **Tide** — plugin code runs on Nami's .NET and calls INTO the game runtime via a main-thread bridge with **typed access** (`GameClass`/`GameObject`: static + instance field/property access incl. live objects, typed method calls with signature-aware boxing, a generic `Get<T>`/`Set<T>`/`Call<T>` API, enums as their underlying int, arrays via `TideArrays`, object creation; verified in-game on both backends — see [tide.md §9](../tide.md) for IL2CPP). Still narrower than in-runtime calls: Unity's scene-iteration scan APIs (`Object.FindObjectOfType`) abort from foreign re-entry, so live scene objects are reached via static accessors (`Camera.main`). |
+| Calling game code from a plugin | Mono games: trivial — plugin IL runs in the game runtime, so it can call any game method directly. IL2CPP: via generated interop. | Mono and IL2CPP games: **Tide** — plugin code runs on Nami's .NET and calls INTO the game runtime via a main-thread bridge with **typed access** (`GameClass`/`GameObject`: static + instance field/property access incl. live objects, typed method calls with signature-aware boxing, a generic `Get<T>`/`Set<T>`/`Call<T>` API, enums as their underlying int (`long`-backed enums surface as `I64`), arrays via `TideArrays`, object creation (parameterless ctor); verified in-game on both backends — see [tide.md §9](./tide.md) for IL2CPP). Still narrower than in-runtime calls: Unity's scene-iteration scan APIs (`Object.FindObjectOfType`) abort from foreign re-entry, so live scene objects are reached via static accessors (`Camera.main`). |
 
 ## 3. Plugin isolation & failure handling
 
 | Aspect | BepInEx | Nami |
 |---|---|---|
 | Isolation between plugins | Mono games: all plugins share the game's single AppDomain — shared statics, shared assembly resolution, exceptions and `static` state can bleed between plugins and the game. | Every plugin loads into its **own unloadable `AssemblyLoadContext`**: isolated statics, isolated resolution; plugin assemblies are distinct instances even when names collide. |
-| Unloading / hot reload | Not supported on Mono (plugins live for the process lifetime). IL2CPP: process-lifetime component contexts. | Collectible ALCs from day one — the foundation for per-mod unload and hot reload (M5 milestone). |
-| A crashing plugin | An exception escaping a plugin's update can take down the game or corrupt shared state; no structured quarantine. | **Crash quarantine**: a plugin that throws N consecutive times is disabled (`Quarantined`), `OnUnload` is called, the reason is logged, the game keeps running. Verified by test. |
+| Unloading / hot reload | Not supported on Mono (plugins live for the process lifetime). IL2CPP: process-lifetime component contexts. | **Shipped.** Collectible ALCs plus a debounced file watcher over top-level `mods/*.dll`: rebuild/drop/delete a mod DLL and it swaps to a new generation live — dependents reload with it, mod files are never locked, and mods can self-reload via `Context.RequestReload()`. Subdirectory DLLs (`.nmod`-installed `mods/<id>/`) are discovered but not watched. |
+| A crashing plugin | An exception escaping a plugin's update can take down the game or corrupt shared state; no structured quarantine. | **Crash quarantine**: a plugin that throws N consecutive times is disabled (`Quarantined`), `OnUnload` is called, the reason is logged, the game keeps running. Verified by test (`ChainloaderTests`, `HotReloadTests`). |
 | Assembly identity conflicts | Two plugins shipping the same dependency fight over one AppDomain resolution. | Each ALC resolves its own copy; only the Nami framework assemblies unify (by design, so plugin↔loader types match). |
 
 ## 4. Discovery, load order, dependencies
@@ -44,7 +45,7 @@ marketing sheet.
 | Aspect | BepInEx | Nami |
 |---|---|---|
 | Plugin discovery | `TypeLoader` scans `BepInEx/plugins`, reads metadata with **Mono.Cecil** without loading, caches results under `BepInEx/cache/` keyed by SHA-256 of the assembly. | Probes each DLL in a throwaway **collectible ALC** using reflection; framework refs resolve to the already-loaded copy so probing works both in tests and in the hosted component context. No Cecil anywhere. |
-| Dependency resolution | GUID-based `BepInDependency`/`BepInIncompatibility` attributes; chainloader sorts and checks versions (SemVer). | `[PluginDependency]` / `[PluginIncompatibility]` on the plugin class; a pure `DependencyResolver` prunes duplicates, resolves incompatibility pairs deterministically, detects missing deps and **cycles**, and topologically sorts. Unit-tested in isolation. |
+| Dependency resolution | GUID-based `BepInDependency`/`BepInIncompatibility` attributes; chainloader sorts and checks versions (SemVer). | `[PluginDependency]` / `[PluginIncompatibility]` on the plugin class (a `MinimumVersion` may be recorded but is not yet enforced — matching is ID-based); a pure `DependencyResolver` prunes duplicates, resolves incompatibility pairs deterministically, detects missing deps and **cycles**, and topologically sorts. Unit-tested in isolation. |
 | Metadata scanning tech | Mono.Cecil (third-party IL reader). | `System.Reflection` on collectible probe contexts; the design intent is `System.Reflection.Metadata` (Span-based) for anything heavier. |
 
 ## 5. Assembly patching vs runtime hooks
@@ -52,38 +53,38 @@ marketing sheet.
 | Aspect | BepInEx | Nami |
 |---|---|---|
 | Preloader patching | BepInEx 5-era Mono flow: `AssemblyPatcher` **rewrites game assemblies with Cecil before they load** (patcher plugins in `BepInEx/patchers`). This is why patched games can carry `.bak` assembly copies. | **None.** Nami never reads, rewrites, or re-emits a game assembly. All extension happens at runtime in Nami's own runtime. |
-| Runtime patching API | **HarmonyX** (a Harmony fork) — mature prefix/postfix/transpiler ecosystem; the de-facto standard modders know. IL2CPP patching rides on MonoMod detours / Dobby through Il2CppInterop. | **Wave** (in-house, this repo): x64 inline detours with owner-scoped chains, exact byte restore, ~45 ns/call overhead. Two engines: M1 native-stub gate/observer dispatch for parameterless void targets, and M2 **IL-copy patching** — any signature, Harmony-shaped conventions (`__instance`/`__result`/`__state`/`__args`), skip semantics and result rewriting. Zero Harmony/MonoMod/Cecil. |
+| Runtime patching API | **HarmonyX** (a Harmony fork) — mature prefix/postfix/transpiler ecosystem; the de-facto standard modders know. IL2CPP patching rides on MonoMod detours / Dobby through Il2CppInterop. | **Wave** (in-house, this repo): x64 inline detours with owner-scoped chains, exact byte restore, ~+45 ns/call M1 observer overhead measured by `bench/Wave.Bench` (x64 Release/.NET 10; varies by machine — see `docs/wave.md`). Two engines: M1 native-stub gate/observer dispatch for parameterless void targets, and M2 **IL-copy patching** — any closed method with a real body, Harmony-shaped conventions (`__instance`/`__result`/`__state`/`__args`), skip semantics and result rewriting. Zero Harmony/MonoMod/Cecil. |
 | Dependency weight | Core ships HarmonyX + MonoMod + Mono.Cecil regardless of need. | Zero third-party managed dependencies; patching is a loadable subsystem (`Nami.Wave`), not a boot-time cost. |
 
 ## 6. IL2CPP interop strategy
 
-Nami's IL2CPP story has two layers. The **runtime bridge is shipped** (mods call into the
+Nami's IL2CPP story has two layers, both shipped. The **runtime bridge** lets mods call into the
 game through Tide's typed API on IL2CPP titles exactly as on Mono — no interop assemblies,
-no generator). The **typed-projection layer** (offline reference assemblies / lazy emitted
-projections for compile-time-typed game API use, the Cpp2IL-equivalent) is the remaining
-planned piece.
+no generator. The **typed-projection layer** is the dev-time `nami interop` source emitter
+(`GameInterop.g.cs` of `GameClass.Resolve` accessors + method-name constants); lazy
+on-demand in-process materialization remains design intent, not shipped behavior.
 
 | Aspect | BepInEx | Nami |
 |---|---|---|
-| Runtime bridge (call game code) | Plugins run on the game's IL2CPP via **Il2CppInterop** — generated managed wrappers over every game type, loaded through MonoMod's `HookGen`/detours. | **Shipped**: Tide's IL2CPP backend calls the game's `il2cpp_*` runtime exports directly (classes by name, fields/properties via get_/set_ accessors, methods by name + arity, native array access, GC-handle objects). Ops run on the game's main thread inside its window procedure (the only context IL2CPP tolerates — no export fires per-frame and worker threads AV). Typed `GameClass`/`GameObject` API identical to Mono; verified live on a Unity 6000.0.61 title (see [tide.md §9](../tide.md)). |
-| First-launch interop generation | Runs **Cpp2IL + Il2CppInterop generator on the player's machine** on first launch — commonly 30 s to 2+ min; results cached by hash (`BepInEx/interop/`). Unity 6 metadata churn (v39+) has caused repeated regressions in be.7xx builds (Cpp2IL downgrades, interop bumps). | **None at runtime** (no generator needed — the runtime bridge needs no metadata). The planned offline `nami interop` projection runs on the dev machine; the player never waits on a generator. |
-| Interop assembly load | **Eager preload** of all generated interop assemblies before plugins load (configurable, default on) — hundreds of assemblies, commonly **+100–400 MB working set**. | Not applicable to the runtime bridge (types are resolved by name through `GameClass.Resolve`). Planned projections stay **lazy**: materialize on demand, cached on disk keyed by `sha256(GameAssembly | metadata | schema)`. |
-| Metadata parsing | Cpp2IL library reverse-engineering the binary + `global-metadata.dat`. | Not needed for the runtime bridge (the game's own runtime resolves everything). Unity 6 metadata is often encrypted, which rules out offline parsing on those titles regardless; the planned projection reader targets plaintext-metadata titles (pre-Unity 6), hooking Unity's own decoder where encrypted. |
+| Runtime bridge (call game code) | Plugins run on the game's IL2CPP via **Il2CppInterop** — generated managed wrappers over every game type, loaded through MonoMod's `HookGen`/detours. | **Shipped**: Tide's IL2CPP backend calls the game's `il2cpp_*` runtime exports directly (classes by name, fields/properties via get_/set_ accessors, methods by name + arity, native array access, GC-handle objects). Ops run on the game's main thread inside its window procedure (the only context IL2CPP tolerates — no export fires per-frame and worker threads AV). Typed `GameClass`/`GameObject` API identical to Mono; verified live on a Unity 6000.0.61 title (see [tide.md §9](./tide.md)). |
+| First-launch interop generation | Runs **Cpp2IL + Il2CppInterop generator on the player's machine** on first launch — commonly 30 s to 2+ min; results cached by hash (`BepInEx/interop/`). Unity 6 metadata churn (v39+) has caused repeated regressions in be.7xx builds (Cpp2IL downgrades, interop bumps). | **None at runtime** (no generator needed — the runtime bridge needs no metadata). The offline `nami interop` projection runs on the dev machine and emits one source file; the player never waits on a generator. |
+| Interop assembly load | **Eager preload** of all generated interop assemblies before plugins load (configurable, default on) — hundreds of assemblies, commonly **+100–400 MB working set**. | Not applicable (types resolve by name through `GameClass.Resolve`; projections are dev-time source, never loaded assemblies). |
+| Metadata parsing | Cpp2IL library reverse-engineering the binary + `global-metadata.dat`. | Not needed for the runtime bridge (the game's own runtime resolves everything). The offline reader targets plaintext metadata (v24-31); Unity 6 titles with encrypted metadata are unsupported (no decoder hook). |
 | Plugin target for IL2CPP | .NET 6 (bundled, EOL). | .NET 10 (LTS) — same runtime as Mono games, already shipped. |
 
 ## 7. Configuration & logging
 
 | Aspect | BepInEx | Nami |
 |---|---|---|
-| Loader config | `doorstop_config.ini` in the game root + `BepInEx/config/` per-plugin `.cfg` **INI** files via `ConfigFile`. | `nami.json` in the nami root (JSON, tolerant parsing, defaults on missing/corrupt file). Per-plugin config sections are a future milestone. |
+| Loader config | `doorstop_config.ini` in the game root + `BepInEx/config/` per-plugin `.cfg` **INI** files via `ConfigFile`. | `nami.json` in the nami root (JSON, tolerant parsing, defaults on missing/malformed file; I/O errors still throw). Per-plugin config shipped: `pluginConfig.<id>` sections via `Context.Config`. |
 | Logging | `Logger` → `DiskLogListener` writes `BepInEx/LogOutput.log`; console via `ConsoleManager`; per-plugin `ManualLogSource`. | `LogHub` fan-out to sinks; `FileSink` writes `nami/nami.log`; per-plugin `ILog` tags records with the plugin id. Sinks are isolated so a broken sink can't crash the host. |
 
 ## 8. Packaging, CLI, tooling
 
 | Aspect | BepInEx | Nami |
 |---|---|---|
-| Mod distribution | Loose DLL in `BepInEx/plugins` (plus `patchers/`). | Mods are built from NuGet (`Nami.Sdk`/`Nami.Tide` packages) and land as loose DLLs in `nami/mods` (via `nami run`); `.nmod` package format (id, semver, deps, game bounds) is planned. |
-| CLI / dev tooling | No first-party CLI for install/inspect (community tools exist). | `nami` CLI: version/doctor/list + `install` (stages a runnable root from build outputs) + `run <mod.csproj>` (build, copy to nami/mods, launch) + a player-facing launcher flow — `launch set <game.exe>`, `launch [offline|steam]` (auto-detects the exe; Steam relay to a clean session after exit), `create` (double-click `launchNami.exe` in the nami root). Plus `dotnet new nami-mod` and NuGet packages. The self-contained downloadable installer (bundled runtime) is planned. |
+| Mod distribution | Loose DLL in `BepInEx/plugins` (plus `patchers/`). | Mods are built from NuGet (`Nami.Sdk`/`Nami.Tide` packages) and land as loose DLLs in `nami/mods` (via `nami run`); `.nmod` (zip + `mod.json`: id/name/version/description/authors/deps/incompatibilities — no game-bounds field) installs to `mods/<id>/` via the `NamiPackage` library (auto-install/CLI wiring future). |
+| CLI / dev tooling | No first-party CLI for install/inspect (community tools exist). | `nami` CLI: version/doctor/list/help + `install` (stages a runnable root from build outputs) + `run <mod.csproj>` (build, copy to nami/mods, launch) + `interop images|dump|generate|header` (offline IL2CPP projection, dev-time) + a player-facing launcher flow — `launch set <game.exe>`, `launch [offline|steam]` (auto-detects the exe; Steam relay to a clean session after exit, or uninjected relay with `steamRelaySkipInjection`), `create` (double-click `launchNami.exe` in the nami root). Plus `dotnet new nami-mod` and NuGet packages. The self-contained downloadable installer (bundled runtime) is planned. |
 | Benchmarking | None shipped. | `bench/` harness from M0; comparative gates vs BepInEx/MelonLoader planned for M5. |
 
 ## 9. Platform & target matrix
@@ -99,8 +100,8 @@ planned piece.
 
 | Aspect | BepInEx | Nami |
 |---|---|---|
-| Third-party runtime deps | Doorstop, HarmonyX, MonoMod.RuntimeDetour/Utils, Mono.Cecil, Cpp2IL, Il2CppInterop, bundled .NET 6. | No third-party managed packages; native side uses only the Windows API + the bundled .NET 10 runtime. Patching is shipped in-house (Wave); the IL2CPP runtime bridge is shipped in-house too (Tide IL2CPP backend), and the offline projection layer is the future subsystem. |
-| Injection surface | Doorstop (separate project, C++). | In-repo C++ (`native/`): injector + loader, ~600 LOC, fully static link (no MinGW runtime DLLs to resolve in a foreign process). |
+| Third-party runtime deps | Doorstop, HarmonyX, MonoMod.RuntimeDetour/Utils, Mono.Cecil, Cpp2IL, Il2CppInterop, bundled .NET 6. | No third-party managed packages (verified: no `PackageReference` in any `src/*.csproj`; only tests use xunit/coverlet); native side uses only the Windows API + the bundled .NET 10 runtime. Patching is shipped in-house (Wave); the IL2CPP runtime bridge (Tide backend) and the offline projection emitter (`nami interop`) are shipped in-house too. |
+| Injection surface | Doorstop (separate project, C++). | In-repo C++ (`native/`, ~3.7k LOC total — ≈265 injector+boot, the rest the Tide bridge): injector + loader. `nami_loader.dll` is fully static-linked (no MinGW runtime DLLs to resolve in a foreign process); `nami_boot.exe` is MinGW-linked. |
 | IL tooling | Mono.Cecil everywhere (discovery, patching, interop). | None (by design); reflection-based discovery; IL2CPP access via the game's own `il2cpp_*` runtime exports (Tide IL2CPP backend). |
 
 ## 11. Operational & observable differences (verified)
@@ -108,10 +109,10 @@ planned piece.
 | Behavior | BepInEx | Nami |
 |---|---|---|
 | Game folder after install | Doorstop files + `BepInEx/` + possible `.bak` assemblies. | Only `nami/`. |
-| Startup added latency (Mono) | Small (Doorstop boot + preloader patch pass). | Small (module wait + CoreCLR host init; measured game process stable at ~375 MB including the game itself). |
+| Startup added latency (Mono) | Small (Doorstop boot + preloader patch pass). | Small (module wait + CoreCLR host init). One extra in-process CoreCLR is a real, measurable cost — measure per title. |
 | RAM overhead (Mono) | Near zero beyond plugins (they run in the game's runtime). | One modern runtime in-process — a real, measurable cost; the trade for isolation + modern BCL. |
 | Crash containment | Plugin exception ⇒ game may crash / corrupt shared state. | Plugin exception ⇒ quarantine path, game continues. |
-| Can it run alongside the other | N/A | Nami and BepInEx both present in one game folder conflict (both may fight over injection); don't install together. |
+| Can it run alongside the other | N/A | Untested combination — don't install Nami and BepInEx in one game folder (both hook the launch path). |
 
 ## 12. Ecosystem & maturity (where BepInEx wins today)
 
@@ -134,7 +135,8 @@ The differences reduce to one architectural bet:
   patcher that is young (Wave) rather than ecosystem-proven, and the overhead of a second
   runtime.
 
-The long-term bet of Nami is that those costs shrink as the missing pieces land (downloadable
-installer, projection, hot reload), while BepInEx's costs (runtime coupling, generation on the
-player's machine, metadata churn chasing, EOL .NET 6) are structural and only grow as Unity
-moves on.
+The long-term bet of Nami is that those costs shrink as the remaining pieces land (downloadable
+installer — hot reload, the per-mod profiler, the IL2CPP runtime bridge and the offline
+projection emitter are already shipped), while
+BepInEx's costs (runtime coupling, generation on the player's machine, metadata churn chasing,
+EOL .NET 6) are structural and only grow as Unity moves on.

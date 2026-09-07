@@ -13,6 +13,18 @@ public sealed class ProbeLoadContext : AssemblyLoadContext
     {
     }
 
+    /// <summary>
+    /// Loads the candidate assembly from raw bytes so the file on disk is never locked —
+    /// discovery must not prevent a mod being rebuilt or deleted in place (hot reload).
+    /// </summary>
+    public Assembly LoadAssemblyNoLock(string path)
+    {
+        var bytes = File.ReadAllBytes(path);
+        var pdbPath = Path.ChangeExtension(path, ".pdb");
+        var pdb = File.Exists(pdbPath) ? File.ReadAllBytes(pdbPath) : null;
+        return pdb is null ? Assembly.Load(bytes) : Assembly.Load(bytes, pdb);
+    }
+
     protected override Assembly? Load(AssemblyName assemblyName)
     {
         // During discovery we only need to reflect plugin types, which requires resolving
