@@ -33,7 +33,8 @@ public static unsafe partial class Tide
 
     private const string LoaderDll = "nami_loader";
 
-    // Native ops implemented in native/loader/tide_ops.cpp, executed on the game main thread.
+    // Native ops implemented in native/loader/tide_ops.cpp, executed on the game main thread
+    // (Mono backend) or native/loader/tide_il2cpp*.cpp (IL2CPP backend).
     [DllImport(LoaderDll, EntryPoint = "nami_tide_unity_log", CallingConvention = CallingConvention.Cdecl)]
     private static extern int NativeUnityLog(byte* message);
 
@@ -51,8 +52,64 @@ public static unsafe partial class Tide
     [DllImport(LoaderDll, EntryPoint = "nami_tide_free", CallingConvention = CallingConvention.Cdecl)]
     internal static extern void NativeFree(void* ptr);
 
+    // IL2CPP backend exports (GameAssembly.dll titles).
+    [DllImport(LoaderDll, EntryPoint = "nami_il2cpp_available", CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int NativeIl2CppAvailable();
+
+    [DllImport(LoaderDll, EntryPoint = "nami_il2cpp_install", CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int NativeIl2CppInstall();
+
+    [DllImport(LoaderDll, EntryPoint = "nami_il2cpp_object_op", CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int NativeIl2CppObjectOp(CallRequest* request);
+
+    [DllImport(LoaderDll, EntryPoint = "nami_il2cpp_free", CallingConvention = CallingConvention.Cdecl)]
+    internal static extern void NativeIl2CppFree(void* ptr);
+
     // The loader module handle (nami_loader.dll is loaded in-process).
     private static IntPtr _loaderModule;
+
+    /// <summary>
+    /// Backend the bridge is talking to. Mono = Unity Mono titles (classic Tide, drain via
+    /// mono_runtime_invoke detour); Il2Cpp = GameAssembly.dll titles (drain via the game's
+    /// main window proc). Determined once at first use.
+    /// </summary>
+    public enum Backend
+    {
+        Mono,
+        Il2Cpp,
+        None,
+    }
+
+    private static Backend _backend;
+    private static int _backendProbed;
+
+    /// <summary>The active game-runtime backend (Mono or IL2CPP), detected once.</summary>
+    public static Backend ActiveBackend
+    {
+        get
+        {
+            if (Volatile.Read(ref _backendProbed) == 0)
+            {
+                lock (typeof(Tide))
+                {
+                    if (_backendProbed == 0)
+                    {
+                        _backend = IsAvailable && NativeIl2CppAvailable() != 0 ? Backend.Il2Cpp : Backend.Mono;
+                        if (_backend == Backend.Il2Cpp)
+                        {
+                            // Install the IL2CPP main-thread executor (window-proc drain).
+                            if (NativeIl2CppInstall() != 0)
+                            {
+                                NoteIl2CppInstalled();
+                            }
+                        }
+                        Volatile.Write(ref _backendProbed, 1);
+                    }
+                }
+            }
+            return _backend;
+        }
+    }
 
     static Tide()
     {
@@ -70,6 +127,56 @@ public static unsafe partial class Tide
 
     /// <summary>True when the loader (and thus the Tide main-thread drain) is present.</summary>
     public static bool IsAvailable => _loaderModule != IntPtr.Zero;
+
+    /// <summary>
+    /// True when the backend's main-thread executor is installed and ops can run.
+    /// On Mono this is true as soon as the loader is present; on IL2CPP it requires the
+    /// game's main window to exist (the executor drains the window proc), so it can be
+    /// false during early boot.
+    /// </summary>
+    public static bool IsReady => ActiveBackend == Backend.Mono ||
+                                  (ActiveBackend == Backend.Il2Cpp && _il2cppInstalled == 1);
+
+    private static int _il2cppInstalled;
+
+    internal static void NoteIl2CppInstalled() => Volatile.Write(ref _il2cppInstalled, 1);
+
+    /// <summary>
+    /// Re-attempts backend executor installation (IL2CPP only). The executor needs the
+    /// game's main window, which may not exist when mods load; call this periodically until
+    /// <see cref="IsReady"/> is true before issuing ops on IL2CPP titles.
+    /// </summary>
+    public static bool EnsureReady()
+    {
+        if (IsReady)
+        {
+            return true;
+        }
+        if (ActiveBackend == Backend.Mono)
+        {
+            return IsAvailable;
+        }
+        if (ActiveBackend == Backend.Il2Cpp && _il2cppInstalled == 0)
+        {
+            if (NativeIl2CppInstall() != 0)
+            {
+                NoteIl2CppInstalled();
+            }
+        }
+        return IsReady;
+    }
+
+    internal static void NativeFreeFor(Backend backend, void* ptr)
+    {
+        if (backend == Backend.Il2Cpp)
+        {
+            NativeIl2CppFree(ptr);
+        }
+        else
+        {
+            NativeFree(ptr);
+        }
+    }
 
     private static byte[] Ansi(string s, int max)
     {
@@ -188,7 +295,8 @@ internal static unsafe class TideObjectOp
             req.Args = args;
             req.Ret = returnType == TideType.Void ? null : &ret;
 
-            var rc = postInvoke ? Tide.NativeObjectOpPost(&req) : Tide.NativeObjectOp(&req);
+            var backend = Tide.ActiveBackend;
+            var rc = RunOp(backend, postInvoke, &req);
             if (rc != 0)
             {
                 throw Error(op, $"{target.Name}.{member}", rc, req);
@@ -219,7 +327,8 @@ internal static unsafe class TideObjectOp
             req.Args = args;
             req.Ret = returnType == TideType.Void ? null : &ret;
 
-            var rc = Tide.NativeObjectOp(&req);
+            var backend = Tide.ActiveBackend;
+            var rc = RunOp(backend, false, &req);
             if (rc != 0)
             {
                 throw Error(op, member, rc, req);
@@ -231,6 +340,19 @@ internal static unsafe class TideObjectOp
         {
             FreeArgStrings(args, argCount);
         }
+    }
+
+    /// <summary>Dispatches a CallRequest to the active backend's native op export.</summary>
+    private static int RunOp(Tide.Backend backend, bool postInvoke, CallRequest* req)
+    {
+        if (backend == Tide.Backend.Il2Cpp)
+        {
+            // The IL2CPP executor runs ops on the main thread inside the window proc; there
+            // is no nested runtime_invoke frame, so pre/post are equivalent (post is a no-op
+            // distinction kept for ABI compatibility).
+            return Tide.NativeIl2CppObjectOp(req);
+        }
+        return postInvoke ? Tide.NativeObjectOpPost(req) : Tide.NativeObjectOp(req);
     }
 
     private static string ErrorMessage(CallRequest* req)

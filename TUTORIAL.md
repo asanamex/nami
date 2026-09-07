@@ -3,17 +3,18 @@
 This guide walks you from a clean checkout to a mod running inside a real Unity game —
 including calling into the game itself through Tide's typed API.
 
-> **Current scope:** Windows x64, Unity **Mono** games (IL2CPP is a later milestone).
-> BepInEx is **not** required and must **not** be installed (its doorstop proxy conflicts
-> with Nami's launcher).
+> **Current scope:** Windows x64, Unity **Mono** and **IL2CPP** games (see
+> [docs/tide.md §9](docs/tide.md) for the IL2CPP backend). BepInEx is **not** required and
+> must **not** be installed (its doorstop proxy conflicts with Nami's launcher).
 
 ---
 
 ## 1. What you need
 
 - Windows 10/11 x64
-- A Unity **Mono** game (check: the game folder has a `*_Data/Managed/` directory and no
-  `GameAssembly.dll`)
+- A Unity game — **Mono** (game folder has a `*_Data/Managed/` directory and no
+  `GameAssembly.dll`) or **IL2CPP** (game folder has `GameAssembly.dll` + a
+  `*_Data/il2cpp_data/` directory; most Unity 6 titles and many 2019–2022 titles)
 - [.NET SDK 10.0+](https://dotnet.microsoft.com/download)
 - CMake 3.20+ and a C++17 compiler (MinGW or MSVC) — only to build the native injector
 - (Optional) a second copy of the game for testing, so the original stays pristine
@@ -224,10 +225,12 @@ case-insensitively.
 - `enabledPlugins`: only these load (empty = all).
 - `logLevel`: accepted and stored, but not yet wired to the runtime's minimum level (the
   loader logs at Info); planned.
-- `enableMonoBridge`: enables **Tide** — the bridge that lets mods call into the game's Mono
-  runtime (every call runs safely on the game's main thread). Off by default because it
-  patches a live game export and is verified on Unity Mono across four titles so far (2022.3
-  and Unity 6); see [docs/tide.md](docs/tide.md).
+- `enableMonoBridge`: enables **Tide** on Mono titles — the bridge that lets mods call into
+  the game's Mono runtime (every call runs safely on the game's main thread). Off by default
+  because it patches a live game export and is verified on Unity Mono across four titles so far
+  (2022.3 and Unity 6); see [docs/tide.md](docs/tide.md). On **IL2CPP** titles no flag is
+  needed: Tide auto-detects `GameAssembly.dll` and uses the window-proc executor (no code
+  patching) — see [docs/tide.md §9](docs/tide.md).
 
 ## 7. The sample mod
 
@@ -277,12 +280,13 @@ dotnet test Nami.slnx              :: runs all four test projects
 
 ## 10. Known limitations
 
-- **Mono games only** — IL2CPP support is a later milestone.
 - **Tide scope**: typed access covers static and instance fields/properties (primitives,
   strings, live objects, enums as their underlying int), a generic `Get<T>`/`Set<T>`/`Call<T>`
   API, arrays (`TideArrays`), object creation, and live scene objects via static accessors
-  (`Camera.main`). Still missing: Unity's scene-iteration scan APIs (`Object.FindObjectOfType`
-  — Unity aborts these from foreign re-entry) and a generated strongly-typed projection layer.
+  (`Camera.main`). On **IL2CPP** titles the same API runs through the IL2CPP backend
+  (auto-detected; see [docs/tide.md §9](docs/tide.md)). Still missing on both backends:
+  Unity's scene-iteration scan APIs (`Object.FindObjectOfType` — Unity aborts these from
+  foreign re-entry) and a generated strongly-typed projection layer.
 - **Wave scope**: M1 supports parameterless void methods; **M2** (IL-copy) patches any
   non-generic method with a real body — any signature, prefix/postfix, skip, result
   rewriting. Windows x64 only.

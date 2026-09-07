@@ -37,8 +37,23 @@ Full blueprint: `~/.commandcode/plans/nami-unity-mod-loader.md` (or via `/plans`
   - **Remaining (future "Nami-Install" product):** a self-contained downloadable installer
     that bundles the .NET runtime into a single artifact for end users (today `nami install`
     stages from a local build).
-- **M4 — IL2CPP:** native `global-metadata.dat` parsing (golden corpus), lazy projection,
-  offline `nami interop dump`; same main-thread-drain pattern for the runtime bridge.
+- **M4 — IL2CPP (in progress):** same main-thread drain pattern for the runtime bridge.
+  - **Shipped:** a working IL2CPP backend — loader auto-detects `GameAssembly.dll`, the
+    managed Tide layer routes to `nami_il2cpp_*` exports, and ops run on the game's main
+    thread inside its window procedure (subclassed drain). Verified live on D1AL-ogue
+    (Unity 6000.0.61, real IL2CPP): typed `Debug.Log`, property getters (`Get<bool>`),
+    enums (`Get<int>`), `string[]` reads, and exception surfacing (`FormatException`
+    message) all work; the Mono backend is unchanged (regression-verified on ROUNDS).
+  - **Empirical findings that shaped the design:** exports are E9 jmp-thunks; Unity 6
+    metadata may be encrypted (older titles plaintext `0xFAB11BAF`); no il2cpp export
+    fires per-frame (24 instrumented, all zero over 35 s) so a `runtime_invoke` detour
+    cannot power the drain; no VM API is safe from a worker thread (even attached); and
+    no VM call is safe *inside* a `runtime_invoke` detour frame. The safe context is the
+    game's main thread inside its window proc — verified stable. `domain_assembly_open`
+    returns an assembly, not an image (use `il2cpp_assembly_get_image`); GC handles are
+    full 64-bit page-table indices (truncating to 32 bits AVs, as on Unity 6 Mono).
+  - **Remaining:** offline `global-metadata.dat` parsing + `nami interop dump` (deferred;
+    runtime type access covers mod needs).
 - **M5 — depth:** hot reload; per-mod profiler; comparative bench gates vs BepInEx/MelonLoader.
   (Scene-iteration scan APIs remain tracked under "M2 remaining" above.)
 

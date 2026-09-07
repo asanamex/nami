@@ -4,14 +4,17 @@
 faster, lighter, and safer than the established loaders, with a clean-slate API and no
 dependency on BepInEx, HarmonyX, MonoMod, or Mono.Cecil.
 
-> **Status: load + patch + bridge + typed game access all working in real games.** The native
-> core hosts .NET 10 inside four Unity Mono games — Project Hardline (2022.3.27f1),
-> Parasocial (2022.3.5f1), ROUNDS (2022.3.34f1), and The Gaspy Color War (Unity 6,
-> 6000.5.4f1); Wave patches methods
+> **Status: load + patch + bridge + typed game access all working in real games, on Mono AND
+> IL2CPP.** The native
+> core hosts .NET 10 inside five verified Unity games — four Mono: Project Hardline
+> (2022.3.27f1), Parasocial (2022.3.5f1), ROUNDS (2022.3.34f1), The Gaspy Color War (Unity 6,
+> 6000.5.4f1); one IL2CPP: D1AL-ogue (Unity 6, 6000.0.61); Wave patches methods
 > with in-house x64 detours and Harmony-style IL-copy prefix/postfix patching (any signature);
 > **Tide** lets mods call into the game — typed static/instance field access, typed method
 > calls, and live object creation/calls, all executed on the game's main thread and verified
-> stable in-game. Enable with `"enableMonoBridge": true` in `nami.json`. **M3 dev experience is
+> stable in-game, on both backends (Mono and IL2CPP auto-detected). Enable with
+> `"enableMonoBridge": true` in `nami.json` (Mono titles); IL2CPP titles are detected
+> automatically. **M3 dev experience is
 > in**: `Nami.Sdk`/`Nami.Tide` NuGet packages, the `dotnet new nami-mod` template, and
 > `nami install`/`nami run` — a modder goes from template to a running mod without hand
 > staging. Remaining: the self-contained downloadable installer and a few documented edges
@@ -20,7 +23,7 @@ dependency on BepInEx, HarmonyX, MonoMod, or Mono.Cecil.
 ## Getting started
 
 - **[TUTORIAL.md](TUTORIAL.md)** — build Nami, stage it next to a game, write and run your first mod.
-- **[docs/tide.md](docs/tide.md)** — Tide: the Nami↔game bridge (mods call into Unity Mono from .NET 10).
+- **[docs/tide.md](docs/tide.md)** — Tide: the Nami↔game bridge (mods call into Unity Mono or IL2CPP from .NET 10).
 - **[docs/wave.md](docs/wave.md)** — Wave: Nami's patching engine (inline detours, Harmony-style IL-copy patching, overhead numbers).
 - **[docs/technical-difference.md](docs/technical-difference.md)** — point-by-point technical comparison with BepInEx (runtime, isolation, IL2CPP, patching, more).
 - **[docs/vs-bepinex.md](docs/vs-bepinex.md)** — the short, honest "why different / what's missing" read.
@@ -153,8 +156,8 @@ See `docs/plan.md` for the full blueprint. Short version: **M0** scaffold & proo
 **M1** core framework (load order, isolation, quarantine, config, logging) · **M1.5** Wave
 patching engine (M2: Harmony-style IL-copy) · **M2** Tide bridge + typed game access ·
 **M3 done** dev experience (NuGet packages, `dotnet new nami-mod`, `nami install`/`run`) ·
-**M4** IL2CPP bridge + offline interop · **M5** depth (hot reload, profiling, comparative
-bench gates).
+**M4 in progress** IL2CPP bridge **shipped** (runtime backend; offline interop projection
+next) · **M5** depth (hot reload, profiling, comparative bench gates).
 
 ## License
 

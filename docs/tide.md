@@ -6,10 +6,12 @@ its state — rather than only running sandboxed logic in a parallel universe.
 
 ```
 src/Nami.Tide/              managed API: Tide, GameClass, GameObject, TideValue
-native/loader/tide_pump.cpp native main-thread executor: mono_runtime_invoke hook, queue,
-                            drain, trampoline
+native/loader/tide_pump.cpp native Mono main-thread executor: mono_runtime_invoke hook,
+                            queue, drain, trampoline
 native/loader/tide_ops.cpp  native ops: UnityLog
-native/loader/tide_objects.cpp  typed game access: field/property/method/object ops
+native/loader/tide_objects.cpp  Mono typed game access: field/property/method/object ops
+native/loader/tide_il2cpp.cpp   IL2CPP main-thread executor: window-proc drain (see §9)
+native/loader/tide_il2cpp_ops.cpp  IL2CPP typed game access (mirrors tide_objects.cpp)
 native/loader/tide_abi.h    shared value/handle ABI (TideValue, CallRequest)
 ```
 
@@ -100,11 +102,12 @@ self-test. You should see in `nami.log`:
 [boot] Tide bridge OK: Unity Debug.Log executed on the game main thread
 ```
 
-> **Why opt-in?** The bridge runs native code that patches a live game export. It is proven
-> on Unity Mono (Windows x64) across four titles spanning 2022.3 and Unity 6 (2022.3.5f1,
-> 2022.3.27f1, 2022.3.34f1, 6000.5.4f1); until more games/versions are verified, it stays
-> behind an explicit flag so a bad interaction can never silently affect a game that didn't
-> ask for it.
+> **Why opt-in (Mono)?** The Mono bridge runs native code that patches a live game export. It
+> is proven on Unity Mono (Windows x64) across four titles spanning 2022.3 and Unity 6
+> (2022.3.5f1, 2022.3.27f1, 2022.3.34f1, 6000.5.4f1); until more games/versions are verified,
+> it stays behind an explicit flag so a bad interaction can never silently affect a game that
+> didn't ask for it. The IL2CPP backend (see §9) needs no flag — it patches nothing (it only
+> subclasses the game's window) and is auto-detected from the presence of `GameAssembly.dll`.
 
 ---
 
@@ -112,7 +115,8 @@ self-test. You should see in `nami.log`:
 
 Four Unity Mono titles launched via `nami_boot` — Project Hardline (2022.3.27f1), Parasocial
 (2022.3.5f1, a Chilla's Art title), ROUNDS (2022.3.34f1), and The Gaspy Color War (Unity 6 /
-6000.5.4f1). Representative `nami.log` (ROUNDS / 2022.3.34f1; timestamps elided):
+6000.5.4f1) — plus one IL2CPP title, D1AL-ogue (Unity 6 / 6000.0.61, see §9).
+Representative `nami.log` (ROUNDS / 2022.3.34f1; timestamps elided):
 
 ```
 [INFO ] [boot] Nami managed runtime booting (nami_root=...\nami)
@@ -386,5 +390,57 @@ embedding re-entry).
 - Broaden the verified matrix (older/newer Unity Mono, more games); the main-thread-drain
   pattern is expected to carry over.
 
-The same main-thread-drain architecture will inform the IL2CPP bridge later: the lesson —
-"run game-runtime calls where the game's runtime owns the thread" — is universal.
+---
+
+## 9. IL2CPP backend (Unity IL2CPP titles)
+
+Nami also runs on **IL2CPP** games (`GameAssembly.dll` present, no Mono). The managed
+`Nami.Tide` API is identical — `Tide.ActiveBackend` reports `Il2Cpp`, and every `GameClass` /
+`GameObject` / `TideValue` call routes to the IL2CPP backend automatically.
+
+**Execution model (empirically established on real IL2CPP titles — Arrow a Row 2020.3.18,
+D1AL-ogue 6000.0.61):** IL2CPP compiles game scripts to native code, so unlike Mono there is
+*no* exported per-frame managed dispatch (24 instrumented exports — `runtime_invoke`,
+`class_init`, `object_new`, `string_new`, `value_box`, `array_new`, `thread_attach`,
+`gchandle_*`, `liveness_*` — were all silent over 35 s of live gameplay), and *no* VM API is
+safe from a worker thread (even `domain_assembly_open` AVs from an attached thread). The safe
+execution context is the **game's main thread inside its window procedure**: Nami subclasses
+the game's main window and drains a work queue from a `WM_NAMI_DRAIN` message, so every op
+runs on the main thread with no `runtime_invoke` frame on the stack. This is the window-proc
+drain (`native/loader/tide_il2cpp.cpp`).
+
+**Verified on D1AL-ogue (Unity 6000.0.61, real IL2CPP)** — the `TideProbeIl2Cpp` sample
+passes end to end with the game stable:
+
+```
+[dev.nami.samples.tideprobe-il2cpp] Tide available; backend=Il2Cpp
+[dev.nami.samples.tideprobe-il2cpp] typed Debug.Log(string) call OK
+[dev.nami.samples.tideprobe-il2cpp] Application.runInBackground (typed Get<bool>) = True
+[dev.nami.samples.tideprobe-il2cpp] Screen.orientation (enum via Get<int>) = 1
+[dev.nami.samples.tideprobe-il2cpp] Environment.GetCommandLineArgs() length = 1
+[dev.nami.samples.tideprobe-il2cpp] args[0] = 'C:\...\D1AL-ogue.exe'
+[dev.nami.samples.tideprobe-il2cpp] exception surfaced OK: code=-2 mono=True
+[dev.nami.samples.tideprobe-il2cpp]   ... System.FormatException: Input string was not in a correct format.
+[dev.nami.samples.tideprobe-il2cpp] TideProbe-IL2CPP verification complete
+game alive and stable (60+ s post-probe, zero crashes)
+```
+
+**IL2CPP API notes that matter (all verified):**
+- Exports are `E9` jmp-thunks; call the **export address** (not a "followed" body — Unity
+  6000's internal register conventions break direct body calls).
+- `il2cpp_domain_assembly_open` returns an **assembly**; the image comes from
+  `il2cpp_assembly_get_image`.
+- GC handles (`il2cpp_gchandle_new`/`get_target`/`free`) are **full 64-bit page-table
+  indices** — truncating to 32 bits AVs on lookup (same class of bug as Unity 6 Mono).
+- C# properties have no reflection API: reads/writes fall back to `get_X` / `set_X` method
+  invokes.
+- Array elements are accessed natively (`Il2CppArray` items at `+0x20`, element size from
+  `il2cpp_class_get_element_class` + `il2cpp_array_element_size`) rather than via
+  `System.Array.GetValue/SetValue`, which throw on IL2CPP.
+- Exceptions surface via `System.Exception.ToString()` invoked on the exception object
+  (`il2cpp_format_exception` crashes in the window-proc context).
+- Metadata may be encrypted on Unity 6 titles (offline parsing is then impossible); the
+  runtime path needs no metadata file.
+
+The Mono backend is untouched: `Tide.ActiveBackend == Mono` on Mono titles and everything
+behaves as documented above (regression-verified on ROUNDS).

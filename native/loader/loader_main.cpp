@@ -1,6 +1,7 @@
 #include "loader.h"
 
 #include "../core/runtime_host.h"
+#include "tide_il2cpp.h"
 
 #include <windows.h>
 
@@ -8,11 +9,12 @@
 
 namespace nami {
 
-bool wait_for_mono(int timeout_ms) {
+bool wait_for_runtime(int timeout_ms) {
     const auto start = GetTickCount64();
     while (GetTickCount64() - start < static_cast<ULONGLONG>(timeout_ms)) {
         if (GetModuleHandleW(L"mono-2.0-bdwgc.dll") != nullptr ||
-            GetModuleHandleW(L"mono.dll") != nullptr) {
+            GetModuleHandleW(L"mono.dll") != nullptr ||
+            GetModuleHandleW(L"GameAssembly.dll") != nullptr) {
             return true;
         }
         Sleep(100);
@@ -40,9 +42,14 @@ void loader_main(const wchar_t* nami_root) {
         std::fflush(marker);
     }
 
-    if (!wait_for_mono()) {
+    // Wait for the game's managed runtime to load: Mono DLLs on Mono titles, GameAssembly.dll
+    // on IL2CPP titles. The loader is injected at process start; Unity loads its scripting
+    // runtime shortly after.
+    const bool runtime_seen = wait_for_runtime(60000);
+    const bool is_il2cpp = runtime_seen && il2cpp::detect_il2cpp();
+    if (!runtime_seen) {
         if (marker) {
-            std::fwprintf(marker, L"[loader] mono never appeared; aborting\n");
+            std::fwprintf(marker, L"[loader] neither mono nor GameAssembly appeared; aborting\n");
             std::fflush(marker);
             std::fclose(marker);
         }
@@ -50,7 +57,8 @@ void loader_main(const wchar_t* nami_root) {
     }
 
     if (marker) {
-        std::fwprintf(marker, L"[loader] mono detected; hosting CoreCLR from %ls\n", nami_root);
+        std::fwprintf(marker, L"[loader] runtime detected (%ls); hosting CoreCLR from %ls\n",
+                      is_il2cpp ? L"IL2CPP (GameAssembly.dll)" : L"Mono", nami_root);
         std::fflush(marker);
     }
 

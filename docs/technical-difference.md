@@ -17,7 +17,7 @@ marketing sheet.
 | Injection mechanism | **Unity Doorstop**: a proxy DLL dropped into the game root (typically `winhttp.dll`) that Windows loads because the game imports it; Doorstop then boots the preloader before Unity's runtime initializes. | **Launcher injection**: `nami_boot.exe` starts the game suspended, writes the loader DLL path into the process, creates a remote thread that runs `LoadLibraryW`, then resumes the game. No proxy file in the game root. |
 | Files placed in the game directory | `winhttp.dll`, `doorstop_config.ini`, `.doorstop_version`, a `BepInEx/` tree; games whose assemblies get preloader-patched also gain `.bak` copies (observed in the wild: `Assembly-CSharp.dll.bak`). | One self-contained `nami/` directory next to the executable. Nothing is written into the game's own folders and **no game assembly is ever modified or backed up**. |
 | Uninstall | Remove Doorstop files + `BepInEx/`; must verify no assembly was left patched. | Delete the `nami/` folder. |
-| When the loader runs | At process start, *before* Unity initializes (Doorstop hook). | After the process starts; the loader thread waits for Unity's Mono module (`mono-2.0-bdwgc.dll`) to appear, then proceeds — the game boots normally and Nami hooks in beside it. |
+| When the loader runs | At process start, *before* Unity initializes (Doorstop hook). | After the process starts; the loader thread waits for the game's runtime to appear (`mono-2.0-bdwgc.dll`/`mono.dll` on Mono titles, `GameAssembly.dll` on IL2CPP titles), then proceeds — the game boots normally and Nami hooks in beside it. |
 | Reliance on name collision | Yes — a DLL the game imports must be shadowed (`winhttp.dll`), which is detectable and can conflict with other software using that name. | No name collision; injection is explicit and scoped to the launched process. |
 
 ## 2. Runtime model (the big one)
@@ -26,9 +26,9 @@ marketing sheet.
 |---|---|---|
 | Where Mono-game plugins execute | **Inside the game's embedded Mono runtime** (Unity 2022-era games ship a .NET Framework 3.5-compatible Mono). Plugins compile against `net35`/`netstandard2.0`-era APIs. | Inside **Nami's own hosted .NET 10 (CoreCLR)** runtime, loaded into the game process via `hostfxr` component activation. Plugins target `net10.0`. |
 | BCL available to plugins | Whatever the game's Mono provides (no `Span`-heavy modern APIs by default, old GC, no modern `AssemblyLoadContext` semantics). | Full modern .NET 10 BCL: current GC/JIT, `Span<T>`, `async`, source generators, `System.Text.Json`, etc. |
-| Runtime for IL2CPP games | Bundles a **.NET 6 CoreCLR** (BepInEx 6) alongside the game's native IL2CPP; plugins run on that. | Planned: the same CoreCLR hosting machinery as Mono, so plugin code and tooling are identical across both backends. |
+| Runtime for IL2CPP games | Bundles a **.NET 6 CoreCLR** (BepInEx 6) alongside the game's native IL2CPP; plugins run on that. | **Shipped**: the same hosted .NET 10 CoreCLR as Mono titles. The loader auto-detects `GameAssembly.dll` and Tide gains an IL2CPP backend — plugins are byte-identical across Mono and IL2CPP. |
 | GC coexistence | Mono games: plugins share the game's Boehm GC. IL2CPP: separate CoreCLR GC in-process. | Separate CoreCLR GC in-process in both cases. Mono-game plugin code never allocates in the game's GC. |
-| Calling game code from a plugin | Mono games: trivial — plugin IL runs in the game runtime, so it can call any game method directly. IL2CPP: via generated interop. | Mono games: **Tide** — plugin code runs on Nami's .NET and calls INTO the game's Mono via a main-thread bridge with **typed access** (`GameClass`/`GameObject`: static + instance field/property access incl. live objects, typed method calls with signature-aware boxing, a generic `Get<T>`/`Set<T>`/`Call<T>` API, enums as their underlying int, arrays via `TideArrays`, object creation; verified in-game). Still narrower than in-runtime calls: Unity's scene-iteration scan APIs (`Object.FindObjectOfType`) abort from foreign re-entry, so live scene objects are reached via static accessors (`Camera.main`). |
+| Calling game code from a plugin | Mono games: trivial — plugin IL runs in the game runtime, so it can call any game method directly. IL2CPP: via generated interop. | Mono and IL2CPP games: **Tide** — plugin code runs on Nami's .NET and calls INTO the game runtime via a main-thread bridge with **typed access** (`GameClass`/`GameObject`: static + instance field/property access incl. live objects, typed method calls with signature-aware boxing, a generic `Get<T>`/`Set<T>`/`Call<T>` API, enums as their underlying int, arrays via `TideArrays`, object creation; verified in-game on both backends — see [tide.md §9](../tide.md) for IL2CPP). Still narrower than in-runtime calls: Unity's scene-iteration scan APIs (`Object.FindObjectOfType`) abort from foreign re-entry, so live scene objects are reached via static accessors (`Camera.main`). |
 
 ## 3. Plugin isolation & failure handling
 
@@ -57,12 +57,19 @@ marketing sheet.
 
 ## 6. IL2CPP interop strategy
 
-| Aspect | BepInEx | Nami (planned) |
+Nami's IL2CPP story has two layers. The **runtime bridge is shipped** (mods call into the
+game through Tide's typed API on IL2CPP titles exactly as on Mono — no interop assemblies,
+no generator). The **typed-projection layer** (offline reference assemblies / lazy emitted
+projections for compile-time-typed game API use, the Cpp2IL-equivalent) is the remaining
+planned piece.
+
+| Aspect | BepInEx | Nami |
 |---|---|---|
-| First-launch interop generation | Runs **Cpp2IL + Il2CppInterop generator on the player's machine** on first launch — commonly 30 s to 2+ min; results cached by hash (`BepInEx/interop/`). Unity 6 metadata churn (v39+) has caused repeated regressions in be.7xx builds (Cpp2IL downgrades, interop bumps). | **Offline generation only**: `nami interop` runs on the dev/installer machine; the player never waits on a generator. Content-addressed cache keyed by game + metadata hash. |
-| Interop assembly load | **Eager preload** of all generated interop assemblies before plugins load (configurable, default on) — hundreds of assemblies, commonly **+100–400 MB working set**. | **Lazy projection**: game types materialize on demand when a mod touches them; emitted projections cached on disk keyed by `sha256(GameAssembly | metadata | schema)`. |
-| Metadata parsing | Cpp2IL library reverse-engineering the binary + `global-metadata.dat`. | Native C++ metadata reader in `nami_loader` with a per-Unity-version schema registry and golden corpus; hook Unity's own decoder where metadata is encrypted rather than reimplementing crypto. |
-| Plugin target for IL2CPP | .NET 6 (bundled, EOL). | .NET 10 (LTS) — same runtime as Mono games. |
+| Runtime bridge (call game code) | Plugins run on the game's IL2CPP via **Il2CppInterop** — generated managed wrappers over every game type, loaded through MonoMod's `HookGen`/detours. | **Shipped**: Tide's IL2CPP backend calls the game's `il2cpp_*` runtime exports directly (classes by name, fields/properties via get_/set_ accessors, methods by name + arity, native array access, GC-handle objects). Ops run on the game's main thread inside its window procedure (the only context IL2CPP tolerates — no export fires per-frame and worker threads AV). Typed `GameClass`/`GameObject` API identical to Mono; verified live on a Unity 6000.0.61 title (see [tide.md §9](../tide.md)). |
+| First-launch interop generation | Runs **Cpp2IL + Il2CppInterop generator on the player's machine** on first launch — commonly 30 s to 2+ min; results cached by hash (`BepInEx/interop/`). Unity 6 metadata churn (v39+) has caused repeated regressions in be.7xx builds (Cpp2IL downgrades, interop bumps). | **None at runtime** (no generator needed — the runtime bridge needs no metadata). The planned offline `nami interop` projection runs on the dev machine; the player never waits on a generator. |
+| Interop assembly load | **Eager preload** of all generated interop assemblies before plugins load (configurable, default on) — hundreds of assemblies, commonly **+100–400 MB working set**. | Not applicable to the runtime bridge (types are resolved by name through `GameClass.Resolve`). Planned projections stay **lazy**: materialize on demand, cached on disk keyed by `sha256(GameAssembly | metadata | schema)`. |
+| Metadata parsing | Cpp2IL library reverse-engineering the binary + `global-metadata.dat`. | Not needed for the runtime bridge (the game's own runtime resolves everything). Unity 6 metadata is often encrypted, which rules out offline parsing on those titles regardless; the planned projection reader targets plaintext-metadata titles (pre-Unity 6), hooking Unity's own decoder where encrypted. |
+| Plugin target for IL2CPP | .NET 6 (bundled, EOL). | .NET 10 (LTS) — same runtime as Mono games, already shipped. |
 
 ## 7. Configuration & logging
 
@@ -84,7 +91,7 @@ marketing sheet.
 | Aspect | BepInEx | Nami |
 |---|---|---|
 | Unity Mono | Windows/Linux/macOS, x86/x64 (5.x and 6.x). | **Windows x64 verified** against four Unity Mono titles spanning 2022.3 and Unity 6 (2022.3.5f1, 2022.3.27f1, 2022.3.34f1, 6000.5.4f1); other OS/arch planned. |
-| Unity IL2CPP | Windows/Linux/macOS x64 (6.x be). | Planned (same core; IL2CPP bridge milestone). |
+| Unity IL2CPP | Windows/Linux/macOS x64 (6.x be). | **Shipped** (Windows x64): Tide's IL2CPP backend verified live on D1AL-ogue (Unity 6000.0.61); probing also done on 2020.3.18 and 6000.4 titles. |
 | Non-Unity .NET apps | Supported (NET Framework / CoreCLR launchers). | Out of scope — Unity games only. |
 | Plugin TFMs | net35/netstandard2.0 (Mono), net6.0 (IL2CPP). | net10.0 everywhere. |
 
@@ -92,9 +99,9 @@ marketing sheet.
 
 | Aspect | BepInEx | Nami |
 |---|---|---|
-| Third-party runtime deps | Doorstop, HarmonyX, MonoMod.RuntimeDetour/Utils, Mono.Cecil, Cpp2IL, Il2CppInterop, bundled .NET 6. | No third-party managed packages; native side uses only the Windows API + the bundled .NET 10 runtime. Patching is shipped in-house (Wave); the IL2CPP interop layer is the future subsystem. |
+| Third-party runtime deps | Doorstop, HarmonyX, MonoMod.RuntimeDetour/Utils, Mono.Cecil, Cpp2IL, Il2CppInterop, bundled .NET 6. | No third-party managed packages; native side uses only the Windows API + the bundled .NET 10 runtime. Patching is shipped in-house (Wave); the IL2CPP runtime bridge is shipped in-house too (Tide IL2CPP backend), and the offline projection layer is the future subsystem. |
 | Injection surface | Doorstop (separate project, C++). | In-repo C++ (`native/`): injector + loader, ~600 LOC, fully static link (no MinGW runtime DLLs to resolve in a foreign process). |
-| IL tooling | Mono.Cecil everywhere (discovery, patching, interop). | None (by design); reflection-based discovery; native metadata reader planned for IL2CPP. |
+| IL tooling | Mono.Cecil everywhere (discovery, patching, interop). | None (by design); reflection-based discovery; IL2CPP access via the game's own `il2cpp_*` runtime exports (Tide IL2CPP backend). |
 
 ## 11. Operational & observable differences (verified)
 
@@ -111,7 +118,7 @@ marketing sheet.
 - **Existing mods**: BepInEx has a massive catalog; Nami's clean-slate API loads none of it (a deliberate choice).
 - **Patching**: HarmonyX's prefix/postfix/transpiler is proven and known to every modder; Wave implements a compatible prefix/postfix core, but without HarmonyX's years of edge-case coverage or its transpiler ecosystem.
 - **Documentation & community knowledge**: BepInEx is the default answer; Nami is new.
-- **Edge-case hardening**: BepInEx has years of real-world coverage across thousands of games; Nami has four verified games (three Unity 2022.3 Mono, one Unity 6 Mono).
+- **Edge-case hardening**: BepInEx has years of real-world coverage across thousands of games; Nami has five verified games (three Unity 2022.3 Mono, one Unity 6 Mono, one Unity 6 IL2CPP).
 
 ## Summary
 

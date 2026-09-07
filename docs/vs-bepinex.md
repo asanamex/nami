@@ -36,18 +36,19 @@ stays **pristine** (everything lives under `nami/`).
 ### 4. No runtime interop generation on the player's machine
 
 BepInEx-IL2CPP's first launch runs a minutes-long Cpp2IL + generator pipeline and preloads
-hundreds of interop assemblies (100-400 MB). Nami's design moves that work offline (dev-time,
-content-addressed) and projects game types lazily. *(This is the IL2CPP milestone, not yet
-shipped — it is the architectural target.)*
+hundreds of interop assemblies (100-400 MB). Nami's IL2CPP backend calls the game's own
+`il2cpp_*` runtime exports directly through Tide — no interop assemblies and no generator at
+all. The planned offline projection layer (`nami interop`) stays dev-time and lazy for
+compile-time-typed game API use.
 
 ## What Nami does NOT have yet (honest)
 
 | Capability | BepInEx | Nami (current) |
 |---|---|---|
 | Unity Mono modding | mature | **works end-to-end** (load, patch, typed game access) |
-| Unity IL2CPP modding | mature | next milestone |
+| Unity IL2CPP modding | mature | **works end-to-end via Tide's IL2CPP backend** (same typed API; verified live on Unity 6000.0.61) — compile-time-typed projections are the remaining piece |
 | Harmony-style method patching | yes (HarmonyX) | **Wave** — in-house detours + IL-copy patching: prefix/postfix, skip, `__instance`/`__result`/`__state`, any signature |
-| Calling game code from mods | yes (in-process) | **Tide** — typed fields/properties, calls, objects, a generic `Get<T>`/`Set<T>`/`Call<T>` API, enums, arrays, live scene objects via statics (opt-in) |
+| Calling game code from mods | yes (in-process) | **Tide** — typed fields/properties, calls, objects, a generic `Get<T>`/`Set<T>`/`Call<T>` API, enums, arrays, live scene objects via statics (opt-in) — Mono and IL2CPP |
 | Ecosystem / existing mods | huge | zero (clean-slate API) |
 | Years of edge-case hardening | yes | no — expect bugs |
 | Packaging / templates / installer | mature | **in** — NuGet packages (`Nami.Sdk`/`Nami.Tide`), `dotnet new nami-mod`, `nami install`/`run`, `nami launch`/`create`; self-contained downloadable installer next |

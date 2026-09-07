@@ -34,13 +34,17 @@ native/                          C++17 (Windows x64 first)
   injector/injector_exe.cpp      nami_boot.exe entry (wmain): parses <game> <loader> [--root]
   loader/loader_exports.cpp      nami_loader.dll: DllMain spawns the boot thread
                                  (CreateThread) — no separate export is called by the injector
-  loader/loader_main.cpp         boot thread: waits for mono-2.0-bdwgc.dll / mono.dll (30s),
-                                 UTF-8 root
-  loader/tide_pump.cpp           Tide main-thread executor: mono_runtime_invoke hook + pre/post
-                                 drain queues, install lock, re-entrancy guard
+  loader/loader_main.cpp         boot thread: waits for the game runtime — mono-2.0-bdwgc.dll /
+                                 mono.dll OR GameAssembly.dll (60s), then hosts CoreCLR
+  loader/tide_pump.cpp           Tide Mono main-thread executor: mono_runtime_invoke hook + pre/
+                                 post drain queues, install lock, re-entrancy guard
   loader/tide_ops.cpp            Tide native ops (UnityLog, parameterless InvokeStatic)
-  loader/tide_objects.cpp        Tide typed game access (field/property/method/object/array ops,
-                                 GCHandle *_v2 handles, exception surfacing)
+  loader/tide_objects.cpp        Tide Mono typed game access (field/property/method/object/array
+                                 ops, GCHandle *_v2 handles, exception surfacing)
+  loader/tide_il2cpp.cpp         Tide IL2CPP main-thread executor: window-proc drain (subclasses
+                                 the game's main window; ops run inside its message pump)
+  loader/tide_il2cpp_ops.cpp     Tide IL2CPP typed game access (mirrors tide_objects.cpp against
+                                 the il2cpp_* exports)
   loader/tide_abi.h              shared Tide value/request ABI (TideValue, CallRequest)
   core/runtime_host.cpp          hostfxr: initialize_for_runtime_config → get_runtime_delegate(
                                  hdt_load_assembly_and_get_function_pointer) →
@@ -72,22 +76,25 @@ tools/templates/nami-mod/        `dotnet new nami-mod` template: a net10.0 mod p
                                  the Nami.Sdk/Nami.Tide NuGet packages (+ optional TideExample.cs)
 samples/HelloNami/               example mod (log-only)
 samples/TideProbe/               in-game proof of Tide typed access (generic API, enums, arrays,
-                                 Camera.main scene access)
+                                 Camera.main scene access) — Mono titles
+samples/TideProbeIl2Cpp/         in-game proof of the Tide IL2CPP backend (same API on
+                                 GameAssembly.dll titles)
 ```
 
 ## Boot sequence (verified in-game)
 
 1. `nami_boot.exe` launches the game suspended, injects `nami_loader.dll` via the classic
    LoadLibraryW remote-thread pattern, resumes the game.
-2. Loader thread polls for `mono-2.0-bdwgc.dll` (Unity Mono initialized), then hosts CoreCLR:
+2. Loader thread polls for the game's runtime — `mono-2.0-bdwgc.dll`/`mono.dll` on Mono
+   titles, `GameAssembly.dll` on IL2CPP titles (Unity initialized) — then hosts CoreCLR:
    - `hostfxr_initialize_for_runtime_config(<nami>/Nami.Runtime.runtimeconfig.json)`
    - `hostfxr_get_runtime_delegate(hdt_load_assembly_and_get_function_pointer)` — **note: the
      enum value is 5**, not 1 (com/winrt types come first); passing 1 returns the wrong delegate.
    - `load_assembly_and_get_function_pointer(Nami.Runtime.dll, "Nami.Runtime.ComponentEntry,
      Nami.Runtime", "EntryPoint", (const wchar_t*)-1 /*UNMANAGEDCALLERSONLY sentinel*/)`
      — the delegate_type sentinel must be `(char_t*)-1`, not the literal string.
-3. `ComponentEntry.EntryPoint` parses the `BootArgs` blob (wide root path + mono module handle),
-   calls `Boot.Run`.
+3. `ComponentEntry.EntryPoint` parses the `BootArgs` blob (wide root path + mono/GameAssembly
+   module handle), calls `Boot.Run`.
 4. `Boot.Run` writes `nami.log`, loads `nami.json` config, starts the chainloader, and spins the
    update loop on the boot thread (16 ms ticks).
 
@@ -139,6 +146,7 @@ calls — game stable. Opt-in via `"enableMonoBridge": true`. Full details: `doc
 
 - Tide: Unity scene-iteration scan APIs (`FindObjectOfType`) via a Wave-installed per-frame
   script callback; a generated strongly-typed projection layer over the generic `Get<T>` API.
-- `Nami.Interop` — offline (dev-time) reference assembly generation for IL2CPP modders.
-- IL2CPP bridge — same hosting, plus native metadata reading of `global-metadata.dat`.
+- `Nami.Interop` — offline (dev-time) reference assembly generation for IL2CPP modders
+  (metadata reader for plaintext-metadata titles; the runtime bridge itself is shipped — see
+  the Tide IL2CPP backend in `native/loader/tide_il2cpp*.cpp`).
 - `.nmod` packaging, hot reload, per-mod profiler, comparative bench gates.

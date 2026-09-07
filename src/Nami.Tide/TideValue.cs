@@ -149,7 +149,7 @@ public unsafe struct TideValue
     {
         if (Type == TideType.String && Data.Str.Utf8 != null)
         {
-            Tide.NativeFree(Data.Str.Utf8);
+            Tide.NativeFreeFor(Tide.ActiveBackend, Data.Str.Utf8);
             Data.Str.Utf8 = null;
             Data.Str.Len = 0;
         }
