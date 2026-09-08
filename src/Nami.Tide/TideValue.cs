@@ -29,7 +29,8 @@ internal enum TideCallOp : int
     FreeHandle = 8,
     ArrayLength = 9,
     ArrayGet = 10,
-    ArraySet = 11
+    ArraySet = 11,
+    FindObject = 12
 }
 
 /// <summary>

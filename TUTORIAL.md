@@ -8,7 +8,7 @@ including calling into the game itself through Tide's typed API.
 > Do **not** drop Doorstop's proxy (`winhttp.dll`, or `doorstop_config.ini` with
 > `enabled=true`) into the game folder — it conflicts with Nami's launcher. Unmodified
 > BepInEx 5.x mods are supported only under `nami/inex/` via `nami inex` (§8);
-> IL2CPP / BepInEx 6 titles are not covered.
+> IL2CPP / BepInEx 6 titles are not covered by the legacy lane.
 
 ---
 
@@ -114,14 +114,14 @@ using Nami.Sdk;
 namespace MyFirstMod;
 
 [NamiPlugin]
-[PluginInfo("com.example.mymod", "My First Mod", "0.1.0", Description = "A Nami mod.")]
+[PluginInfo("com.example.mymod", "My Nami Mod", "0.1.0", Description = "A Nami mod.")]
 public sealed class MyMod : NamiPlugin
 {
     private int _ticks;
 
     public override void OnLoad()
     {
-        Context.Log.Info("My First Mod loaded on .NET " + Environment.Version);
+        Context.Log.Info("My Nami Mod loaded on .NET " + Environment.Version);
     }
 
     public override void OnUpdate()
@@ -129,13 +129,15 @@ public sealed class MyMod : NamiPlugin
         // Log every ~2 seconds (120 ticks x 16 ms).
         if (++_ticks % 120 == 0)
         {
-            Context.Log.Info("My First Mod tick " + _ticks);
+            Context.Log.Info("My Nami Mod tick " + _ticks);
         }
     }
 }
 ```
 
-`[PluginDependency("other.mod.id")]` declares a dependency; `[PluginIncompatibility(...)]`
+`[PluginDependency("other.mod.id")]` declares a dependency (optionally
+`MinimumVersion = "1.2.0"`, enforced at load — SemVer numeric compare, exact match
+otherwise); `[PluginIncompatibility(...)]`
 declares a conflict. Dependencies load first; conflicts are resolved at load time.
 
 The template also emits `TideExample.cs` (a commented example of calling into the game).
@@ -145,7 +147,7 @@ stays).
 ### Calling into the game (Tide)
 
 A mod that only logs to Nami can't touch the game. **Tide** is the bridge that lets your mod
-call the game's own Mono runtime — every call executes safely on the game's main thread.
+call the game's own runtime (Mono or IL2CPP, auto-detected) — every call executes safely on the game's main thread.
 See **[docs/tide.md](docs/tide.md)** for the full story (including why it has to work this
 way). To use it:
 
@@ -255,7 +257,7 @@ public override void OnUpdate()
 (histogram-based, allocation-free on the hot path); `ToSummaryLine()` renders it all. The
 same numbers are logged periodically under the `profiler` source (see the `profiler` config
 section below). Tide-op latency (`TideOpCount`/`TideOpAvgMs`) is recorded for
-`Tide.Call`/`CallInstance` while a mod's `OnUpdate` runs (`UnityLog`/`InvokeStatic` excluded).
+the typed `Call`/`CallInstance` ops while a mod's `OnUpdate` runs (`UnityLog`/`InvokeStatic` excluded).
 
 ## 6. Configuration (`nami.json`)
 
@@ -277,11 +279,12 @@ camelCase and read case-insensitively.
 }
 ```
 
-- `quarantineEnabled`: currently always on — the flag is stored (and shown by `nami doctor`)
-  but not yet read; quarantine trips at `quarantineThreshold` consecutive `OnUpdate` throws.
-- `enabledPlugins`: exact plugin-id match only (no wildcards); empty = all discovered plugins load.
-- `logLevel`: accepted and stored, but not yet wired to the runtime's minimum level (the
-  loader logs at Info); planned.
+- `quarantineEnabled`: master switch for crash quarantine (default on); quarantine trips
+  at `quarantineThreshold` consecutive `OnUpdate` throws.
+- `enabledPlugins`: only these load (empty = all). Entries are `*`/`?` globs,
+  case-insensitive (`com.example.*`); exact ids work as before.
+- `logLevel`: minimum level for the console/file sinks (`Trace`/`Debug`/`Info`/`Warn`/
+  `Error`/`Fatal`, case-insensitive, default `Info`); unknown values fall back to `Info`.
 - `enableMonoBridge`: enables **Tide** — the bridge that lets mods call into
   the game (every call runs safely on the game's main thread). The flag gates the boot
   self-test (`[boot] attaching Tide bridge...`) on both backends; mod-issued Tide calls
@@ -349,7 +352,7 @@ nami help                           show help
 `nami launch` runs the game through Nami the same way `nami_boot.exe` does. When no game
 executable has been set, it auto-detects the largest `.exe` directly in the game folder
 (skipping known helpers like crash handlers/updaters; falls back to immediate subfolders
-excluding `*_Data/` and `nami/`). `nami launch steam` runs the game with Nami injected and,
+excluding `_Data/` and `nami/`). `nami launch steam` runs the game with Nami injected and,
 after the game exits, starts a clean unmodded session via `steam://rungameid/<appid>` (set
 the app id with `nami launch set --steam-id`; without one it falls back to an offline
 injected launch; with `steamRelaySkipInjection: true` it launches without Nami at all,
@@ -403,25 +406,30 @@ dotnet test Nami.slnx              :: runs all four test projects
 ```
 
 (Or individually: `dotnet test tests/Nami.Tests`, `tests/Nami.Wave.Tests`,
-`tests/Nami.Cli.Tests`, `tests/Nami.Tide.Tests`.) Running the solution in one pass can abort
-the Wave test host (a known runner flake, not test failures) — if that happens, run the Wave
-project on its own; individually all four projects pass (32 + 34 + 35 + 39 tests).
+`tests/Nami.Cli.Tests`, `tests/Nami.Tide.Tests`.) Current counts by project:
+(38 + 58 + 39 + 35 tests), and `dotnet test` exit code stays
+the source of truth.
 
 ## 10. Known limitations
 
 - **Tide scope**: typed access covers static and instance fields/properties (primitives,
   strings, live objects, enums as their underlying int — `long`-backed enums surface as
   `I64`), a generic `Get<T>`/`Set<T>`/`Call<T>` API, arrays (`TideArrays`), object creation
-  (parameterless ctor), and live scene objects via static accessors (`Camera.main`). On
+  (parameterless ctor), and live scene objects via static accessors (`Camera.main`) or
+  `GameClass.FindObject()` (first loaded object of a class through the window-proc executor
+  as plural `FindObjectsOfType` + element 0 — active objects only, null on miss, needs a
+  visible game window). On
   **IL2CPP** titles the same typed API runs through the IL2CPP backend (auto-detected; see
   [docs/tide.md §9](docs/tide.md)). Dev-time typed projections come from
   `nami interop generate` (see [docs/tide.md §9](docs/tide.md) and `nami interop --help`).
-  Still missing on both backends: Unity's scene-iteration scan APIs
-  (`Object.FindObjectOfType` — Unity aborts these from foreign re-entry).
+  Still missing: invoking Unity's singular `Object.FindObjectOfType` wrapper directly
+  (Unity aborts it from foreign re-entry — use `FindObject()` instead).
 - **Wave scope**: M1 supports parameterless void methods (gate/observer); **M2** (IL-copy)
   patches any closed method with a real body — prefix/postfix, skip, result
-  rewriting (`__instance` by value; `__result`/`__state` by ref; open generics, struct
-  instance methods, `calli`/filter bodies refused). Windows x64 only.
+  rewriting (`__instance` by value, struct receivers observed as a copy;
+  `__result`/`__state` by ref; open generic definitions via
+  `Wave.Patch(definition, typeArguments, ...)`; `ref` hook params and exotic `calli`
+  shapes refused). Windows x64 only.
 - The game must be launched through the Nami injector; use `nami launch` or the
   `launchNami.exe` shortcut `nami create` writes (Steam launch options can point at that).
 - Do not drop Doorstop's proxy (`winhttp.dll`) or a loose `BepInEx/` tree in the game

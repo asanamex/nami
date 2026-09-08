@@ -3,6 +3,11 @@ using Nami.Sdk;
 
 namespace Nami.Core.Plugins;
 
+/// <summary>A load-time dependency on another plugin, with an optional minimum version.</summary>
+/// <param name="Id">The required plugin's id.</param>
+/// <param name="MinimumVersion">Minimum accepted version (SemVer); null accepts any.</param>
+public sealed record PluginDependency(string Id, string? MinimumVersion);
+
 /// <summary>Metadata about a discovered plugin, read without executing its code.</summary>
 public sealed class PluginManifest
 {
@@ -12,7 +17,7 @@ public sealed class PluginManifest
     public required string AssemblyPath { get; init; }
     public string? Authors { get; init; }
     public string? Description { get; init; }
-    public IReadOnlyList<string> Dependencies { get; init; } = Array.Empty<string>();
+    public IReadOnlyList<PluginDependency> Dependencies { get; init; } = Array.Empty<PluginDependency>();
     public IReadOnlyList<string> Incompatibilities { get; init; } = Array.Empty<string>();
 }
 
@@ -73,8 +78,8 @@ public static class PluginDiscoverer
             }
 
             var dependencies = pluginType.GetCustomAttributes<PluginDependencyAttribute>()
-                .Select(d => d.Id)
-                .Where(d => !string.IsNullOrWhiteSpace(d))
+                .Where(d => !string.IsNullOrWhiteSpace(d.Id))
+                .Select(d => new PluginDependency(d.Id, string.IsNullOrWhiteSpace(d.MinimumVersion) ? null : d.MinimumVersion))
                 .ToArray();
             var incompatibilities = pluginType.GetCustomAttributes<PluginIncompatibilityAttribute>()
                 .Select(d => d.Id)

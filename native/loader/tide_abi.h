@@ -67,9 +67,12 @@ enum TideCallOp : int32_t {
     TideCall_ArrayGet = 10,        // args[0].handle array, args[1].i32 index; element in ret
                                    //   (string -> UTF-8, primitive -> typed, object -> handle)
     TideCall_ArraySet = 11,        // args[0].handle array, args[1].i32 index, args[2] value
-    TideCall_FindObject = 12,      // UnityEngine.Object.FindObjectOfType(<klass Type>) — must
-                                   // run via the POST-invoke export (scene iteration is not
-                                   // re-entrant from the nested pre-drain). Handle or 0 in ret.
+    TideCall_FindObject = 12,      // First loaded object of <klass> via FindObjectsOfType
+                                    // + element 0 (the singular FindObjectOfType wrapper aborts
+                                    // the process when invoked outside managed game code).
+                                    // Must run via the WINDOW export (frame boundary): the
+                                    // invoke drain still nests inside the game's in-flight
+                                    // invoke. Handle or 0 in ret.
 };
 
 // The single request shape. All strings are fixed-size ANSI buffers for class/field/method

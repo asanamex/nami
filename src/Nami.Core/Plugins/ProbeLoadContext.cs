@@ -16,13 +16,20 @@ public sealed class ProbeLoadContext : AssemblyLoadContext
     /// <summary>
     /// Loads the candidate assembly from raw bytes so the file on disk is never locked —
     /// discovery must not prevent a mod being rebuilt or deleted in place (hot reload).
+    /// NB: Assembly.Load(byte[]) would land in the Default context (isolation and
+    /// unloadability silently lost); LoadFromStream binds to THIS context.
     /// </summary>
     public Assembly LoadAssemblyNoLock(string path)
     {
         var bytes = File.ReadAllBytes(path);
         var pdbPath = Path.ChangeExtension(path, ".pdb");
-        var pdb = File.Exists(pdbPath) ? File.ReadAllBytes(pdbPath) : null;
-        return pdb is null ? Assembly.Load(bytes) : Assembly.Load(bytes, pdb);
+        using var asmStream = new MemoryStream(bytes, writable: false);
+        if (!File.Exists(pdbPath))
+        {
+            return LoadFromStream(asmStream);
+        }
+        using var pdbStream = new MemoryStream(File.ReadAllBytes(pdbPath), writable: false);
+        return LoadFromStream(asmStream, pdbStream);
     }
 
     protected override Assembly? Load(AssemblyName assemblyName)
@@ -44,11 +51,17 @@ public sealed class ProbeLoadContext : AssemblyLoadContext
         {
             try
             {
-                foreach (var asm in AppDomain.CurrentDomain.GetAssemblies())
+                // NB: AppDomain.GetAssemblies() omits assemblies living in other
+                // load contexts (the hostfxr component ALC in-game) — enumerate
+                // per-context instead, or shared Nami.* types never unify.
+                foreach (var alc in AssemblyLoadContext.All)
                 {
-                    if (string.Equals(asm.GetName().Name, name, StringComparison.Ordinal))
+                    foreach (var asm in alc.Assemblies)
                     {
-                        return asm;
+                        if (string.Equals(asm.GetName().Name, name, StringComparison.Ordinal))
+                        {
+                            return asm;
+                        }
                     }
                 }
             }

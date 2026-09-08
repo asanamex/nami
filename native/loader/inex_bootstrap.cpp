@@ -9,8 +9,12 @@
 // (Application..cctor) into an already-loaded CoreModule to no effect, so Start()
 // must run BEFORE first managed execution — exactly Doorstop timing. Primary path:
 // a mono_jit_init detour runs Start synchronously on the game main thread right
-// after the runtime comes up. Fallback path (detour missed, e.g. Mono was already
-// initialized): Tide's mono_runtime_invoke drain runs Start, and a chainloader kick
+// after the runtime comes up. The detour is installed either directly (Mono
+// already loaded — the injector holds the main thread suspended until we signal
+// hook-ready, so this always wins) or synchronously inside the Mono LoadLibrary
+// via an LdrDllNotification (dynamically-loaded Mono — stock Unity desktop).
+// Fallback path (both missed, e.g. prologue refused): Tide's mono_runtime_invoke
+// drain runs Start, and a chainloader kick
 // (Initialize+Start, both idempotent) fires once a scene is live — late Start can
 // never hit the one-shot patch, so the kick replicates what it would have called.
 // Kick ordering vs a naturally-fired entrypoint is safe: both ends are guarded.
@@ -33,6 +37,11 @@ namespace {
 std::string g_root;
 std::string g_log_path;
 volatile LONG g_started = 0;  // 0 = preloader Start not yet run, 1 = ran
+
+// Defined in the jit-hook section below (needed earlier by wait_for_domain_stable).
+extern volatile LONG g_jit_hooked;
+extern volatile LONG g_hook_retry;
+bool install_jit_hook();
 
 void ilog(const std::string& log_path, const char* msg) {
     FILE* log = nullptr;
@@ -270,6 +279,13 @@ bool wait_for_domain_stable(MonoApi& api) {
     void* prev = nullptr;
     int stable = 0;
     for (int i = 0; i < 120; i++) {
+        // The Ldr callback may have lost a lock race: one decisive retry from a
+        // normal thread (blocking install can't contend — try-acquire never waits).
+        if (InterlockedCompareExchange(&g_hook_retry, 0, 0) != 0 &&
+            InterlockedCompareExchange(&g_jit_hooked, 0, 0) == 0) {
+            install_jit_hook();
+            InterlockedExchange(&g_hook_retry, 0);
+        }
         ctx.domain = nullptr;
         tide::run_on_main_thread(drain_sample_domain, &ctx, 5000);
         if (ctx.domain != nullptr && ctx.domain == prev) {
@@ -308,6 +324,147 @@ using jit_init_version_fn = void* (*)(const char*, const char*);
 using jit_init_fn = void* (*)(const char*);
 jit_init_version_fn g_orig_jit_init_version = nullptr;
 jit_init_fn g_orig_jit_init = nullptr;
+volatile LONG g_jit_hooked = 0;  // detour installed (any path) — exactly-once guard
+volatile LONG g_hook_retry = 0;  // mono seen but install unconfirmed — boot thread retries
+void* g_ldr_cookie = nullptr;
+
+// --- mono-load notification: catch dynamically-loaded Mono -----------------
+// Stock Unity desktop builds LoadLibrary mono-2.0-bdwgc.dll during engine init,
+// so no poll loop can deterministically beat mono_jit_init. Ldr notifications fire
+// synchronously on the loading thread BEFORE LoadLibrary returns, so a hook
+// installed in the callback always wins. The callback runs under the loader
+// lock: it takes nothing blocking (try-acquire only) and touches only memory
+// APIs + a log append. Minimal ntdll surface, resolved by hand (no link dep).
+struct LdrUniStr {
+    USHORT Length;
+    USHORT MaximumLength;
+    wchar_t* Buffer;
+};
+struct LdrLoadedNotif {
+    ULONG Flags;
+    LdrUniStr* FullDllName;
+    LdrUniStr* BaseDllName;
+    void* DllBase;
+    ULONG SizeOfImage;
+};
+using LdrNotifFn = void NTAPI (*)(ULONG reason, void* data, void* context);
+using LdrRegisterFn = LONG NTAPI (*)(ULONG flags, LdrNotifFn callback, void* context,
+                                     void** cookie);
+
+constexpr ULONG kLdrLoaded = 1;
+
+void* inex_jit_init_version_detour(const char* domain_name, const char* version);
+void* inex_jit_init_detour(const char* domain_name);
+
+using installer_fn = void* (*)(const wchar_t*, const char*, void*, bool, bool);
+
+// Runs the jit-hook attempt sequence once with the given installer.
+// blocking installer = normal path; try-acquire installer = loader-lock path.
+// Returns true when a detour is installed (sets g_jit_hooked).
+bool hook_jit_exports(installer_fn install, bool dump_prologue) {
+    if (dump_prologue) {
+        // Diagnostic: dump the target prologue bytes so a refusal is explainable offline.
+        HMODULE mono = GetModuleHandleW(L"mono-2.0-bdwgc.dll");
+        if (mono == nullptr) {
+            mono = GetModuleHandleW(L"mono.dll");
+        }
+        if (mono != nullptr) {
+            if (void* fn =
+                    reinterpret_cast<void*>(GetProcAddress(mono, "mono_jit_init_version"))) {
+                unsigned char head[16]{};
+                memcpy(head, fn, sizeof(head));
+                char hex[64]{};
+                for (int i = 0; i < 16; i++) {
+                    std::snprintf(hex + i * 3, 4, "%02X ", head[i]);
+                }
+                ilog(g_log_path, (std::string("jit_init_version prologue: ") + hex).c_str());
+            } else {
+                ilog(g_log_path, "mono_jit_init_version export missing");
+            }
+        }
+    }
+    // allow_relative_call=true: MSVC-built Mono prologues contain a near CALL;
+    // its rel32 is rebased into the trampoline by the installer. prefer_near_jump
+    // covers prologues with fewer than 14 clean bytes (5-byte E9 when reachable).
+    void* tramp = install(L"mono-2.0-bdwgc.dll", "mono_jit_init_version",
+                          reinterpret_cast<void*>(&inex_jit_init_version_detour), true, true);
+    if (tramp != nullptr) {
+        g_orig_jit_init_version = reinterpret_cast<jit_init_version_fn>(tramp);
+        ilog(g_log_path, "jit hook installed (mono_jit_init_version)");
+        InterlockedExchange(&g_jit_hooked, 1);
+        return true;
+    }
+    tramp = install(L"mono-2.0-bdwgc.dll", "mono_jit_init",
+                    reinterpret_cast<void*>(&inex_jit_init_detour), true, true);
+    if (tramp != nullptr) {
+        g_orig_jit_init = reinterpret_cast<jit_init_fn>(tramp);
+        ilog(g_log_path, "jit hook installed (mono_jit_init)");
+        InterlockedExchange(&g_jit_hooked, 1);
+        return true;
+    }
+    // mono.dll fallback (some Unity builds ship the runtime under this name).
+    tramp = install(L"mono.dll", "mono_jit_init_version",
+                    reinterpret_cast<void*>(&inex_jit_init_version_detour), true, true);
+    if (tramp != nullptr) {
+        g_orig_jit_init_version = reinterpret_cast<jit_init_version_fn>(tramp);
+        ilog(g_log_path, "jit hook installed (mono.dll/mono_jit_init_version)");
+        InterlockedExchange(&g_jit_hooked, 1);
+        return true;
+    }
+    return false;
+}
+
+bool install_jit_hook() {
+    if (hook_jit_exports(tide::install_native_detour, true)) {
+        return true;
+    }
+    ilog(g_log_path, "jit hook install failed (exports already running?); drain fallback covers");
+    return false;
+}
+
+void NTAPI mono_load_notify(ULONG reason, void* data, void* /*context*/) {
+    if (reason != kLdrLoaded ||
+        InterlockedCompareExchange(&g_jit_hooked, 0, 0) != 0) {
+        return;
+    }
+    auto* loaded = static_cast<LdrLoadedNotif*>(data);
+    if (loaded == nullptr || loaded->BaseDllName == nullptr ||
+        loaded->BaseDllName->Buffer == nullptr) {
+        return;
+    }
+    const wchar_t* base = loaded->BaseDllName->Buffer;
+    if (_wcsicmp(base, L"mono-2.0-bdwgc.dll") != 0 && _wcsicmp(base, L"mono.dll") != 0) {
+        return;
+    }
+    // This thread is inside LoadLibrary: mono_jit_init necessarily comes later,
+    // so a successful install here is exactly Doorstop timing. Non-blocking only.
+    if (hook_jit_exports(tide::try_install_native_detour, false)) {
+        ilog(g_log_path, "jit hook installed on mono load (early path)");
+    } else {
+        // Contended or refused: boot thread retries once from a normal thread
+        // (blocking install is decisive there); the drain fallback covers refusal.
+        InterlockedExchange(&g_hook_retry, 1);
+        ilog(g_log_path, "mono loaded; jit hook pending, boot thread retries");
+    }
+}
+
+bool register_mono_load_watch() {
+    HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+    if (ntdll == nullptr) {
+        return false;
+    }
+    auto reg = reinterpret_cast<LdrRegisterFn>(
+        reinterpret_cast<void*>(GetProcAddress(ntdll, "LdrRegisterDllNotification")));
+    if (reg == nullptr) {
+        return false;
+    }
+    void* cookie = nullptr;
+    if (reg(0, &mono_load_notify, nullptr, &cookie) != 0 || cookie == nullptr) {
+        return false;
+    }
+    g_ldr_cookie = cookie;
+    return true;
+}
 
 void* inex_jit_init_version_detour(const char* domain_name, const char* version) {
     void* domain = g_orig_jit_init_version(domain_name, version);
@@ -322,52 +479,6 @@ void* inex_jit_init_detour(const char* domain_name) {
     const int rc = run_preloader_start();
     ilog(g_log_path, (std::string("early preloader start rc=") + std::to_string(rc)).c_str());
     return domain;
-}
-
-void install_jit_hook() {
-    // Diagnostic: dump the target prologue bytes so a refusal is explainable offline.
-    HMODULE mono = GetModuleHandleW(L"mono-2.0-bdwgc.dll");
-    if (mono == nullptr) {
-        mono = GetModuleHandleW(L"mono.dll");
-    }
-    if (mono != nullptr) {
-        if (void* fn = reinterpret_cast<void*>(GetProcAddress(mono, "mono_jit_init_version"))) {
-            unsigned char head[16]{};
-            memcpy(head, fn, sizeof(head));
-            char hex[64]{};
-            for (int i = 0; i < 16; i++) {
-                std::snprintf(hex + i * 3, 4, "%02X ", head[i]);
-            }
-            ilog(g_log_path, (std::string("jit_init_version prologue: ") + hex).c_str());
-        } else {
-            ilog(g_log_path, "mono_jit_init_version export missing");
-        }
-    }
-    void* tramp = tide::install_native_detour(L"mono-2.0-bdwgc.dll", "mono_jit_init_version",
-                                              reinterpret_cast<void*>(&inex_jit_init_version_detour));
-    if (tramp != nullptr) {
-        g_orig_jit_init_version =
-            reinterpret_cast<jit_init_version_fn>(tramp);
-        ilog(g_log_path, "jit hook installed (mono_jit_init_version)");
-        return;
-    }
-    tramp = tide::install_native_detour(L"mono-2.0-bdwgc.dll", "mono_jit_init",
-                                        reinterpret_cast<void*>(&inex_jit_init_detour));
-    if (tramp != nullptr) {
-        g_orig_jit_init = reinterpret_cast<jit_init_fn>(tramp);
-        ilog(g_log_path, "jit hook installed (mono_jit_init)");
-        return;
-    }
-    // mono.dll fallback (some Unity builds ship the runtime under this name).
-    tramp = tide::install_native_detour(L"mono.dll", "mono_jit_init_version",
-                                        reinterpret_cast<void*>(&inex_jit_init_version_detour));
-    if (tramp != nullptr) {
-        g_orig_jit_init_version =
-            reinterpret_cast<jit_init_version_fn>(tramp);
-        ilog(g_log_path, "jit hook installed (mono.dll/mono_jit_init_version)");
-        return;
-    }
-    ilog(g_log_path, "jit hook install failed (exports already running?); drain fallback covers");
 }
 
 struct WinCtx {
@@ -451,20 +562,49 @@ void set_doorstop_env(const std::string& root) {
 
 }  // namespace
 
+// Ready event the injector waits on before resuming the game main thread.
+// Per-pid named event; opened (never created) here so a stale event from a
+// dead pid-reuse can only cause an early resume, never a hang.
+void signal_hook_ready() {
+    wchar_t name[64]{};
+    swprintf_s(name, L"Local\\NamiHookReady-%lu", GetCurrentProcessId());
+    HANDLE ready = OpenEventW(EVENT_MODIFY_STATE, FALSE, name);
+    if (ready != nullptr) {
+        SetEvent(ready);
+        CloseHandle(ready);
+    }
+}
+
 int arm(const std::string& nami_root_utf8) {
     const std::string preloader =
         nami_root_utf8 + "\\inex\\BepInEx\\core\\BepInEx.Preloader.dll";
     if (GetFileAttributesA(preloader.c_str()) == INVALID_FILE_ATTRIBUTES) {
+        signal_hook_ready();
         return 0;  // No legacy payload staged: pure Nami install, stay silent.
     }
     const std::string sentinel = nami_root_utf8 + "\\inex\\enabled";
     if (GetFileAttributesA(sentinel.c_str()) == INVALID_FILE_ATTRIBUTES) {
+        signal_hook_ready();
         return 1;  // Payload staged but not enabled: stay out of the game's way.
     }
     g_root = nami_root_utf8;
     g_log_path = nami_root_utf8 + "\\native\\nami-inex.log";
     set_doorstop_env(nami_root_utf8);
-    install_jit_hook();
+    HMODULE mono = GetModuleHandleW(L"mono-2.0-bdwgc.dll");
+    if (mono == nullptr) {
+        mono = GetModuleHandleW(L"mono.dll");
+    }
+    if (mono != nullptr) {
+        install_jit_hook();
+    } else if (register_mono_load_watch()) {
+        // Dynamically-loaded Mono (stock Unity desktop): the Ldr callback installs
+        // the hook synchronously inside LoadLibrary, before mono_jit_init can run.
+        ilog(g_log_path, "mono not loaded yet; watching for it (hook installs on load)");
+    } else {
+        ilog(g_log_path, "mono not loaded and load-watch unavailable; drain fallback covers");
+    }
+    // Interception armed (installed, refused, or watched) — release the main thread.
+    signal_hook_ready();
     HANDLE thread = CreateThread(nullptr, 0, watcher_thread, nullptr, 0, nullptr);
     if (thread == nullptr) {
         ilog(g_log_path, "watcher thread spawn failed; jit path only");

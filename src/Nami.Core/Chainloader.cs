@@ -89,7 +89,8 @@ public sealed class LoadedPlugin
             ConsecutiveFailures++;
             LastError = ex.Message;
             Context.Log.Error($"OnUpdate threw ({ConsecutiveFailures} consecutive): {ex}");
-            if (ConsecutiveFailures >= chainloader.Config.QuarantineThreshold)
+            if (chainloader.Config.QuarantineEnabled &&
+                ConsecutiveFailures >= chainloader.Config.QuarantineThreshold)
             {
                 chainloader.Quarantine(this, ex);
             }
@@ -192,10 +193,25 @@ public sealed class Chainloader : IDisposable, Nami.Sdk.ITideOpSink
         return _plugins.Select(p => p.Manifest).ToList();
     }
 
+    /// <summary>
+    /// Glob match for <c>enabledPlugins</c> entries: <c>*</c> spans any run (including dots),
+    /// <c>?</c> spans one char, case-insensitive; anything else is literal.
+    /// </summary>
+    internal static bool EnabledMatch(string pattern, string id)
+    {
+        var regex = new System.Text.RegularExpressions.Regex(
+            "^" + System.Text.RegularExpressions.Regex.Escape(pattern)
+                .Replace(@"\*", ".*", StringComparison.Ordinal)
+                .Replace(@"\?", ".", StringComparison.Ordinal) + "$",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase |
+            System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+        return regex.IsMatch(id);
+    }
+
     /// <summary>Loads and activates a single plugin. If it throws during construction or OnLoad, it is disabled, not fatal.</summary>
     public LoadedPlugin? LoadOne(PluginManifest manifest)
     {
-        if (Config.EnabledPlugins.Count > 0 && !Config.EnabledPlugins.Contains(manifest.Id))
+        if (Config.EnabledPlugins.Count > 0 && !Config.EnabledPlugins.Any(pattern => EnabledMatch(pattern, manifest.Id)))
         {
             _hub.Log("chainloader", LogLevel.Info, $"Plugin '{manifest.Id}' is disabled by config");
             return null;
@@ -521,7 +537,7 @@ public sealed class Chainloader : IDisposable, Nami.Sdk.ITideOpSink
                     continue;
                 }
 
-                if (plugin.Manifest.Dependencies.Any(d => seen.Contains(d)))
+                if (plugin.Manifest.Dependencies.Any(d => seen.Contains(d.Id)))
                 {
                     seen.Add(plugin.Manifest.Id);
                     dependents.Add(plugin.Manifest.Id);

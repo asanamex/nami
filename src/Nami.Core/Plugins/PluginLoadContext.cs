@@ -41,11 +41,16 @@ public sealed class PluginLoadContext : AssemblyLoadContext
             // with the loader's. Fall back to the default context.
             try
             {
-                foreach (var asm in AppDomain.CurrentDomain.GetAssemblies())
+                // NB: see ProbeLoadContext — AppDomain.GetAssemblies() omits other
+                // load contexts, so enumerate per-context for type unification.
+                foreach (var alc in AssemblyLoadContext.All)
                 {
-                    if (string.Equals(asm.GetName().Name, name, StringComparison.Ordinal))
+                    foreach (var asm in alc.Assemblies)
                     {
-                        return asm;
+                        if (string.Equals(asm.GetName().Name, name, StringComparison.Ordinal))
+                        {
+                            return asm;
+                        }
                     }
                 }
             }
@@ -76,10 +81,17 @@ public sealed class PluginLoadContext : AssemblyLoadContext
 
     private Assembly LoadWithoutFileLock(string path)
     {
+        // NB: static Assembly.Load(byte[]) lands in the Default context — isolation and
+        // unloadability silently lost. LoadFromStream binds to THIS context.
         var bytes = File.ReadAllBytes(path);
         var pdbPath = Path.ChangeExtension(path, ".pdb");
-        var pdb = File.Exists(pdbPath) ? File.ReadAllBytes(pdbPath) : null;
-        return pdb is null ? Assembly.Load(bytes) : Assembly.Load(bytes, pdb);
+        using var asmStream = new MemoryStream(bytes, writable: false);
+        if (!File.Exists(pdbPath))
+        {
+            return LoadFromStream(asmStream);
+        }
+        using var pdbStream = new MemoryStream(File.ReadAllBytes(pdbPath), writable: false);
+        return LoadFromStream(asmStream, pdbStream);
     }
 
     private WeakReference? _weak;

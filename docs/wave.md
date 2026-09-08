@@ -17,9 +17,15 @@ src/Nami.Wave/           the engine
   Internal/IlReader.cs   raw IL decoder (opcodes, operands, branch targets)
   Internal/IlRewriter.cs re-emitter: original IL (incl. EH tables) → generated assembly method (IL copy)
   Internal/PatchedBodyBuilder.cs  prefix/postfix convention binder + ret-rewriting injector
-tests/Nami.Wave.Tests/   38 [Fact] + 1 [Theory] (2 rows) in Release: M1 + M2 semantics,
-                         IL-copy fidelity, restore (the deep M2 suite compiles in Release;
-                         in DEBUG only a placeholder runs)
+  Internal/CalliSignature.cs  ECMA-335 calli StandaloneSig parser — managed/unmanaged fnptr
+                         call sites re-emitted faithfully; vararg/nested-fnptr/generic sites
+                         refused with a precise error
+tests/Nami.Wave.Tests/   56 [Fact] + 1 [Theory] (2 rows) in Release: M1 + M2 semantics,
+                         IL-copy fidelity, restore, and the scope suite (WavePatchScopeTests:
+                         closed generics, struct receivers, filter EH clauses, tiny-method
+                         near detours, managed + unmanaged calli). The deep M2 suite
+                         (WavePatchDeepTests) compiles in Release only; in DEBUG only a
+                         placeholder runs instead — 50 [Fact] + 1 [Theory] (2 rows) there
 bench/Wave.Bench/        hooked-call overhead benchmark (1M calls)
 ```
 
@@ -102,7 +108,8 @@ last owner restores the original bytes exactly.
    synthesized unwind (`add rsp, N` + pops in reverse) + `ret`, so a gate can skip a framed
    method cleanly.
 4. **Patch.** The first bytes of the method are replaced with an absolute jump to the detour
-   target (W^X: page flipped writable, written, flipped back).
+   target (page flipped to EXECUTE_READWRITE — never plain READWRITE, the target may
+   share its page with live JIT code including the install frame itself — written, flipped back).
 
 ### M1 dispatch
 
@@ -164,10 +171,15 @@ across the stub's unmanaged frame is the known edge.
 
 - **M1 targets**: parameterless `void` methods (kept for its zero-allocation hot path and
   native skip semantics).
-- **M2 targets**: any closed method with a real body (open generics are refused) — static or
-  instance, any return type (ref returns untested), methods with exception handlers, multiple
-  returns, and recursion are all handled. Struct instance methods, `calli` bodies and
-  filter-style exception clauses are refused loudly. Hook parameters bound to the target's
+- **M2 targets**: any closed method with a real body — static, instance (including
+  struct receivers, observed by value), closed generics, any return type
+  (ref returns untested), methods with exception handlers (including `catch-when`
+  filters), multiple returns, recursion, bodies with locals, and `calli` calls
+  (managed and unmanaged function pointers; exotic vararg/nested-fnptr call sites
+  are refused with a precise error) are all handled. Open generic *definitions*
+  have no machine code and are refused with an actionable error naming the exact
+  closing step (`Wave.Patch(definition, typeArguments, owner, ...)` closes a generic
+  method definition for you). Hook parameters bound to the target's
   parameters are **by-value only** (`ref`/`out` bindings throw `NotSupportedException`);
   `__instance` is by value, `__result` and `__state` are the by-ref convention parameters
   (`__state` must be `object` by ref; postfixes must return `void`).
@@ -177,7 +189,9 @@ across the stub's unmanaged frame is the known edge.
 - **Tiered JIT**: hook methods that are already hot/stable. If the JIT later replaces the
   method body (promotion *after* hooking), the hook can be bypassed — the classic inline-
   detour limitation on modern .NET. Warm the method before hooking.
-- **Tiny methods**: a body smaller than the 14-byte jump cannot be detoured inline (refused).
+- **Tiny methods**: bodies with fewer than 5 clean prologue bytes cannot be detoured
+  (refused); 5–13 clean bytes use a 5-byte relative jump with a near (±2GB) trampoline,
+  14+ use the absolute jump. Refusals throw `HookException`, never corrupt.
 - **Generated assemblies**: each patched-body *build* gets its own dynamic assembly, kept
   alive for the process lifetime (old builds are retained on rebuild — a slow leak per
   patch/unpatch cycle; patch sites are rare and rebuilds cheap, so this stays negligible).

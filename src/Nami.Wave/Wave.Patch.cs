@@ -57,6 +57,34 @@ public static unsafe partial class Wave
         }
     }
 
+    /// <summary>
+    /// Patches a closed instantiation of an open generic method definition. Definitions
+    /// have no machine code and cannot be patched directly — this closes over
+    /// <paramref name="typeArguments"/> first, then patches. Returns the closed method
+    /// (hand it to <see cref="Unpatch(MethodBase, string)"/> to remove the patch).
+    /// </summary>
+    public static MethodInfo Patch(MethodInfo genericDefinition, Type[] typeArguments, string owner, Delegate? prefix = null, Delegate? postfix = null)
+    {
+        ArgumentNullException.ThrowIfNull(genericDefinition);
+        ArgumentNullException.ThrowIfNull(typeArguments);
+        if (!genericDefinition.IsGenericMethodDefinition)
+        {
+            throw new ArgumentException($"not a generic method definition: {genericDefinition}", nameof(genericDefinition));
+        }
+        MethodInfo closed;
+        try
+        {
+            closed = genericDefinition.MakeGenericMethod(typeArguments);
+        }
+        catch (Exception ex)
+        {
+            throw new ArgumentException(
+                $"cannot close {genericDefinition} over [{string.Join(", ", typeArguments.Select(t => t.Name))}]: {ex.Message}", ex);
+        }
+        Patch(closed, owner, prefix, postfix);
+        return closed;
+    }
+
     /// <summary>Removes an owner's patch from <paramref name="target"/>.</summary>
     public static void Unpatch(MethodBase target, string owner)
     {
@@ -169,7 +197,7 @@ public static unsafe partial class Wave
         var addr = NativeInterop.GetCodeAddress(target);
         if (addr == IntPtr.Zero)
         {
-            throw new HookException($"cannot patch {target}: no native code address (open generic?)");
+            ThrowForOpenGeneric(target, "patch");
         }
 
         var detour = Detour.TryCreate(addr)
@@ -186,8 +214,30 @@ public static unsafe partial class Wave
         return site;
     }
 
-    private static void RebuildAndApply(M2Site site)
+    /// <summary>
+    /// Throws the precise, actionable error for an unaddressable target. Open generics
+    /// have no machine code by definition — there is nothing to detour — so the error
+    /// names the exact closing step instead of a bare address complaint.
+    /// </summary>
+    private static void ThrowForOpenGeneric(MethodBase target, string verb)
     {
+        if (target is MethodInfo { IsGenericMethodDefinition: true })
+        {
+            throw new HookException(
+                $"cannot {verb} {target}: it is an open generic method definition and has no machine code — " +
+                "close it first (definition.MakeGenericMethod(typeof(...)), or Wave.Patch(definition, typeArguments, owner, ...)), " +
+                $"then {verb} the closed method");
+        }
+        if (target.DeclaringType?.IsGenericTypeDefinition == true)
+        {
+            throw new HookException(
+                $"cannot {verb} {target}: its declaring type is an open generic definition and has no machine code — " +
+                $"close the type first (type.MakeGenericType(...).GetMethod(...)), then {verb}");
+        }
+        throw new HookException($"cannot {verb} {target}: no native code address");
+    }
+
+    private static void RebuildAndApply(M2Site site)    {
         lock (RegistryLock)
         {
             var patched = PatchedBodyBuilder.Build(site.Method, site.Entries, site.Body);

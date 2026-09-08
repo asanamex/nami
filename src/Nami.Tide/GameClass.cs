@@ -105,6 +105,19 @@ public sealed unsafe class GameClass
         return v.Handle == 0 ? null! : new GameObject(v.Handle);
     }
 
+    /// <summary>
+    /// Finds the first loaded object of this class (via <c>FindObjectsOfType</c>, first
+    /// element — the singular <c>FindObjectOfType</c> wrapper aborts the process when
+    /// invoked from outside managed game code). Active objects only. Runs on the main
+    /// thread at a frame boundary (window executor); null when no live object matches.
+    /// Needs a visible game window. Caller owns the handle (dispose it).
+    /// </summary>
+    public GameObject? FindObject()
+    {
+        var v = TideObjectOp.Call(TideCallOp.FindObject, this, "", null, 0, TideType.Object, window: true);
+        return v.Handle == 0 ? null : new GameObject(v.Handle);
+    }
+
     private TideValue Call(TideCallOp op, string member, TideType returnType)
     {
         return TideObjectOp.Call(op, this, member, null, 0, returnType);

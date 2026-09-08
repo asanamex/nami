@@ -44,10 +44,11 @@ public static unsafe partial class Tide
     [DllImport(LoaderDll, EntryPoint = "nami_tide_object_op", CallingConvention = CallingConvention.Cdecl)]
     internal static extern int NativeObjectOp(CallRequest* request);
 
-    // Runs an op AFTER the current mono_runtime_invoke returns (outside the nested frame).
-    // Required for Unity scene-iteration APIs (Object.FindObjectOfType).
-    [DllImport(LoaderDll, EntryPoint = "nami_tide_object_op_post", CallingConvention = CallingConvention.Cdecl)]
-    internal static extern int NativeObjectOpPost(CallRequest* request);
+    // Runs an op on the game main thread inside its window procedure (frame boundary —
+    // zero invoke frames on the stack). Required for Unity scene-iteration APIs
+    // (Object.FindObjectOfType), which abort inside any nested invoke (0xe0000001).
+    [DllImport(LoaderDll, EntryPoint = "nami_tide_object_op_window", CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int NativeObjectOpWindow(CallRequest* request);
 
     [DllImport(LoaderDll, EntryPoint = "nami_tide_free", CallingConvention = CallingConvention.Cdecl)]
     internal static extern void NativeFree(void* ptr);
@@ -197,6 +198,22 @@ public static unsafe partial class Tide
             return false;
         }
 
+        // IL2CPP has no NativeUnityLog export: route through the typed call op, which
+        // the IL2CPP backend supports (its Debug.Log(object) single-arg boxing case).
+        if (ActiveBackend == Backend.Il2Cpp)
+        {
+            try
+            {
+                GameClass.Resolve("UnityEngine.CoreModule", "UnityEngine", "Debug")
+                    .CallStatic("Log", TideValue.FromString(message));
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
         var bytes = Ansi(message, 511);
         fixed (byte* p = bytes)
         {
@@ -214,13 +231,27 @@ public static unsafe partial class Tide
     /// <summary>
     /// Invokes a parameterless static method on a game class, on the game main thread.
     /// <paramref name="assembly"/> is the assembly name (with or without .dll).
-    /// Returns true if the method ran without a Mono exception.
+    /// Returns true if the method ran without a game exception.
     /// </summary>
     public static bool InvokeStatic(string assembly, string ns, string klass, string method)
     {
         if (!IsAvailable)
         {
             return false;
+        }
+
+        // IL2CPP has no NativeInvokeStatic export: same call through the typed op.
+        if (ActiveBackend == Backend.Il2Cpp)
+        {
+            try
+            {
+                GameClass.Resolve(assembly, ns, klass).CallStatic(method);
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
         }
 
         var a = Ansi(assembly, 127);
@@ -277,7 +308,7 @@ internal static unsafe class TideObjectOp
     /// freed by the caller via TideValue.FreeNativeReturn after reading.
     /// </summary>
     public static TideValue Call(TideCallOp op, GameClass target, string member,
-        TideValue* args, int argCount, TideType returnType, bool postInvoke = false)
+        TideValue* args, int argCount, TideType returnType, bool window = false)
     {
         try
         {
@@ -298,7 +329,7 @@ internal static unsafe class TideObjectOp
             var backend = Tide.ActiveBackend;
             var timed = Nami.Sdk.TideMetrics.HasSink;
             var sw = timed ? System.Diagnostics.Stopwatch.StartNew() : null;
-            var rc = RunOp(backend, postInvoke, &req);
+            var rc = RunOp(backend, window, &req);
             if (sw is not null)
             {
                 sw.Stop();
@@ -359,16 +390,16 @@ internal static unsafe class TideObjectOp
     }
 
     /// <summary>Dispatches a CallRequest to the active backend's native op export.</summary>
-    private static int RunOp(Tide.Backend backend, bool postInvoke, CallRequest* req)
+    private static int RunOp(Tide.Backend backend, bool window, CallRequest* req)
     {
         if (backend == Tide.Backend.Il2Cpp)
         {
             // The IL2CPP executor runs ops on the main thread inside the window proc; there
-            // is no nested runtime_invoke frame, so pre/post are equivalent (post is a no-op
-            // distinction kept for ABI compatibility).
+            // is no nested runtime_invoke frame, so the window distinction is a no-op
+            // kept for ABI compatibility.
             return Tide.NativeIl2CppObjectOp(req);
         }
-        return postInvoke ? Tide.NativeObjectOpPost(req) : Tide.NativeObjectOp(req);
+        return window ? Tide.NativeObjectOpWindow(req) : Tide.NativeObjectOp(req);
     }
 
     private static string ErrorMessage(CallRequest* req)

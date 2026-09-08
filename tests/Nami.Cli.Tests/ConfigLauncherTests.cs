@@ -31,19 +31,19 @@ public sealed class NamiConfigLauncherTests
     }
 
     [Fact]
-    public void Defaults_OmitNewKeys_OnSave()
+    public void ExplicitFalse_RoundTrips_OnSave()
     {
         var dir = Path.Combine(Path.GetTempPath(), "nami-cli-tests", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(dir);
         try
         {
-            var config = new NamiConfig { RootPath = dir };
+            // An explicitly-disabled flag must survive save/load (WhenWritingDefault
+            // would silently drop `false` and re-enable it on next load).
+            var config = new NamiConfig { RootPath = dir, QuarantineEnabled = false };
             config.Save();
 
-            var json = File.ReadAllText(Path.Combine(dir, NamiConfig.FileName));
-            Assert.DoesNotContain("gameExe", json);
-            Assert.DoesNotContain("steamAppId", json);
-            Assert.DoesNotContain("steamRelaySkipInjection", json);
+            var reloaded = NamiConfig.Load(dir);
+            Assert.False(reloaded.QuarantineEnabled);
         }
         finally
         {

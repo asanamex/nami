@@ -89,19 +89,19 @@ internal static class IlRewriter
     /// <summary>
     /// Starts a generated method: a public static method on a fresh type in a fresh dynamic
     /// assembly, whose parameters mirror the body's native layout (instance targets take the
-    /// declaring type as parameter 0 — arg0 = this, matching the target's entry).
+    /// declaring type as parameter 0 — arg0 = this, matching the target's entry; struct
+    /// instance targets take it by reference, matching the managed-pointer this of value
+    /// types — mutations through it behave exactly like the original).
     /// </summary>
     public static (TypeBuilder Type, MethodBuilder Method, ILGenerator Il) BeginGeneratedMethod(IlBody b, string name)
     {
-        if (b.IsInstance && b.DeclaringType is { IsValueType: true })
-        {
-            throw new InvalidOperationException($"Wave cannot patch struct instance method {b.Method}");
-        }
-
         var fullParams = b.ParameterTypes;
         if (b.IsInstance && b.DeclaringType is { } dt)
         {
-            fullParams = new[] { dt }.Concat(fullParams).ToArray();
+            // Struct this is already a managed pointer in the original IL (ldarg.0), so a
+            // byref parameter carries the identical value — no copy, no writeback gap.
+            var thisParam = dt.IsValueType ? dt.MakeByRefType() : dt;
+            fullParams = new[] { thisParam }.Concat(fullParams).ToArray();
         }
 
         int seq = Interlocked.Increment(ref s_assemblySeq);
@@ -181,12 +181,16 @@ internal static class IlRewriter
     /// </summary>
     public static void EmitInto(ILGenerator il, IlBody b, IlEmitHooks? hooks)
     {
+        var declaringType = b.DeclaringType;
+        var genericArgs = declaringType?.IsGenericType == true ? declaringType.GetGenericArguments() : Type.EmptyTypes;
+        var genericMethodArgs = b.Method.IsGenericMethod ? b.Method.GetGenericArguments() : Type.EmptyTypes;
+
         // Locals: re-declare with the original types, preserving indices.
         var locals = new LocalBuilder[b.Locals.Count];
         for (int i = 0; i < b.Locals.Count; i++)
         {
             var lv = b.Locals[i];
-            locals[i] = il.DeclareLocal(lv.LocalType, lv.IsPinned);
+            locals[i] = il.DeclareLocal(MapLocalType(lv.LocalType, b, genericArgs, genericMethodArgs), lv.IsPinned);
         }
 
         // Labels for every instruction; branches resolve to these.
@@ -225,8 +229,16 @@ internal static class IlRewriter
 
             if (flags == ExceptionHandlingClauseOptions.Filter)
             {
-                throw new InvalidOperationException(
-                    $"Wave cannot copy filter exception clauses ({b.Method})");
+                // Filter block runs from FilterOffset to the handler; the filter body
+                // itself is copied verbatim (endfilter dropped like endfinally below).
+                // Note: CatchType throws on filter clauses, so catch object — the
+                // filter itself gates entry.
+                AddAction(tryStart, ilg => ilg.BeginExceptionBlock());
+                AddAction(c.FilterOffset, ilg => ilg.BeginExceptFilterBlock());
+                // No exception type: the filter decides entry (passing one throws).
+                AddAction(handlerStart, ilg => ilg.BeginCatchBlock(null));
+                AddAction(handlerEnd, ilg => ilg.EndExceptionBlock());
+                continue;
             }
 
             AddAction(tryStart, ilg => ilg.BeginExceptionBlock());
@@ -249,11 +261,17 @@ internal static class IlRewriter
         }
 
         // Handler terminator filtering: `endfinally` that closes a finally/fault handler is
-        // synthesized by EndExceptionBlock, so the copied one must be dropped.
+        // synthesized by EndExceptionBlock, so the copied one must be dropped. Same for
+        // `endfilter`, synthesized by BeginExceptFilterBlock.
         var handlerRegionEnds = new HashSet<int>();
+        var filterHandlerStarts = new HashSet<int>();
         foreach (var c in clauses)
         {
             handlerRegionEnds.Add(c.HandlerOffset + c.HandlerLength);
+            if (c.Flags == ExceptionHandlingClauseOptions.Filter)
+            {
+                filterHandlerStarts.Add(c.HandlerOffset);
+            }
         }
 
         // Whether an offset lies inside a try region (ret rewriting must respect EH: a ret
@@ -267,9 +285,6 @@ internal static class IlRewriter
         }
 
         var module = b.Method.Module;
-        var declaringType = b.DeclaringType;
-        var genericArgs = declaringType?.IsGenericType == true ? declaringType.GetGenericArguments() : Type.EmptyTypes;
-        var genericMethodArgs = b.Method.IsGenericMethod ? b.Method.GetGenericArguments() : Type.EmptyTypes;
 
         // Optional hook prelude (prefix chain) — outside any EH region.
         hooks?.EmitPrologue(il, ctx);
@@ -301,6 +316,15 @@ internal static class IlRewriter
                 }
             }
 
+            if (ins.OpCode == OpCodes.Endfilter)
+            {
+                int nextOffset = ins.Offset + ins.OpCode.Size;
+                if (filterHandlerStarts.Contains(nextOffset))
+                {
+                    continue; // synthesized by BeginExceptFilterBlock
+                }
+            }
+
             if (ins.OpCode == OpCodes.Ret && hooks is not null)
             {
                 if (hooks.RewriteRet(il, ins, ctx))
@@ -329,6 +353,22 @@ internal static class IlRewriter
         var op = ins.OpCode;
         var operand = ins.Operand;
 
+        // Short-form local loads/stores (ldloc.0-3/stloc.0-3) are InlineNone with the
+        // slot baked into the opcode — remap through the real builders (same verbatim
+        // trap as the .s forms below). Short ldarg.0-3 need nothing: the argument
+        // layout is preserved (this stays arg 0).
+        int v = op.Value;
+        if (v >= 0x06 && v <= 0x09)
+        {
+            EmitLocalVar(il, op, locals[v - 0x06]);
+            return;
+        }
+        if (v >= 0x0A && v <= 0x0D)
+        {
+            EmitLocalVar(il, op, locals[v - 0x0A]);
+            return;
+        }
+
         switch (op.OperandType)
         {
             case OperandType.InlineNone:
@@ -350,11 +390,22 @@ internal static class IlRewriter
                 return;
             }
             case OperandType.ShortInlineVar:
-                il.Emit(op, locals[ToInt(operand!)]);
-                return;
             case OperandType.InlineVar:
-                il.Emit(op, locals[ToInt(operand!)]);
+            {
+                // ponytail: ILGenerator.Emit bakes short-form local opcodes VERBATIM,
+                // ignoring the LocalBuilder's real index — and Wave's prologue locals
+                // shift every original index. Select every var form explicitly.
+                int slot = ToInt(operand!);
+                if (IsArgVarOp(op))
+                {
+                    EmitArgVar(il, op, slot);
+                }
+                else
+                {
+                    EmitLocalVar(il, op, locals[slot]);
+                }
                 return;
+            }
             case OperandType.InlineI:
                 il.Emit(op, ToInt(operand!));
                 return;
@@ -428,9 +479,176 @@ internal static class IlRewriter
                 return;
             }
             case OperandType.InlineSig:
-                throw new InvalidOperationException($"Wave cannot copy calli at {ins.Offset:X4}");
+            {
+                // calli: resolve the call-site signature and re-emit it. Only calli
+                // carries InlineSig; anything else here is a reader bug, not a body.
+                if (op != OpCodes.Calli)
+                {
+                    throw new InvalidOperationException($"unexpected signatures operand on {op} at {ins.Offset:X4}");
+                }
+                var sig = CalliSignatureParser.Parse(module, (int)operand!, genericArgs, genericMethodArgs);
+                if (sig.Unmanaged)
+                {
+                    il.EmitCalli(op, sig.UnmanagedConvention, sig.ReturnType, sig.ParameterTypes);
+                }
+                else
+                {
+                    // Managed calli has no EmitCalli overload; a SignatureHelper
+                    // carries the same calling convention + shape instead.
+                    var helper = SignatureHelper.GetMethodSigHelper(sig.ManagedConvention, sig.ReturnType);
+                    foreach (var p in sig.ParameterTypes)
+                    {
+                        helper.AddArgument(p);
+                    }
+                    il.Emit(op, helper);
+                }
+                return;
+            }
             default:
                 throw new InvalidOperationException($"cannot emit {op}");
+        }
+    }
+
+    /// <summary>
+    /// Maps an original local type to a declarable one. Two shapes have no nameable
+    /// runtime Type: function pointers (redeclared as IntPtr — identical native-int
+    /// size and stack representation, all the copied IL observes) and generic
+    /// parameters (substituted from the closed context — the patched method is always
+    /// closed by the time its body is copied).
+    /// </summary>
+    private static Type MapLocalType(Type? t, IlBody b, Type[] genericArgs, Type[] genericMethodArgs)
+    {
+        if (t is null || t.IsFunctionPointer)
+        {
+            return typeof(IntPtr);
+        }
+        if (t.IsGenericParameter)
+        {
+            var args = t.DeclaringMethod is not null ? genericMethodArgs : genericArgs;
+            if ((uint)t.GenericParameterPosition < (uint)args.Length)
+            {
+                return args[t.GenericParameterPosition];
+            }
+            throw new InvalidOperationException($"cannot map generic local type {t} in {b.Method}");
+        }
+        return t;
+    }
+
+    private static bool IsArgVarOp(OpCode op) =>
+        op.Equals(OpCodes.Ldarg) || op.Equals(OpCodes.Ldarg_S) ||
+        op.Equals(OpCodes.Ldarga) || op.Equals(OpCodes.Ldarga_S) ||
+        op.Equals(OpCodes.Starg) || op.Equals(OpCodes.Starg_S);
+
+    /// <summary>
+    /// Re-emits an argument load/store/address with the SAME slot: the generated
+    /// method preserves the argument layout (`this` stays arg 0), so no remapping.
+    /// </summary>
+    private static void EmitArgVar(ILGenerator il, OpCode op, int slot)
+    {
+        bool store = op.Equals(OpCodes.Starg) || op.Equals(OpCodes.Starg_S);
+        bool addr = op.Equals(OpCodes.Ldarga) || op.Equals(OpCodes.Ldarga_S);
+        if (addr)
+        {
+            if (slot <= 255)
+            {
+                il.Emit(OpCodes.Ldarga_S, (byte)slot);
+            }
+            else
+            {
+                il.Emit(OpCodes.Ldarga, (short)slot);
+            }
+        }
+        else if (store)
+        {
+            if (slot <= 255)
+            {
+                il.Emit(OpCodes.Starg_S, (byte)slot);
+            }
+            else
+            {
+                il.Emit(OpCodes.Starg, (short)slot);
+            }
+        }
+        else if (slot <= 3)
+        {
+            switch (slot)
+            {
+                case 0: il.Emit(OpCodes.Ldarg_0); break;
+                case 1: il.Emit(OpCodes.Ldarg_1); break;
+                case 2: il.Emit(OpCodes.Ldarg_2); break;
+                default: il.Emit(OpCodes.Ldarg_3); break;
+            }
+        }
+        else if (slot <= 255)
+        {
+            il.Emit(OpCodes.Ldarg_S, (byte)slot);
+        }
+        else
+        {
+            il.Emit(OpCodes.Ldarg, (short)slot);
+        }
+    }
+
+    /// <summary>
+    /// Re-emits a local load/store/address against the builder's REAL index (the
+    /// family — load/store/address — comes from the original opcode).
+    /// </summary>
+    private static void EmitLocalVar(ILGenerator il, OpCode op, LocalBuilder lb)
+    {
+        int index = lb.LocalIndex;
+        bool store = op.Equals(OpCodes.Stloc) || op.Equals(OpCodes.Stloc_S) ||
+            op.Equals(OpCodes.Stloc_0) || op.Equals(OpCodes.Stloc_1) ||
+            op.Equals(OpCodes.Stloc_2) || op.Equals(OpCodes.Stloc_3);
+        bool addr = op.Equals(OpCodes.Ldloca) || op.Equals(OpCodes.Ldloca_S);
+        if (addr)
+        {
+            if (index <= 255)
+            {
+                il.Emit(OpCodes.Ldloca_S, (byte)index);
+            }
+            else
+            {
+                il.Emit(OpCodes.Ldloca, (short)index);
+            }
+        }
+        else if (store)
+        {
+            if (index <= 3)
+            {
+                switch (index)
+                {
+                    case 0: il.Emit(OpCodes.Stloc_0); break;
+                    case 1: il.Emit(OpCodes.Stloc_1); break;
+                    case 2: il.Emit(OpCodes.Stloc_2); break;
+                    default: il.Emit(OpCodes.Stloc_3); break;
+                }
+            }
+            else if (index <= 255)
+            {
+                il.Emit(OpCodes.Stloc_S, (byte)index);
+            }
+            else
+            {
+                il.Emit(OpCodes.Stloc, (short)index);
+            }
+        }
+        else if (index <= 3)
+        {
+            switch (index)
+            {
+                case 0: il.Emit(OpCodes.Ldloc_0); break;
+                case 1: il.Emit(OpCodes.Ldloc_1); break;
+                case 2: il.Emit(OpCodes.Ldloc_2); break;
+                default: il.Emit(OpCodes.Ldloc_3); break;
+            }
+        }
+        else if (index <= 255)
+        {
+            il.Emit(OpCodes.Ldloc_S, (byte)index);
+        }
+        else
+        {
+            il.Emit(OpCodes.Ldloc, (short)index);
         }
     }
 

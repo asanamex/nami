@@ -97,7 +97,9 @@ public sealed class NamiConfig
         var json = JsonSerializer.Serialize(this, new JsonSerializerOptions
         {
             WriteIndented = true,
-            DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingDefault,
+            // Never omit defaults: an explicitly-disabled flag (false) must survive a
+            // save/load roundtrip, and a fully-populated file documents every key.
+            DefaultIgnoreCondition = JsonIgnoreCondition.Never,
             PropertyNamingPolicy = JsonNamingPolicy.CamelCase
         });
         File.WriteAllText(path, json);

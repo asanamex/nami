@@ -18,11 +18,9 @@ Full blueprint: `~/.commandcode/plans/nami-unity-mod-loader.md` (or via `/plans`
   (`Camera.main`), all on the game's main thread. Verified in-game against four Unity Mono
   titles spanning 2022.3 and Unity 6: Project Hardline (2022.3.27f1), Parasocial (2022.3.5f1),
   ROUNDS (2022.3.34f1), and The Gaspy Color War (6000.5.4f1).
-- **M2 remaining:** a public scene-iteration API. Native transport exists (pre/post-invoke
-  queues in `tide_pump.cpp`, `TideCall_FindObject` ABI slot reserved) — but Unity's
-  scene-scan entry points still need to run from a real per-frame script callback (Wave
-  patch), and the managed side has no `FindObject` op yet (`TideCallOp` 1-11;
-  `CallInstance` hardcodes `postInvoke=false`).
+- **M2 done:** a public scene-iteration API — `GameClass.FindObject()` (`TideCallOp.FindObject`,
+  ABI slot 12), implemented as `FindObjectsOfType` + element 0 through the window-proc
+  executor and verified in-game on Hardline 2022.3.27f1.
 
 ## Next
 
@@ -55,8 +53,8 @@ Full blueprint: `~/.commandcode/plans/nami-unity-mod-loader.md` (or via `/plans`
     returns an assembly, not an image (use `il2cpp_assembly_get_image`); GC handles are
     full 64-bit page-table indices (truncating to 32 bits AVs, as on Unity 6 Mono).
   - **Shipped:** offline `global-metadata.dat` parsing + `nami interop` (images/dump/generate/header):
-    plaintext metadata v24-31 with calibrated struct strides and both type-definition layouts
-    (v24.1 92B / v27+ 88B); typed projection emits compilable `GameInterop.g.cs`
+    metadata v24-38 (single-byte XOR transparent) with calibrated struct strides and all three type-definition layouts
+    (v24.1 92B / v27+ 88B / v35+ 84B); typed projection emits compilable `GameInterop.g.cs`
     (verified: compiles warning-free on a Unity 6000.0.61 title).
 - **M5 — depth (done):**
   - **Shipped — hot reload:** generation-based live reload. A `FileSystemWatcher` (debounced,
@@ -82,9 +80,8 @@ Full blueprint: `~/.commandcode/plans/nami-unity-mod-loader.md` (or via `/plans`
     Full-loader shootouts (BepInEx/MelonLoader boot-to-playable on a real title) stay a
     manual protocol — neither loader runs in CI: same game, same mod count, compare
     boot-to-first-tick from `nami.log` vs `LogOutput.log` plus steady-state RSS.
-  (Scene-iteration scan APIs remain tracked under "M2 remaining" above.)
 
-- **M6 — nami-inex legacy lane (Mono late-boot shipped; early-boot timing pending).** Nami
+- **M6 — nami-inex legacy lane (Mono shipped: late-boot + early-boot).** Nami
   boots real BepInEx 5.x inside the game's own Mono — no Doorstop proxy, tree rooted at
   `nami/inex/`, managed by `nami inex install|enable|disable|status` plus a
   `nami/inex/enabled` sentinel the native loader reads: four DOORSTOP_* env vars
@@ -92,10 +89,11 @@ Full blueprint: `~/.commandcode/plans/nami-unity-mod-loader.md` (or via `/plans`
   pointing at `nami/inex/BepInEx/core/BepInEx.Preloader.dll`, `DLL_SEARCH_DIRS` pointing at
   `nami/inex/BepInEx/core`) + `Doorstop.Entrypoint.Start` on the game main thread (shared
   Tide detour toolkit; `mono_jit_init_version`/`mono_jit_init` on `mono-2.0-bdwgc.dll` or
-  `mono.dll` are attempted in order, with the failing target's prologue bytes logged).
-  `measure_relocatable_prologue` refuses relative CALL/JMP, so on builds whose prologue
-  starts with `E8` the jit hook fails and boot falls back to *late* drain-driven boot —
-  never early-boot. Window-visible-gated (as scene-live proxy, 180s timeout) +
+  `mono.dll` are attempted in order, with E8-tolerant prologue decoding, rel32 fixup,
+  and a 5-byte near-jump fallback for short prologues (verified: jit hook installs on
+  Unity 2022.3 Mono; early `Start` fires via the suspended-main-thread install plus the
+  Ldr load-watch, otherwise the late path covers deterministically).
+  Window-visible-gated (as scene-live proxy, 180s timeout) +
   domain-stability-gated chainloader kick: `mono_domain_get` sampled on the main thread
   until 5 consecutive stable reads 1s apart (max 120 tries; any domain change resets the
   Start epoch so the new domain gets exactly one fresh Start), then one atomic drain call
@@ -105,8 +103,7 @@ Full blueprint: `~/.commandcode/plans/nami-unity-mod-loader.md` (or via `/plans`
   gitignored): Hardline Logger 1.0.0 + Gaspy Menu 3.0.0 load and run on Project Hardline
   with boot logs identical to the Doorstop baseline; only automated coverage is the CLI
   file-ops suite (`InexCommandTests`).
-  Remaining: early-boot fidelity (E8-tolerant prologue handling for the jit detour),
-  BepInEx 6 / IL2CPP lane (own CoreCLR, interop orchestration), boot-guard safe mode,
+  Remaining: BepInEx 6 / IL2CPP lane (own CoreCLR, interop orchestration), boot-guard safe mode,
   legacy-pack distribution.
 
 ## Verified in-game evidence

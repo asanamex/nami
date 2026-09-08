@@ -66,11 +66,15 @@ struct Il2CppApi {
     void* (*class_is_enum)(void*) = nullptr;
     void* (*class_get_type)(void*) = nullptr;
     void* (*class_from_type)(void*) = nullptr;
+    // Optional (scene-object discovery only): il2cpp_type_get_object.
+    void* (*type_get_object)(void*) = nullptr;
     void* (*class_get_field_from_name)(void*, const char*) = nullptr;
     void* (*class_get_method_from_name)(void*, const char*, int) = nullptr;
     void* (*class_get_methods)(void*, void**) = nullptr;
     void* (*method_get_name)(void*) = nullptr;
     void* (*method_get_param_count)(void*) = nullptr;
+    void* (*method_get_param)(void*, uint32_t) = nullptr;  // -> Il2CppParameterInfo*
+    int (*type_get_type)(void*) = nullptr;                 // Il2CppType* -> Il2CppTypeEnum
     void* (*method_get_class)(void*) = nullptr;
     void* (*field_get_name)(void*) = nullptr;
     void* (*field_get_type)(void*) = nullptr;
@@ -84,7 +88,7 @@ struct Il2CppApi {
     void* (*object_get_class)(void*) = nullptr;
     void* (*value_box)(void*, void*) = nullptr;
     void* (*object_unbox)(void*) = nullptr;
-    void* (*string_new)(void*, const char*) = nullptr;
+    void* (*string_new)(const char*) = nullptr;  // NB: single-arg (unlike Mono's (domain, str))
     const void* (*string_chars)(void*) = nullptr;
     int32_t (*string_length)(void*) = nullptr;
     int32_t (*array_length)(void*) = nullptr;
@@ -137,11 +141,14 @@ bool resolve_api() {
     LOAD(class_is_enum);
     LOAD(class_get_type);
     LOAD(class_from_type);
+    LOAD(type_get_object);
     LOAD(class_get_field_from_name);
     LOAD(class_get_method_from_name);
     LOAD(class_get_methods);
     LOAD(method_get_name);
     LOAD(method_get_param_count);
+    LOAD(method_get_param);
+    LOAD(type_get_type);
     LOAD(method_get_class);
     LOAD(field_get_name);
     LOAD(field_get_type);
@@ -228,6 +235,141 @@ void* find_method_in_hierarchy(void* klass, const char* name, int argc) {
     return nullptr;
 }
 
+// Il2CppTypeEnum (ECMA roots, shared with Mono's MonoTypeEnum values).
+enum : int {
+    IL2CPP_TYPE_BOOLEAN = 0x02,
+    IL2CPP_TYPE_I4 = 0x08,
+    IL2CPP_TYPE_I8 = 0x0A,
+    IL2CPP_TYPE_R4 = 0x0C,
+    IL2CPP_TYPE_R8 = 0x0D,
+    IL2CPP_TYPE_STRING = 0x0E,
+    IL2CPP_TYPE_CLASS = 0x12,
+    IL2CPP_TYPE_ARRAY = 0x14,
+    IL2CPP_TYPE_GENERICINST = 0x15,
+    IL2CPP_TYPE_OBJECT = 0x1C,
+    IL2CPP_TYPE_SZARRAY = 0x1D,
+};
+
+// Il2CppParameterInfo layout on x64: name(0) position(8) token(12) parameter_type(16).
+int param_type_enum(void* method, int index) {
+    if (g_api.method_get_param == nullptr || g_api.type_get_type == nullptr) {
+        return -1;
+    }
+    void* info = g_api.method_get_param(method, static_cast<uint32_t>(index));
+    if (info == nullptr) {
+        return -1;
+    }
+    void* ptype = *reinterpret_cast<void**>(static_cast<char*>(info) + 16);
+    if (ptype == nullptr) {
+        return -1;
+    }
+    return g_api.type_get_type(ptype);
+}
+
+int tide_type_to_il2cpp_type(int tide_type) {
+    using nami::tide::TideType_Bool;
+    using nami::tide::TideType_I32;
+    using nami::tide::TideType_I64;
+    using nami::tide::TideType_Object;
+    using nami::tide::TideType_R4;
+    using nami::tide::TideType_R8;
+    using nami::tide::TideType_String;
+    switch (tide_type) {
+        case TideType_I32:
+            return IL2CPP_TYPE_I4;
+        case TideType_I64:
+            return IL2CPP_TYPE_I8;
+        case TideType_R4:
+            return IL2CPP_TYPE_R4;
+        case TideType_R8:
+            return IL2CPP_TYPE_R8;
+        case TideType_Bool:
+            return IL2CPP_TYPE_BOOLEAN;
+        case TideType_String:
+            return IL2CPP_TYPE_STRING;
+        case TideType_Object:
+            return IL2CPP_TYPE_OBJECT;
+        default:
+            return -1;
+    }
+}
+
+bool param_is_reference(int type_enum) {
+    return type_enum == IL2CPP_TYPE_OBJECT || type_enum == IL2CPP_TYPE_CLASS ||
+           type_enum == IL2CPP_TYPE_ARRAY || type_enum == IL2CPP_TYPE_SZARRAY ||
+           type_enum == IL2CPP_TYPE_GENERICINST || type_enum == IL2CPP_TYPE_STRING;
+}
+
+// Overload-aware lookup mirroring the Mono backend (tide_objects.cpp
+// find_method_for_args): exact primitive matches win, System.Object params accept
+// anything (boxed), primitives never flow to string params. Falls back to the
+// classic first-match name+argc lookup when signature info is unavailable.
+void* find_method_for_args(void* klass, const char* name, int argc,
+                           const nami::tide::TideValue* args) {
+    if (g_api.class_get_methods == nullptr || g_api.method_get_name == nullptr ||
+        g_api.method_get_param_count == nullptr) {
+        return find_method_in_hierarchy(klass, name, argc);
+    }
+    for (void* k = klass; k != nullptr && g_api.class_get_parent != nullptr;
+         k = g_api.class_get_parent(k)) {
+        void* best = nullptr;
+        int best_score = -1;
+        void* iter = nullptr;
+        void* method = nullptr;
+        while ((method = g_api.class_get_methods(k, &iter)) != nullptr) {
+            const char* mname = static_cast<const char*>(g_api.method_get_name(method));
+            if (mname == nullptr || std::strcmp(mname, name) != 0) {
+                continue;
+            }
+            // method_get_param_count is int-returning; the struct types it as void*.
+            const int count =
+                static_cast<int>(reinterpret_cast<intptr_t>(g_api.method_get_param_count(method)));
+            if (count != argc) {
+                continue;
+            }
+            int score = 0;
+            bool usable = true;
+            for (int i = 0; i < argc; i++) {
+                const int pt = param_type_enum(method, i);
+                if (pt < 0) {
+                    usable = false;
+                    break;
+                }
+                const int want = tide_type_to_il2cpp_type(args[i].type);
+                if (pt == want) {
+                    score += 3;
+                } else if (pt == IL2CPP_TYPE_OBJECT) {
+                    score += 2;
+                } else if (want == IL2CPP_TYPE_STRING) {
+                    if (param_is_reference(pt)) {
+                        score += 1;
+                    } else {
+                        usable = false;
+                        break;
+                    }
+                } else if (pt == IL2CPP_TYPE_STRING) {
+                    usable = false;
+                    break;
+                } else if (param_is_reference(pt)) {
+                    score += 1;
+                } else {
+                    usable = false;
+                    break;
+                }
+            }
+            if (usable && score > best_score) {
+                best = method;
+                best_score = score;
+            }
+        }
+        if (best != nullptr) {
+            return best;
+        }
+    }
+    // No scored match (or no signature info): classic first-match behavior.
+    return find_method_in_hierarchy(klass, name, argc);
+}
+
 // Searches a class AND its base classes for a field.
 void* find_field_in_hierarchy(void* klass, const char* name) {
     for (void* k = klass; k != nullptr; k = g_api.class_get_parent(k)) {
@@ -301,7 +443,7 @@ void* make_string(const nami::tide::TideValue& v) {
     if (v.type != nami::tide::TideType_String || v.data.str.utf8 == nullptr) {
         return nullptr;
     }
-    return g_api.string_new(g_api.domain, v.data.str.utf8);
+    return g_api.string_new(v.data.str.utf8);
 }
 
 // Converts an Il2CppString to a UTF-8 heap buffer (malloc'd; caller frees with free()).
@@ -820,10 +962,12 @@ int il2cpp_object_op_impl(nami::tide::CallRequest* req) {
             }
 
             const int method_argc = req->arg_count - value_start;
-            // IL2CPP method lookup is by exact name + argc (matching Unity's own lookup;
-            // the managed side requests by arity, and the first overload with that arity is
-            // Unity's documented behavior). Properties resolve to their accessor methods.
-            void* method = find_method_in_hierarchy(klass, req->member, method_argc);
+            // Overload-aware lookup mirroring the Mono backend (exact primitive
+            // matches win; System.Object params accept boxed primitives); falls back
+            // to first-match name+arity when signature info is unavailable.
+            // Properties resolve to their accessor methods.
+            void* method = find_method_for_args(klass, req->member, method_argc,
+                                                req->args + value_start);
             if (method == nullptr) {
                 log_tide("il2cpp: method '%s' with %d args not found on %s.%s", req->member,
                          method_argc, req->ns, req->klass);
@@ -835,22 +979,15 @@ int il2cpp_object_op_impl(nami::tide::CallRequest* req) {
                 const TideValue& v = req->args[value_start + i];
                 void* box = box_storage + (i * 16);
                 // On IL2CPP, runtime_invoke expects value-type params as raw pointers and
-                // reference params as object pointers (same as Mono). Box primitives ONLY
-                // for params whose type is `object` — we cannot cheaply reflect the param
-                // type here, so we rely on the managed API contract: CallStatic with a
-                // TideValue passes primitives raw. For `object` params (Debug.Log(object)),
-                // the mod must box explicitly — but Unity's Debug.Log is special: IL2CPP
-                // generates Log(object) so a raw int would be misread. Handle the common
-                // Debug.Log case by checking the method's declaring class is UnityEngine.
-                // Debug and its param is object (detected via name "Log" + 1 arg).
-                void* declaring = g_api.method_get_class != nullptr ? g_api.method_get_class(method) : nullptr;
-                const bool is_debug_log =
-                    declaring != nullptr && strcmp(req->klass, "Debug") == 0 &&
-                    strcmp(req->member, "Log") == 0 && method_argc == 1;
-                if (is_debug_log && v.type != TideType_String && v.type != TideType_Object) {
+                // reference params as object pointers (same as Mono). Box primitives for
+                // System.Object params (covers the Debug.Log(object) case generally);
+                // everything else flows through the raw-arg path below unchanged.
+                const int param = param_type_enum(method, i);
+                if (param == IL2CPP_TYPE_OBJECT && v.type != TideType_String &&
+                    v.type != TideType_Object) {
                     void* boxed = box_primitive(v);
                     if (boxed == nullptr) {
-                        log_tide("il2cpp: failed to box Debug.Log arg");
+                        log_tide("il2cpp: failed to box arg for object param");
                         return -1;
                     }
                     il2cpp_args[i] = boxed;
@@ -901,6 +1038,66 @@ int il2cpp_object_op_impl(nami::tide::CallRequest* req) {
                 req->ret->data.handle = g_api.gchandle_new(obj, 1);
             }
             log_tide("il2cpp: new %s.%s OK", req->ns, req->klass);
+            return 0;
+        }
+
+        case TideCall_FindObject: {
+            // Scene-object discovery as FindObjectsOfType + element 0: the SINGULAR
+            // FindObjectOfType wrapper aborts the process (0xe0000001) when invoked
+            // from outside managed game code (verified on Unity 2022.3 Mono across
+            // drain pre/post and window contexts), while the plural path returns
+            // cleanly. The window-proc executor has no nested invoke frame.
+            void* klass = find_class(*req);
+            if (klass == nullptr) {
+                return -1;
+            }
+            if (g_api.class_get_type == nullptr || g_api.type_get_object == nullptr) {
+                log_tide("il2cpp: type reflection unavailable for FindObject");
+                return -1;
+            }
+            void* type = g_api.class_get_type(klass);
+            void* type_obj = type != nullptr ? g_api.type_get_object(type) : nullptr;
+            if (type_obj == nullptr) {
+                log_tide("il2cpp: cannot make System.Type for %s.%s", req->ns, req->klass);
+                return -1;
+            }
+            void* core = find_image("UnityEngine.CoreModule");
+            void* obj_class =
+                core != nullptr ? g_api.class_from_name(core, "UnityEngine", "Object")
+                                : nullptr;
+            if (obj_class == nullptr) {
+                log_tide("il2cpp: UnityEngine.Object not found");
+                return -1;
+            }
+            void* find = find_method_in_hierarchy(obj_class, "FindObjectsOfType", 1);
+            if (find == nullptr) {
+                log_tide("il2cpp: no FindObjectsOfType entry on UnityEngine.Object");
+                return -1;
+            }
+            void* find_args[1] = {type_obj};
+            void* exc = nullptr;
+            void* found = g_api.runtime_invoke(find, nullptr, find_args, &exc);
+            if (exc != nullptr) {
+                log_tide("il2cpp: FindObject threw");
+                capture_exception(*req, exc);
+                return -2;
+            }
+            // Plural returns an (never-null) array: miss on empty, else element 0
+            // (reference array — direct slot read, same as ArrayGet).
+            void* element = nullptr;
+            if (found != nullptr && g_api.array_length != nullptr &&
+                g_api.array_length(found) > 0 && array_element_is_reference(found)) {
+                element = *reinterpret_cast<void**>(array_element_ptr(found, 0, 8));
+            }
+            if (req->ret != nullptr) {
+                req->ret->type = TideType_Object;
+                req->ret->data.handle =
+                    element != nullptr
+                        ? static_cast<int64_t>(g_api.gchandle_new(element, 1))
+                        : 0;
+            }
+            log_tide("il2cpp: FindObject %s.%s %s", req->ns, req->klass,
+                     element != nullptr ? "hit" : "miss");
             return 0;
         }
 

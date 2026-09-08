@@ -18,7 +18,9 @@ bool wait_for_runtime(int timeout_ms) {
             GetModuleHandleW(L"GameAssembly.dll") != nullptr) {
             return true;
         }
-        Sleep(100);
+        // Tight poll: mono_jit_init follows the module load by milliseconds, and the
+        // inex lane wants its detour installed before that call happens.
+        Sleep(10);
     }
     return false;
 }
@@ -43,9 +45,41 @@ void loader_main(const wchar_t* nami_root) {
         std::fflush(marker);
     }
 
+    // Convert the wide root path to UTF-8 for the narrow RuntimeHost API.
+    // (Needed before the early arm() below.)
+    std::string root;
+    if (nami_root != nullptr) {
+        const int len = WideCharToMultiByte(CP_UTF8, 0, nami_root, -1, nullptr, 0, nullptr, nullptr);
+        if (len > 0) {
+            root.resize(static_cast<size_t>(len - 1));
+            WideCharToMultiByte(CP_UTF8, 0, nami_root, -1, root.data(), len, nullptr, nullptr);
+        }
+    }
+
+    // Legacy lane (nami-inex) FIRST, while the game main thread is still suspended
+    // (the injector holds it until we signal hook-ready): the mono_jit_init detour
+    // only wins its race when installed before the main thread runs. Both modules
+    // are import-loaded on stock Unity builds, so presence is visible immediately;
+    // a dynamically-loaded Mono (never observed) simply misses the detour and the
+    // drain/watcher fallback covers it, exactly as before. IL2CPP titles skip this
+    // (BepInEx 6 needs its own CoreCLR lane — later). arm() signals hook-ready in
+    // every path; the skip branch below must too, or the injector stalls 30s.
+    int inex = -1;
+    if (!root.empty() && !il2cpp::detect_il2cpp()) {
+        inex = inex::arm(root);
+        if (marker) {
+            std::fwprintf(marker, L"[loader] legacy inex: %ls\n",
+                           inex == 2 ? L"armed" : inex == 1 ? L"payload staged, not enabled"
+                                                            : L"absent");
+            std::fflush(marker);
+        }
+    } else {
+        inex::signal_hook_ready();
+    }
+
     // Wait for the game's managed runtime to load: Mono DLLs on Mono titles, GameAssembly.dll
-    // on IL2CPP titles. The loader is injected at process start; Unity loads its scripting
-    // runtime shortly after.
+    // on IL2CPP titles. Import-loaded runtimes are already present (see above); this
+    // wait only matters for exotic dynamic loads. The loader is injected at process start.
     const bool runtime_seen = wait_for_runtime(60000);
     const bool is_il2cpp = runtime_seen && il2cpp::detect_il2cpp();
     if (!runtime_seen) {
@@ -61,30 +95,6 @@ void loader_main(const wchar_t* nami_root) {
         std::fwprintf(marker, L"[loader] runtime detected (%ls); hosting CoreCLR from %ls\n",
                       is_il2cpp ? L"IL2CPP (GameAssembly.dll)" : L"Mono", nami_root);
         std::fflush(marker);
-    }
-
-    // Convert the wide root path to UTF-8 for the narrow RuntimeHost API.
-    std::string root;
-    if (nami_root != nullptr) {
-        const int len = WideCharToMultiByte(CP_UTF8, 0, nami_root, -1, nullptr, 0, nullptr, nullptr);
-        if (len > 0) {
-            root.resize(static_cast<size_t>(len - 1));
-            WideCharToMultiByte(CP_UTF8, 0, nami_root, -1, root.data(), len, nullptr, nullptr);
-        }
-    }
-
-    // Legacy lane (nami-inex): arms the BepInEx 5.x boot if a payload is staged AND
-    // enabled (nami/inex/enabled sentinel). Non-blocking: game-thread work happens
-    // on the game's own threads. IL2CPP titles skip this (BepInEx 6 needs its own
-    // CoreCLR lane — later).
-    if (!is_il2cpp && !root.empty()) {
-        const int inex = inex::arm(root);
-        if (marker) {
-            std::fwprintf(marker, L"[loader] legacy inex: %ls\n",
-                          inex == 2 ? L"armed" : inex == 1 ? L"payload staged, not enabled"
-                                                           : L"absent");
-            std::fflush(marker);
-        }
     }
 
     RuntimeHost host;

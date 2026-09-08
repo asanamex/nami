@@ -206,7 +206,18 @@ internal static class PatchedBodyBuilder
             {
                 throw new InvalidOperationException($"__instance on a static target: {hook}");
             }
-            il.Emit(OpCodes.Ldarg_0); // this
+            il.Emit(OpCodes.Ldarg_0); // this (managed pointer for struct targets)
+            if (body.DeclaringType is { IsValueType: true } dt)
+            {
+                // Struct this arrives as a pointer; hooks observe a boxed copy.
+                // (Mutations to __instance are not written back.)
+                il.Emit(OpCodes.Ldobj, dt);
+                if (ptype == typeof(object))
+                {
+                    il.Emit(OpCodes.Box, dt);
+                    return;
+                }
+            }
             if (ptype != typeof(object) && ptype != body.DeclaringType)
             {
                 throw new InvalidOperationException($"__instance type mismatch on {hook}: expected {body.DeclaringType} or object");
@@ -294,6 +305,10 @@ internal static class PatchedBodyBuilder
             var t = body.IsInstance && i == 0
                 ? body.DeclaringType!
                 : body.ParameterTypes[i - (body.IsInstance ? 1 : 0)];
+            if (body.IsInstance && i == 0 && t.IsValueType)
+            {
+                il.Emit(OpCodes.Ldobj, t); // struct this is a pointer; dereference first
+            }
             if (t.IsValueType)
             {
                 il.Emit(OpCodes.Box, t);

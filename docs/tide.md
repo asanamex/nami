@@ -85,7 +85,8 @@ sequenceDiagram
 3. **Drain.** The next time the game main thread calls `mono_runtime_invoke`, the detour
    drains the queue **inline on the main thread** — running the Mono embedding calls where
    Mono's GC is fully set up — then calls the real `mono_runtime_invoke`.
-4. **Fast path.** When nothing is queued, the detour costs one atomic read. Verified: the
+4. **Fast path.** When nothing is queued, the detour costs two atomic reads (one
+   pre- and one post-invoke). Verified: the
    game runs normally with the hook installed (see §4).
 
 The Tide drain is a single global detour over `mono_runtime_invoke` (the toolkit
@@ -114,8 +115,9 @@ self-test (this boot gate applies on **both** backends). You should see in `nami
 
 Mod-issued Tide calls don't need the flag beyond that: they route to the auto-detected
 backend (`Tide.ActiveBackend`; `IsAvailable` is true whenever the loader is present).
-Loader ordering, for reference: wait for runtime → (Mono only) `inex::arm` when a payload
-plus the `inex/enabled` sentinel exist → host CoreCLR → managed Tide self-test when
+Loader ordering, for reference: (Mono only) `inex::arm` while the game main thread
+is still suspended when a payload plus the `inex/enabled` sentinel exist → wait for
+runtime → host CoreCLR → managed Tide self-test when
 `enableMonoBridge` is set.
 
 > **Why opt-in?** The Mono bridge runs native code that patches a live game export. It
@@ -141,8 +143,8 @@ Representative `nami.log` (ROUNDS / 2022.3.34f1; timestamps elided):
 [INFO ] [boot] Tide bridge OK: Unity Debug.Log executed on the game main thread
 [INFO ] [chainloader] Loaded dev.nami.samples.tideprobe 0.1.0 (TideProbe.dll)
 [INFO ] [dev.nami.samples.tideprobe] Tide available; typed calls...
-[INFO ] [dev.nami.samples.tideprobe] typed Debug.Log(string) OK
-[INFO ] [dev.nami.samples.tideprobe] typed Debug.Log(int) OK (primitive arg marshaled)
+[INFO ] [dev.nami.samples.tideprobe] typed Debug.Log(string) call OK
+[INFO ] [dev.nami.samples.tideprobe] typed Debug.Log(int) call OK (primitive arg marshaled)
 [INFO ] [dev.nami.samples.tideprobe] created GameObject instance (handle=7688)
 [INFO ] [dev.nami.samples.tideprobe] GameObject.GetInstanceID() = -62
 [INFO ] [dev.nami.samples.tideprobe] Application.runInBackground (typed Get<bool>) = True
@@ -184,8 +186,8 @@ using Nami;   // Tide, GameClass, GameObject, TideValue, TideTypes, TideArrays
 | Member | Description |
 |---|---|
 | `bool Tide.IsAvailable` | True when `nami_loader.dll` is loaded (i.e. running in-game under Nami). False in plain unit tests / outside a game. `Tide.ActiveBackend` (`Mono`/`Il2Cpp`), `IsReady`, and `EnsureReady()` report/drive backend readiness. |
-| `bool Tide.UnityLog(string message)` | Calls `UnityEngine.Debug.Log(object)` on the game main thread (**Mono backend only**). |
-| `bool Tide.InvokeStatic(assembly, ns, klass, method)` | Calls a **parameterless** static game method on the main thread (**Mono backend only** — on IL2CPP call `GameClass.CallStatic("Log", …)` instead); true if it ran without a game exception. |
+| `bool Tide.UnityLog(string message)` | Calls `UnityEngine.Debug.Log(object)` on the game main thread (both backends; IL2CPP routes through the typed call op). |
+| `bool Tide.InvokeStatic(assembly, ns, klass, method)` | Calls a **parameterless** static game method on the main thread (both backends — IL2CPP routes through the typed call op); true if it ran without a game exception. |
 | `GameClass GameClass.Resolve(assembly, ns, name)` | Resolve a game class once by assembly (with or without `.dll`). |
 | `GetStaticInt/Long/Float/Double/Bool/String/Object` / `SetStatic...` | Typed static **field or property** read/write (primitives + string + live objects via `GetStaticObject`/`SetStaticObject`). |
 | `T? Get<T>(field)` / `Set<T>(field, value)` | **Generic typed access** (static): `T` may be int/long/float/double/bool/string/`GameObject`/any enum (`I32`, or `I64` for `long` enums). No hand-picking `TideType`. |
@@ -212,13 +214,12 @@ exception's `.Message` includes the game exception's ToString (type + message + 
 `TideException.IsMonoException` distinguishes the two. Full diagnostics are also in
 `nami/native/nami-tide.log`.
 
-**Marshaling (Mono)**: method calls are **overload- and signature-aware**: the target method is
+**Marshaling**: on both backends, method calls are **overload- and signature-aware**: the target method is
 selected by matching argument types to the method's parameter types (exact matches win;
 `object` params accept boxed primitives; impossible bindings like a primitive→`string` are
 rejected), and primitive values passed to reference-typed parameters (`object`, interfaces,
 base classes) are **boxed automatically** — e.g. `CallStatic("Log", TideValue.FromInt(5))`
-correctly calls `Debug.Log(object)` with a boxed `Int32`. (IL2CPP binds the first overload
-of matching arity and boxes only the 1-arg `Debug.Log(object)` case.)
+correctly calls `Debug.Log(object)` with a boxed `Int32`.
 
 **Enums**: int-backed game enums are read/written through the integer accessors
 (`GetStaticInt`/`Get<int>`/`GetEnum`) — the value is the underlying `int`. Enum-typed method
@@ -353,7 +354,7 @@ copying `Nami.*` DLLs from a mod's output into `mods/`.
 | `Tide bridge present but UnityLog failed` | See `nami-tide.log`. Common: assembly not found under that name (Tide tries common variants) or a Mono exception in `Debug.Log`. |
 | Game crashes on boot with the bridge on | The `mono_runtime_invoke` detour refused the prologue, or the game's Mono differs from the verified set (2022.3.x, 6000.x). Triage the three logs: `nami/native/nami-tide.log` (Tide), `nami/native/nami-inex.log` (legacy lane — including jit-prologue refusal and BepInEx payload issues), `nami/native/nami-loader.log` (which lane armed). Turn the bridge off (`"enableMonoBridge": false`) — note this does **not** disable an enabled inex lane — confirm the game runs, and report the logs. |
 | `TideException: op ... failed (code -1)` | Member not found (check assembly/class/member names, case, arity) or an unsupported value type. Codes are logged in `nami/native/nami-tide.log`. |
-| Calling `Object.FindObjectOfType` (or `FindFirstObjectByType`) aborts the game | Unity does not allow scene-iteration APIs from embedding re-entry — pre- *or* post-invoke (the post-invoke export itself works and the inex lane uses it for loads and `Awake`; only scene iteration aborts the same way, `0xe0000001`). ABI op `12` (`TideCall_FindObject`) is defined but unhandled, so it returns `-1`. Use static accessors (`Camera.main`) or static object fields instead — see §8. |
+| Calling the singular `Object.FindObjectOfType` aborts the game | Known Unity boundary, not a Tide bug: the singular wrapper aborts (`0xe0000001`) when invoked from outside managed game code — drain pre/post queues and the window procedure alike. Tide's `FindObject` therefore runs `FindObjectsOfType` + element 0, which returns cleanly (verified on 2022.3.27f1). Use `GameClass.FindObject()`; avoid invoking the singular wrapper through Tide. |
 
 ---
 
@@ -374,16 +375,19 @@ Unity 6 / 6000.5.4f1):**
 - **Object creation** (`new GameObject()`), object-typed field/property reads of live
   UnityEngine objects (`Camera.main` etc.), GC-handle-backed handles, idempotent `Dispose`.
 - **Scene-object discovery**: live scene objects are reachable through static accessors and
-  object-typed property/field reads (`Camera.main` → real `MainCamera` verified on ROUNDS);
-  see the scene-discovery note below for the Unity `FindObjectOfType` boundary.
+  object-typed property/field reads (`Camera.main` → real `MainCamera` verified on ROUNDS),
+  and through `GameClass.FindObject()` — first loaded object of a class via
+  `FindObjectsOfType` + element 0 (verified on Hardline 2022.3.27f1: found the same
+  `Main Camera` as `Camera.main`). Name search (`GameObject.Find`) works through the
+  normal invoke path.
 - **No silent failures**: every failing op throws `TideException` with a `Code` and, for Mono
   exceptions, the exception's ToString (type + message + stack) in the message.
 - `UnityLog`.
 
 In-game evidence (`nami.log`, ROUNDS / Unity 2022.3.34f1 — see §4 for the full transcript):
 ```
-typed Debug.Log(string) OK
-typed Debug.Log(int) OK (primitive arg marshaled)
+typed Debug.Log(string) call OK
+typed Debug.Log(int) call OK (primitive arg marshaled)
 created GameObject instance (handle=7688)
 GameObject.GetInstanceID() = -62
 Application.runInBackground (typed Get<bool>) = True
@@ -396,22 +400,20 @@ TideProbe verification complete
 game alive and stable (4000+ ticks)
 ```
 
-**Scene-object discovery — via safe static accessors.** Unity forbids the scene-iteration
-APIs (`Object.FindObjectOfType(Type)`, `FindFirstObjectByType`) from *any* `mono_runtime_invoke`
-re-entry — pre- or post-invoke, on every tested title (2022.3 and Unity 6); Unity aborts the
-process (`0xe0000001`) with no managed exception. Tide therefore exposes live scene objects
-through the safe routes that *do* run through the normal property/field path: static accessors
-like `Camera.main`, and static object fields/properties — e.g.
-`GameClass.GetStaticObject("main")` on `Camera`, then `GetString` on the returned handle
-(verified on ROUNDS: the real `MainCamera`). A future Wave-installed per-frame *script*
-callback would unlock the scan APIs (they need a genuine Unity script context, not an
-embedding re-entry).
+**Scene-object discovery — via FindObjectsOfType at a frame boundary.** The scene list
+is iterable from outside managed game code, but only with two constraints, both
+verified empirically on 2022.3.27f1: (1) the call must run with zero `mono_runtime_invoke`
+frames on the stack — the invoke drain (pre- *and* post-queue) still nests inside the
+game's in-flight invoke, so `FindObject` goes through the window-proc executor
+(`nami_tide_object_op_window`, 30 s timeout; needs a visible game window); (2) it must
+be the *plural* `FindObjectsOfType` + element 0 — the singular `FindObjectOfType`
+wrapper aborts the process (`0xe0000001`) from outside managed code in every tested
+context, while the plural path, `GameObject.Find(name)`, and all other typed ops run
+fine nested. `GameClass.FindObject()` implements exactly this (active objects only,
+null on miss); the TideProbe scene step logs both routes so they can be compared
+(it finds the same `Main Camera` as `Camera.main`).
 
 **Next:**
-- A non-nested main-thread hook point for scene-iteration APIs (`FindObjectOfType`,
-  `Resources.FindObjectsOfTypeAll`) — a future Mono-side point (Wave patches the CoreCLR
-  side only, so it cannot install one); `Call` already exposes `postInvoke`, only
-  `CallInstance` hardcodes it `false`.
 - Broaden the verified matrix (older/newer Unity Mono, more games); the main-thread-drain
   pattern is expected to carry over.
 
@@ -419,10 +421,10 @@ embedding re-entry).
 
 ## 9. IL2CPP backend (Unity IL2CPP titles)
 
-Nami also runs on **IL2CPP** games (`GameAssembly.dll` present, no Mono). The typed
+Nami also runs on **IL2CPP** games (`GameAssembly.dll` present, no Mono). The full
 `GameClass` / `GameObject` / `TideValue` API is identical — `Tide.ActiveBackend` reports `Il2Cpp`,
-and every typed op (`TideObjectOp.Call`/`CallInstance`) routes to the IL2CPP backend automatically.
-(`Tide.UnityLog`/`InvokeStatic` stay Mono-only; on IL2CPP use `GameClass` typed calls.)
+and every typed op (`TideObjectOp.Call`/`CallInstance`, including `UnityLog`/`InvokeStatic`)
+routes to the IL2CPP backend automatically, with the same overload scoring as Mono.
 
 **Execution model (empirically established on real IL2CPP titles — Arrow a Row 2020.3.18,
 D1AL-ogue 6000.0.61):** IL2CPP compiles game scripts to native code, so unlike Mono there is
@@ -441,6 +443,7 @@ passes end to end with the game stable:
 ```
 [dev.nami.samples.tideprobe-il2cpp] Tide available; backend=Il2Cpp
 [dev.nami.samples.tideprobe-il2cpp] typed Debug.Log(string) call OK
+[dev.nami.samples.tideprobe-il2cpp] Tide.UnityLog returned True
 [dev.nami.samples.tideprobe-il2cpp] Application.runInBackground (typed Get<bool>) = True
 [dev.nami.samples.tideprobe-il2cpp] Screen.orientation (enum via Get<int>) = 1
 [dev.nami.samples.tideprobe-il2cpp] Environment.GetCommandLineArgs() length = 1

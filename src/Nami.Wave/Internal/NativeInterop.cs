@@ -33,6 +33,10 @@ internal static unsafe class NativeInterop
         {
             return IntPtr.Zero; // open generic / no code
         }
+        catch (ArgumentException)
+        {
+            return IntPtr.Zero; // open generic definition (MethodHandle rejects it)
+        }
         catch (NotSupportedException)
         {
             return IntPtr.Zero;
@@ -41,28 +45,39 @@ internal static unsafe class NativeInterop
 
     /// <summary>
     /// Follows a bounded chain of leading unconditional jumps (E9 rel32, FF 25 disp32) from an
-    /// entry point to the real code. Stops at the first non-jump byte.
+    /// entry point to the real code. Stops at the first non-jump byte. The landing spot must
+    /// itself be committed executable code — stub chains that resolve into unmapped memory
+    /// (stale tiered-JIT entries, unpopulated slots) yield Zero instead of a faulting address.
     /// </summary>
     private static IntPtr FollowJumpStubs(IntPtr entry)
     {
         var p = (byte*)entry;
+        if (!IsExecutable(p)) {
+            return IntPtr.Zero;
+        }
         for (int hops = 0; hops < 8; hops++)
         {
             byte b0 = p[0];
-            if (b0 == 0xE9 && IsExecutable(p))
+            if (b0 == 0xE9)
             {
                 // jmp rel32 — target = p + 5 + rel32
                 int rel = *(int*)(p + 1);
                 p = p + 5 + rel;
+                if (!IsExecutable(p)) {
+                    return IntPtr.Zero;
+                }
                 continue;
             }
 
-            if (b0 == 0xFF && p[1] == 0x25 && IsExecutable(p))
+            if (b0 == 0xFF && p[1] == 0x25)
             {
                 // jmp qword ptr [rip+disp32]
                 int disp = *(int*)(p + 2);
                 var slot = (byte**)(p + 6 + disp);
                 p = *slot;
+                if (!IsExecutable(p)) {
+                    return IntPtr.Zero;
+                }
                 continue;
             }
 
@@ -72,23 +87,7 @@ internal static unsafe class NativeInterop
         return (IntPtr)p;
     }
 
-    private static bool IsExecutable(byte* p)
-    {
-        try
-        {
-            if (VirtualQuery(p, out var mbi, (nuint)sizeof(MEMORY_BASIC_INFORMATION)) == false)
-            {
-                return false;
-            }
-
-            uint prot = mbi.Protect & 0xFF;
-            return prot is 0x10 or 0x20 or 0x30 or 0x40 or 0x50 or 0x60 or 0x70 or 0x80 or 0xA0 or 0xE0;
-        }
-        catch
-        {
-            return false;
-        }
-    }
+    private static bool IsExecutable(byte* p) => RawMemory.IsExecutableCode(p);
 
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern bool VirtualQuery(void* lpAddress, out MEMORY_BASIC_INFORMATION lpBuffer, nuint dwLength);

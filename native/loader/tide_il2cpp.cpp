@@ -139,13 +139,17 @@ bool detect_il2cpp() {
 }
 
 bool install_il2cpp_executor() {
-    if (g_installed) {
-        return true;
-    }
     if (!detect_il2cpp()) {
         return false;
     }
+    return install_window_executor();
+}
 
+// Subclasses the game's main window so queued work runs on the main thread inside
+// the window procedure (frame boundary — no runtime_invoke on the stack). Pure Win32;
+// shared by the IL2CPP backend AND Mono scene-iteration ops (FindObject), which abort
+// inside any nested invoke frame. Idempotent + thread-safe.
+bool install_window_executor() {
     AcquireSRWLockExclusive(&g_install_lock);
     if (g_installed) {
         ReleaseSRWLockExclusive(&g_install_lock);
@@ -188,7 +192,7 @@ bool run_il2cpp_op(int (*fn)(void*), void* arg, int timeout_ms) {
     if (il2cpp_on_main_thread()) {
         return fn(arg) == 0;
     }
-    if (!g_installed && !install_il2cpp_executor()) {
+    if (!g_installed && !install_window_executor()) {
         return false;
     }
 

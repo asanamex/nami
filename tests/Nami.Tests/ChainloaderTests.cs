@@ -134,4 +134,62 @@ public class ChainloaderTests
         var manifests = chainloader.DiscoverPlugins();
         Assert.Empty(manifests);
     }
+
+    [Fact]
+    public void BadPlugin_StaysActiveWhenQuarantineDisabled()
+    {
+        using var fixture = new GameDirFixture();
+        fixture.WriteConfig(quarantineEnabled: false, threshold: 3);
+        CopyPlugins(fixture);
+
+        var (_, chainloader) = Create(fixture);
+        chainloader.LoadAll();
+
+        var bad = chainloader.Plugins.Single(p => p.Manifest.Id == "dev.nami.fixtures.bad");
+        var quarantined = 0;
+        chainloader.PluginQuarantined += _ => quarantined++;
+
+        for (var i = 0; i < 6; i++)
+        {
+            chainloader.UpdateAll();
+        }
+
+        Assert.NotEqual(PluginState.Quarantined, bad.State);
+        Assert.True(bad.ConsecutiveFailures >= 3);
+        Assert.Equal(0, quarantined);
+        chainloader.Shutdown();
+    }
+
+    [Fact]
+    public void EnabledPlugins_SupportsGlobPatterns()
+    {
+        using var fixture = new GameDirFixture();
+        fixture.WriteConfig(enabledPlugins: new List<string> { "dev.nami.fixtures.?????", "nomatch-*" });
+        CopyPlugins(fixture);
+
+        var (_, chainloader) = Create(fixture);
+        chainloader.LoadAll();
+
+        // ???? matches exactly 5 chars: alpha loads, bad (3 chars) does not.
+        // (Gamma also matches but needs beta, which the glob excludes.)
+        var ids = chainloader.Plugins.Select(p => p.Manifest.Id).ToArray();
+        Assert.Contains("dev.nami.fixtures.alpha", ids);
+        Assert.DoesNotContain("dev.nami.fixtures.bad", ids);
+        chainloader.Shutdown();
+    }
+
+    [Fact]
+    public void EnabledPlugins_ExactIdStillWorks()
+    {
+        using var fixture = new GameDirFixture();
+        fixture.WriteConfig(enabledPlugins: new List<string> { "dev.nami.fixtures.alpha" });
+        CopyPlugins(fixture);
+
+        var (_, chainloader) = Create(fixture);
+        chainloader.LoadAll();
+
+        Assert.Single(chainloader.Plugins);
+        Assert.Equal("dev.nami.fixtures.alpha", chainloader.Plugins[0].Manifest.Id);
+        chainloader.Shutdown();
+    }
 }

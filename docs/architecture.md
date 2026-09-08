@@ -30,7 +30,8 @@ IL2CPP games (the IL2CPP side uses the same hosting machinery; only the game-typ
 native/                          C++17 (Windows x64 first)
   injector/injector_main.cpp     inject_into_game(): CreateProcessW(suspended) →
                                  VirtualAllocEx(path) → WriteProcessMemory →
-                                 CreateRemoteThread(LoadLibraryW) → ResumeThread
+                                 CreateRemoteThread(LoadLibraryW) → hook-ready wait
+                                 (30s) → ResumeThread
   injector/injector_exe.cpp      nami_boot.exe entry (wmain): parses <game> <loader> [--root]
   loader/loader_exports.cpp      nami_loader.dll: DllMain spawns the boot thread
                                  (CreateThread) — no separate export is called by the injector
@@ -39,10 +40,14 @@ native/                          C++17 (Windows x64 first)
   loader/tide_pump.cpp           Tide Mono main-thread executor: mono_runtime_invoke hook + pre/
                                  post drain queues, install lock, re-entrancy guard; shared
                                  detour toolkit (measure_relocatable_prologue /
-                                 build_trampoline / install_native_detour — 14-byte
-                                 mov rax,jmp rax, refuses relative branches/RIP-relative)
+                                 build_trampoline / install_native_detour (+ try_ variant —
+                                 14-byte mov rax,jmp rax, 5-byte near-jump fallback;
+                                 Tide refuses relative branches/RIP-relative, inex jit
+                                 hooks allow E8 with rel32 fixup)
   loader/inex_bootstrap.h/.cpp   nami-inex legacy lane: arm() 0/1/2 (payload+sentinel gating),
-                                 DOORSTOP_* env, mono_jit_init detour attempt, watcher thread
+                                 DOORSTOP_* env, mono_jit_init_version/mono_jit_init detour
+                                 attempt (E8-tolerant + near-jump, Ldr load-watch,
+                                 hook-ready signal), watcher thread
                                  (window + domain-stability gates, late Start + kick)
   loader/tide_ops.cpp            Tide native ops (UnityLog, parameterless InvokeStatic)
   loader/tide_objects.cpp        Tide Mono typed game access (field/property/method/object/array
@@ -97,7 +102,8 @@ samples/TideProbeIl2Cpp/         in-game proof of the Tide IL2CPP backend (same 
 ## Boot sequence (verified in-game)
 
 1. `nami_boot.exe` launches the game suspended, injects `nami_loader.dll` via the classic
-   LoadLibraryW remote-thread pattern, resumes the game.
+   LoadLibraryW remote-thread pattern, holds the game main thread until the loader
+   signals hook-ready (30s timeout), then resumes the game.
 2. Loader thread polls for the game's runtime — `mono-2.0-bdwgc.dll`/`mono.dll` on Mono
    titles, `GameAssembly.dll` on IL2CPP titles (Unity initialized) — then hosts CoreCLR:
    - `hostfxr_initialize_for_runtime_config(<nami>/Nami.Runtime.runtimeconfig.json)`
@@ -106,9 +112,9 @@ samples/TideProbeIl2Cpp/         in-game proof of the Tide IL2CPP backend (same 
    - `load_assembly_and_get_function_pointer(Nami.Runtime.dll, "Nami.Runtime.ComponentEntry,
      Nami.Runtime", "EntryPoint", (const wchar_t*)-1 /*UNMANAGEDCALLERSONLY sentinel*/)`
      — the delegate_type sentinel must be `(char_t*)-1`, not the literal string.
-4. `ComponentEntry.EntryPoint` parses the `BootArgs` blob (wide root path + Mono module
+3. `ComponentEntry.EntryPoint` parses the `BootArgs` blob (wide root path + Mono module
    handle — null on IL2CPP, currently unused by `Boot.Run`), calls `Boot.Run`.
-5. `Boot.Run` writes `nami.log`, loads `nami.json` config, starts the chainloader, starts the
+4. `Boot.Run` writes `nami.log`, loads `nami.json` config, starts the chainloader, starts the
    hot-reload file watcher, and spins the update loop on the boot thread (16 ms ticks). Each
    tick drains queued reload commands first, then updates active mods (profiler-timed when
    `profiler.enabled`).
@@ -140,9 +146,11 @@ launch`/`launchNami.exe` then invoke `native/nami_boot.exe <game.exe> native/nam
   the loader derives the root as two levels up and the game executable comes from `nami.json`
   (`gameExe`).
 
-3. Legacy lane (Mono only, non-blocking): if `inex/BepInEx/core/BepInEx.Preloader.dll`
+ Legacy lane (Mono only, non-blocking): if `inex/BepInEx/core/BepInEx.Preloader.dll`
   **and** `inex/enabled` both exist, `inex::arm` sets the four `DOORSTOP_*` env vars,
-  attempts a `mono_jit_init` detour for Doorstop-timed `Start`, and spawns a watcher
+  attempts `mono_jit_init_version`/`mono_jit_init` detours for Doorstop-timed `Start`
+  (E8-tolerant prologue handling + near-jump fallback, Ldr load-watch for
+  dynamically-loaded Mono) and signals hook-ready, then spawns a watcher
   thread (drain fallback + window/domain-gated chainloader kick). IL2CPP titles skip
   this entirely. The loader thread proceeds to CoreCLR hosting immediately either way.
 
@@ -214,13 +222,12 @@ Doorstop's proxy — no `winhttp.dll`, no `doorstop_config.ini`; the tree lives 
 
 ## Future layers
 
-- Tide: Unity scene-iteration scan APIs (`FindObjectOfType`) via a future Mono-side
-  main-thread point (not Wave/CoreCLR — Wave patches the CoreCLR side only).
-- Inex: early-boot fidelity (E8-tolerant prologue handling so the jit detour lands and
-  stock `.cctor` timing holds), BepInEx 6 / IL2CPP lane (own CoreCLR + interop
+- Inex: early-boot fidelity shipped (injector holds the main thread until hook-ready;
+  Ldr load-watch catches dynamically-loaded Mono; `early preloader start rc=0`
+  verified), BepInEx 6 / IL2CPP lane (own CoreCLR + interop
   orchestration), boot-guard safe mode, legacy-pack distribution.
 - Shipped: `Nami.Interop` — offline (dev-time) typed projection for IL2CPP modders
-  (`nami interop images/dump/generate/header`; plaintext metadata v24-31, verified on a
+  (`nami interop images/dump/generate/header`; metadata v24-38, verified on a
   Unity 6000.0.61 title — see `src/Nami.Interop/Il2CppMetadata.cs`).
 - `.nmod` distribution (zip + `mod.json`): the `NamiPackage` read/install library is
   implemented and tested; auto-install and CLI wiring are future. Per-plugin config

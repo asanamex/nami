@@ -4,13 +4,16 @@ namespace Nami.Tests;
 
 public class DependencyResolverTests
 {
-    private static PluginManifest Plugin(string id, string[]? deps = null, string[]? incompat = null) => new()
+    private static PluginManifest Plugin(string id, string[]? deps = null, string[]? incompat = null,
+        string version = "1.0.0", (string Id, string? Min)[]? versionedDeps = null) => new()
     {
         Id = id,
         Name = id,
-        Version = "1.0.0",
+        Version = version,
         AssemblyPath = $@"C:\mods\{id}.dll",
-        Dependencies = deps ?? Array.Empty<string>(),
+        Dependencies = versionedDeps?.Select(d => new PluginDependency(d.Id, d.Min)).ToArray()
+            ?? deps?.Select(d => new PluginDependency(d, null)).ToArray()
+            ?? Array.Empty<PluginDependency>(),
         Incompatibilities = incompat ?? Array.Empty<string>()
     };
 
@@ -97,5 +100,46 @@ public class DependencyResolverTests
         var first = DependencyResolver.Resolve(manifests).LoadOrder.Select(m => m.Id).ToArray();
         var second = DependencyResolver.Resolve(manifests).LoadOrder.Select(m => m.Id).ToArray();
         Assert.Equal(first, second);
+    }
+
+    [Fact]
+    public void Resolve_EnforcesMinimumVersion()
+    {
+        var result = DependencyResolver.Resolve(new[]
+        {
+            Plugin("lib", version: "1.2.0"),
+            Plugin("ok", versionedDeps: new[] { ("lib", (string?)"1.0.0") }),
+            Plugin("needy", versionedDeps: new[] { ("lib", (string?)"2.0.0") })
+        });
+
+        Assert.Equal(new[] { "lib", "ok" }, result.LoadOrder.Select(m => m.Id));
+        Assert.True(result.Skipped.ContainsKey("needy"));
+        Assert.Contains("2.0.0", result.Skipped["needy"], StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Resolve_AcceptsExactNonNumericVersion()
+    {
+        var result = DependencyResolver.Resolve(new[]
+        {
+            Plugin("lib", version: "1.0.0-beta"),
+            Plugin("needy", versionedDeps: new[] { ("lib", (string?)"1.0.0-beta") })
+        });
+
+        Assert.Equal(new[] { "lib", "needy" }, result.LoadOrder.Select(m => m.Id));
+        Assert.Empty(result.Skipped);
+    }
+
+    [Fact]
+    public void Resolve_RejectsMismatchedNonNumericVersion()
+    {
+        var result = DependencyResolver.Resolve(new[]
+        {
+            Plugin("lib", version: "1.0.0-beta"),
+            Plugin("needy", versionedDeps: new[] { ("lib", (string?)"1.0.0") })
+        });
+
+        Assert.Equal(new[] { "lib" }, result.LoadOrder.Select(m => m.Id));
+        Assert.True(result.Skipped.ContainsKey("needy"));
     }
 }

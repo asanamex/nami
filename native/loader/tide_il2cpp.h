@@ -7,11 +7,16 @@ namespace nami::il2cpp {
 /// True when the process hosts IL2CPP (GameAssembly.dll present).
 bool detect_il2cpp();
 
-/// Installs the IL2CPP main-thread executor: subclasses the game's main window so ops
-/// queued from any thread run on the game's main thread inside its window procedure
-/// (the ONLY context verified safe for IL2CPP VM calls: main thread, no runtime_invoke
-/// detour frame). Idempotent + thread-safe.
+/// Installs the IL2CPP main-thread executor (gated on GameAssembly presence).
+/// Prefer install_window_executor for backend-agnostic use.
 bool install_il2cpp_executor();
+
+/// Installs the window-proc main-thread executor (no backend gate): subclasses the
+/// game's main window so queued work runs on the main thread inside its window
+/// procedure (frame boundary — no runtime_invoke on the stack). Shared by the IL2CPP
+/// backend and Mono scene-iteration ops. Idempotent + thread-safe. Needs a visible
+/// game window (false before the window exists / on headless builds).
+bool install_window_executor();
 
 /// True when the calling thread is currently executing an IL2CPP op (re-entrancy guard).
 bool il2cpp_on_main_thread();

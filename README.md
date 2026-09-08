@@ -67,13 +67,13 @@ src/
   Nami.Tide/       Typed game access: Tide, GameClass, GameObject, TideValue
   Nami.Wave/       Patching engine: x64 detours + Harmony-style IL-copy prefix/postfix
   Nami.Cli/        nami command-line tool (install/launch/create/run/doctor/list/interop/inex/version/help)
-  Nami.Interop/    Offline IL2CPP interop: plaintext global-metadata.dat reader (v24-31) +
+  Nami.Interop/    Offline IL2CPP interop: global-metadata.dat reader (v24-38, single-byte XOR transparent) +
                    typed projection generator (`nami interop`)
 tools/
   launch-shim/     launchNami.exe source (embedded into Nami.Cli for `nami create`)
   templates/       `dotnet new nami-mod` template content
-artifacts/         local NuGet feed (packages/); `artifacts/dotnet/` if present, else the
-                   runtime is bundled from your local .NET 10 install
+artifacts/         local NuGet feed (packages/); a `dotnet/` runtime tree at the repo root
+                   if present, else the runtime is bundled from your local .NET 10 install
 samples/       HelloNami (log-only) + TideProbe (Mono game access proof) +
                TideProbeIl2Cpp (IL2CPP game access proof)
 tests/         Unit/integration tests (Core, Wave, Cli, Tide) + plugin fixtures
@@ -177,7 +177,7 @@ See `docs/plan.md` for the full blueprint. Short version: **M0** scaffold & proo
 patching engine (M2: Harmony-style IL-copy) · **M2** Tide bridge + typed game access ·
 **M3 done** dev experience (NuGet packages, `dotnet new nami-mod`, `nami install`/`run`) ·
 **M4 done** IL2CPP bridge (runtime backend shipped & verified; offline interop projection
-shipped: v24-31 parsing + `nami interop` typed projection) · **M5 done** depth — hot reload,
+shipped: v24-38 parsing + `nami interop` typed projection) · **M5 done** depth — hot reload,
 per-mod profiler, Tide-op wiring, comparative bench gates · **M6 Mono shipped** legacy lane
 (nami-inex: unmodified BepInEx 5.x mods via `nami inex`; BepInEx 6 / IL2CPP lane later).
 

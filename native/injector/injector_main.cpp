@@ -68,18 +68,43 @@ Status inject_into_game(const wchar_t* game_exe, const wchar_t* loader_dll_path,
     }
 
     // --- 3. Remote thread runs LoadLibraryW(remote_path); DllMain spawns the boot thread. ---
+    // The game main thread stays suspended until the loader signals hook-ready:
+    // Unity otherwise reaches mono_jit_init before our patch lands (3MB DLL load +
+    // thread scheduling vs an already-running main thread) and the jit detour —
+    // the whole early-boot path — never fires. The wait is bounded; the game
+    // always resumes.
+    wchar_t ready_name[64]{};
+    swprintf_s(ready_name, L"Local\\NamiHookReady-%lu", pi.dwProcessId);
+    HANDLE ready = CreateEventW(nullptr, TRUE, FALSE, ready_name);
     const HANDLE remote_thread = CreateRemoteThread(pi.hProcess, nullptr, 0, load_library_w,
                                                     remote_path, 0, nullptr);
+    if (remote_thread == nullptr) {
+        std::fwprintf(stderr, L"[injector] CreateRemoteThread failed: %lu\n", GetLastError());
+    } else {
+        bool hooked = false;
+        if (ready != nullptr &&
+            WaitForSingleObject(ready, 30000) == WAIT_OBJECT_0) {
+            hooked = true;
+        } else {
+            std::fwprintf(stderr, L"[injector] hook-ready wait timed out; resuming anyway\n");
+        }
+        CloseHandle(remote_thread);
+        if (hooked) {
+            // LoadLibrary has returned (boot runs after DllMain), so the path is spent.
+            VirtualFreeEx(pi.hProcess, remote_path, 0, MEM_RELEASE);
+        }
+    }
+    if (ready != nullptr) {
+        CloseHandle(ready);
+    }
 
-    // Let the game run now that the loader is in flight.
+    // Let the game run now that early interception is in place (or was skipped).
     ResumeThread(pi.hThread);
 
-    CloseHandle(remote_thread);
     CloseHandle(pi.hThread);
     CloseHandle(pi.hProcess);
 
     if (remote_thread == nullptr) {
-        std::fwprintf(stderr, L"[injector] CreateRemoteThread failed: %lu\n", GetLastError());
         return Status::Error;
     }
 

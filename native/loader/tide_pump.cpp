@@ -2,6 +2,7 @@
 
 #include <windows.h>
 
+#include <climits>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -88,19 +89,25 @@ void* __stdcall runtime_invoke_detour(void* method, void* obj, void** args, void
 
 // Returns the total length of whole instructions from `p` until >= min_bytes, or 0 if any
 // instruction is unmeasurable/unsafe to relocate. Scans at most 32 bytes.
-int measure_relocatable_prologue(const unsigned char* p, int min_bytes) {
+int measure_relocatable_prologue(const unsigned char* p, int min_bytes, bool allow_relative_call,
+                                 int* call_offsets,                                  int max_calls) {
     int off = 0;
+    int calls = 0;
     while (off < min_bytes) {
         const unsigned char* q = p + off;
         int i = 0;
         bool rex = false;
         int rex_val = 0;
+        bool opsize = false;
 
         // Consume legacy + REX prefixes.
         while (i < 15) {
             unsigned char b = q[i];
             if (b == 0xF0 || b == 0xF2 || b == 0xF3 || b == 0x2E || b == 0x36 || b == 0x3E ||
                 b == 0x26 || b == 0x64 || b == 0x65 || b == 0x66 || b == 0x67) {
+                if (b == 0x66) {
+                    opsize = true;
+                }
                 i++;
             } else if (b >= 0x40 && b <= 0x4F) {
                 rex = true;
@@ -116,7 +123,31 @@ int measure_relocatable_prologue(const unsigned char* p, int min_bytes) {
         }
 
         const unsigned char op = q[i];
-        // Refuse: VEX/EVEX/XOP, relative branches, ret, int3, ud2.
+        if (op == 0xE8 && allow_relative_call) {
+            // Tolerated near CALL (inex jit hooks only; Tide still refuses): fixed
+            // 5-byte form, rel32 fixed up in the trampoline by the installer from the
+            // recorded offset. The return address lands mid-trampoline and execution
+            // continues into the copied prologue — sound unless the callee inspects
+            // its return address (true for init-style exports).
+            if (calls >= max_calls) {
+                return 0;
+            }
+            if (call_offsets != nullptr) {
+                call_offsets[calls] = off;
+            }
+            calls++;
+            off += 5;
+            if (off > 32) {
+                return 0;
+            }
+            continue;
+        }
+        // Refuse: VEX/EVEX/XOP, relative branches (E8/E9/EB plus short Jcc
+        // 70-7F, whose verbatim copy would retarget them), ret, int3, ud2.
+        // Near CALL is optionally tolerated (see allow_relative_call).
+        if (op >= 0x70 && op <= 0x7F) {
+            return 0;
+        }
         if (op == 0xC4 || op == 0xC5 || op == 0x62 || op == 0x63 || op == 0x8F || op == 0xE8 ||
             op == 0xE9 || op == 0xEB || op == 0xC3 || op == 0xCC || (op == 0x0F && i + 1 < 15)) {
             return 0;
@@ -175,14 +206,15 @@ int measure_relocatable_prologue(const unsigned char* p, int min_bytes) {
         }
 
         // Group-1 ALU with imm (80-83) and mov r/m,imm (C6/C7): imm follows modrm.
+        // All eight /r sub-opcodes (ADD/OR/ADC/SBB/AND/SUB/XOR/CMP) take an immediate —
+        // earlier code only counted 0-4, mis-measuring e.g. SUB RSP,imm.
         if (!no_modrm) {
             unsigned char modrm = q[i + 1];
-            int reg = (modrm >> 3) & 7;
-            if ((op == 0x80 || op == 0x82) && reg <= 4) len += 1;
-            else if (op == 0x83 && reg <= 4) len += 1;
-            else if (op == 0x81 && reg <= 4) len += (rex && (rex_val & 0x08)) ? 8 : 4;
-            else if (op == 0xC6 && reg == 0) len += 1;
-            else if (op == 0xC7 && reg == 0) len += (rex && (rex_val & 0x08)) ? 8 : 4;
+            if ((op == 0x80 || op == 0x82 || op == 0x83)) len += 1;
+            else if (op == 0x81) len += opsize ? 2 : 4;
+            else if (op == 0xC6 && ((modrm >> 3) & 7) == 0) len += 1;
+            else if (op == 0xC7 && ((modrm >> 3) & 7) == 0)
+                len += (rex && (rex_val & 0x08)) ? 8 : 4;
         }
 
         if (len >= 15 || len <= 0) {
@@ -430,10 +462,77 @@ bool run_on_main_thread(TideWorkFn fn, void* arg, int timeout_ms, int flags) {
 
 namespace detour_toolkit_detail {
 SRWLOCK g_detour_lock = SRWLOCK_INIT;
+
+// Rebase recorded near-CALL rel32s from the original address to the trampoline
+// copy: new_rel = (orig_next_rip + orig_rel) - tramp_next_rip. Slots are
+// zero-filled, so only offsets really holding E8 are touched (a recorded call
+// at offset 0 is still fixed correctly). Returns false if a target is
+// unreachable (caller fails the install).
+bool fixup_calls(unsigned char* target, unsigned char* trampoline, int* call_offsets) {
+    for (int k = 0; k < 4; k++) {
+        const int off = call_offsets[k];
+        if (target[off] != 0xE8) {
+            continue;
+        }
+        const int orig_rel = *reinterpret_cast<int*>(target + off + 1);
+        auto* orig_next = target + off + 5;
+        auto* tramp_next = trampoline + off + 5;
+        const long long fixed = static_cast<long long>(orig_next - tramp_next) + orig_rel;
+        if (fixed < INT_MIN || fixed > INT_MAX) {
+            return false;
+        }
+        *reinterpret_cast<int*>(trampoline + off + 1) = static_cast<int>(fixed);
+    }
+    return true;
+}
+
+// Allocates executable memory within ±2GB of target (for rel32 trampolines) by
+// walking the address space down first, then up, in 64KB steps.
+void* alloc_near(unsigned char* target, int size) {
+    const auto base = reinterpret_cast<uintptr_t>(target);
+    constexpr uintptr_t step = 65536;
+    constexpr uintptr_t range = 0x7F000000ULL;
+    constexpr int max_tries = 4096;
+    for (int dir = -1; dir <= 1; dir += 2) {
+        for (int n = 1; n <= max_tries; n++) {
+            const long long off = static_cast<long long>(n) * step * dir;
+            const long long hint = static_cast<long long>(base) + off;
+            if (hint <= 0x10000) {
+                break;  // Ran off the bottom of the address space.
+            }
+            // Must also be within ±2GB of the patch site for the jump back.
+            const long long dist =
+                hint > static_cast<long long>(base) ? hint - base : base - hint;
+            if (dist >= static_cast<long long>(range)) {
+                continue;
+            }
+            void* p = VirtualAlloc(reinterpret_cast<void*>(hint), size,
+                                   MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+            if (p == nullptr) {
+                continue;
+            }
+            const long long got =
+                static_cast<long long>(reinterpret_cast<uintptr_t>(p)) - static_cast<long long>(base);
+            if (got < -static_cast<long long>(range) || got >= static_cast<long long>(range)) {
+                VirtualFree(p, 0, MEM_RELEASE);
+                continue;
+            }
+            return p;
+        }
+    }
+    return nullptr;
+}
+
 }  // namespace detour_toolkit_detail
 
-void* install_native_detour(const wchar_t* module_name, const char* export_name, void* detour) {
-    AcquireSRWLockExclusive(&detour_toolkit_detail::g_detour_lock);
+void* install_native_detour_impl(const wchar_t* module_name, const char* export_name,
+                                   void* detour, bool allow_relative_call,
+                                   bool prefer_near_jump, bool blocking) {
+    if (blocking) {
+        AcquireSRWLockExclusive(&detour_toolkit_detail::g_detour_lock);
+    } else if (!TryAcquireSRWLockExclusive(&detour_toolkit_detail::g_detour_lock)) {
+        return nullptr;  // Contended (e.g. Ldr-callback context): caller retries later.
+    }
 
     const HMODULE module = GetModuleHandleW(module_name);
     if (module == nullptr) {
@@ -448,16 +547,83 @@ void* install_native_detour(const wchar_t* module_name, const char* export_name,
         return nullptr;
     }
 
-    const int prologue_len = measure_relocatable_prologue(target, 14);
-    if (prologue_len <= 0) {
+    int call_offsets[4]{};
+    const int prologue_len =
+        measure_relocatable_prologue(target, 14, allow_relative_call, call_offsets, 4);
+    int patch_len = 0;
+    bool rel_jump = false;
+    if (prologue_len > 0) {
+        patch_len = prologue_len;
+    } else if (prefer_near_jump) {
+        // Absolute form needs 14 clean bytes; retry for the 5-byte relative form.
+        patch_len = measure_relocatable_prologue(target, 5, allow_relative_call, call_offsets, 4);
+        rel_jump = patch_len > 0;
+    }
+    if (patch_len <= 0) {
         ReleaseSRWLockExclusive(&detour_toolkit_detail::g_detour_lock);
         return nullptr;
     }
 
-    void* trampoline = build_trampoline(target, prologue_len);
-    if (trampoline == nullptr) {
+    unsigned char* trampoline = nullptr;
+    if (rel_jump) {
+        // Both jumps are rel32: the trampoline must sit within ±2GB of the target,
+        // and the detour must be within ±2GB of the patch site.
+        const long long reach =
+            static_cast<unsigned char*>(detour) > target
+                ? static_cast<unsigned char*>(detour) - (target + 5)
+                : (target + 5) - static_cast<unsigned char*>(detour);
+        if (reach >= 0x7F000000LL) {
+            ReleaseSRWLockExclusive(&detour_toolkit_detail::g_detour_lock);
+            return nullptr;
+        }
+        trampoline = static_cast<unsigned char*>(
+            detour_toolkit_detail::alloc_near(target, patch_len + 8));
+        if (trampoline == nullptr) {
+            ReleaseSRWLockExclusive(&detour_toolkit_detail::g_detour_lock);
+            return nullptr;
+        }
+        for (int i = 0; i < patch_len; i++) {
+            trampoline[i] = target[i];
+        }
+        if (allow_relative_call &&
+            !detour_toolkit_detail::fixup_calls(target, trampoline, call_offsets)) {
+            ReleaseSRWLockExclusive(&detour_toolkit_detail::g_detour_lock);
+            return nullptr;
+        }
+        // jmp rel32 back to target+patch_len.
+        trampoline[patch_len] = 0xE9;
+        const long long back = (target + patch_len) - (trampoline + patch_len + 5);
+        *reinterpret_cast<int*>(trampoline + patch_len + 1) = static_cast<int>(back);
+    } else {
+        void* tramp = build_trampoline(target, patch_len);
+        if (tramp == nullptr) {
+            ReleaseSRWLockExclusive(&detour_toolkit_detail::g_detour_lock);
+            return nullptr;
+        }
+        trampoline = static_cast<unsigned char*>(tramp);
+        if (allow_relative_call &&
+            !detour_toolkit_detail::fixup_calls(target, trampoline, call_offsets)) {
+            ReleaseSRWLockExclusive(&detour_toolkit_detail::g_detour_lock);
+            return nullptr;
+        }
+    }
+
+    if (rel_jump) {
+        // 5-byte relative jump to the detour (range checked above).
+        const int patch_size = 5;
+        DWORD old_protect = 0;
+        if (!VirtualProtect(target, patch_size, PAGE_EXECUTE_READWRITE, &old_protect)) {
+            ReleaseSRWLockExclusive(&detour_toolkit_detail::g_detour_lock);
+            return nullptr;
+        }
+
+        target[0] = 0xE9;
+        const long long rel = static_cast<unsigned char*>(detour) - (target + 5);
+        *reinterpret_cast<int*>(target + 1) = static_cast<int>(rel);
+
+        VirtualProtect(target, patch_size, old_protect, &old_protect);
         ReleaseSRWLockExclusive(&detour_toolkit_detail::g_detour_lock);
-        return nullptr;
+        return trampoline;
     }
 
     DWORD old_protect = 0;
@@ -477,6 +643,19 @@ void* install_native_detour(const wchar_t* module_name, const char* export_name,
     VirtualProtect(target, 14, old_protect, &old_protect);
     ReleaseSRWLockExclusive(&detour_toolkit_detail::g_detour_lock);
     return trampoline;
+}
+
+void* install_native_detour(const wchar_t* module_name, const char* export_name, void* detour,
+                            bool allow_relative_call, bool prefer_near_jump) {
+    return install_native_detour_impl(module_name, export_name, detour, allow_relative_call,
+                                      prefer_near_jump, true);
+}
+
+void* try_install_native_detour(const wchar_t* module_name, const char* export_name,
+                                void* detour, bool allow_relative_call,
+                                bool prefer_near_jump) {
+    return install_native_detour_impl(module_name, export_name, detour, allow_relative_call,
+                                      prefer_near_jump, false);
 }
 
 }  // namespace nami::tide

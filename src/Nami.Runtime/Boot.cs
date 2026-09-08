@@ -33,6 +33,10 @@ public static class Boot
         // A native crash here cannot be caught by managed code, so it stays behind the
         // explicit `enableMonoBridge` flag until it is proven stable on more games.
         var config = NamiConfig.Load(namiRoot);
+        if (Enum.TryParse<LogLevel>(config.LogLevel, ignoreCase: true, out var level))
+        {
+            hub.MinimumLevel = level;
+        }
         if (config.EnableMonoBridge)
         {
             hub.Log("boot", LogLevel.Info, "attaching Tide bridge...");

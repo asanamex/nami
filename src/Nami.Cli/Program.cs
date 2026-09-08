@@ -90,8 +90,9 @@ internal static class Program
     }
 
     /// <summary>
-    /// nami interop — offline IL2CPP typed-projection tooling (dev-time; plaintext metadata only).
-    /// Reads <c>global-metadata.dat</c> directly; never touches a running game.
+    /// nami interop — offline IL2CPP typed-projection tooling (dev-time; v24-38 metadata,
+    /// single-byte XOR de-obfuscation transparent). Reads <c>global-metadata.dat</c>
+    /// directly; never touches a running game.
     /// </summary>
     private static int Interop(string[] args)
     {
@@ -318,7 +319,7 @@ internal static class Program
             Console.WriteLine($"{m.Id,-40} {m.Version,-12} {m.Name,-20}");
             if (m.Dependencies.Count > 0)
             {
-                Console.WriteLine($"    depends on: {string.Join(", ", m.Dependencies)}");
+                Console.WriteLine($"    depends on: {string.Join(", ", m.Dependencies.Select(d => d.MinimumVersion is null ? d.Id : $"{d.Id}>={d.MinimumVersion}"))}");
             }
         }
 

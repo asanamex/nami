@@ -1,4 +1,5 @@
 #include "tide_abi.h"
+#include "tide_il2cpp.h"
 #include "tide_pump.h"
 
 #include <windows.h>
@@ -53,6 +54,7 @@ void log_tide(const char* fmt, ...) {
 
 struct MonoApi {
     void* (*get_root_domain)() = nullptr;
+    void* (*domain_get)() = nullptr;  // current domain (type objects must live in it)
     void* (*assembly_name_new)(const char*) = nullptr;
     void (*assembly_name_free)(void*) = nullptr;
     void* (*assembly_loaded)(void*) = nullptr;
@@ -114,6 +116,7 @@ void resolve_api() {
     g_api.name = reinterpret_cast<decltype(g_api.name)>(GetProcAddress(mono, "mono_" #name))
 
     LOAD(get_root_domain);
+    LOAD(domain_get);
     LOAD(assembly_name_new);
     LOAD(assembly_name_free);
     LOAD(assembly_loaded);
@@ -1011,10 +1014,142 @@ int tide_object_op(void* arg) {
             return -1;
         }
 
-        // NOTE: Object.FindObjectOfType/FindFirstObjectByType CANNOT be invoked from any
-        // mono_runtime_invoke re-entry (pre- or post-): Unity aborts the process (0xe0000001).
-        // Scene-object discovery is provided through safe static accessors (Camera.main,
-        // static object fields/properties) instead — see GameClass.GetStaticObject.
+        case TideCall_FindObject: {
+            // Scene-object discovery: first loaded object of req's klass (Unity walks
+            // subclasses — same semantics as the managed call). Implemented as
+            // FindObjectsOfType + element 0: the SINGULAR FindObjectOfType wrapper
+            // aborts the process (0xe0000001) when invoked from outside managed game
+            // code (verified on Unity 2022.3 Mono across drain pre/post and window
+            // contexts), while the plural path returns cleanly everywhere.
+            // MUST arrive via the window export (frame boundary): the invoke drain
+            // (pre- AND post-queue) still nests inside the game's in-flight invoke.
+            void* klass = find_class(*req);
+            if (klass == nullptr) {
+                return -1;
+            }
+            log_tide("tide: FindObject klass=%p", klass);
+            if (g_api.class_get_type == nullptr || g_api.type_get_object == nullptr) {
+                log_tide("tide: type reflection unavailable for FindObject");
+                return -1;
+            }
+            // Resolve the System.Type via managed Type.GetType(string) IN the current
+            // domain: a foreign-created Type object (mono_type_get_object) aborts the
+            // process inside the Find call (class-failure machinery). Only safe arg
+            // kinds (strings) cross here; the Type never does.
+            char assembly_qualified[512]{};
+            std::snprintf(assembly_qualified, sizeof(assembly_qualified), "%s.%s, %s",
+                          req->ns, req->klass, req->assembly);
+            void* mscorlib = find_assembly("mscorlib");
+            void* sys_type =
+                mscorlib != nullptr
+                    ? g_api.class_from_name(g_api.assembly_get_image(mscorlib), "System",
+                                            "Type")
+                    : nullptr;
+            void* get_type =
+                sys_type != nullptr ? find_method_in_hierarchy(sys_type, "GetType", 1)
+                                    : nullptr;
+            if (get_type == nullptr) {
+                log_tide("tide: System.Type.GetType(string) not found");
+                return -1;
+            }
+            void* name_str = g_api.string_new(g_api.root_domain, assembly_qualified);
+            if (name_str == nullptr) {
+                log_tide("tide: cannot make search string for %s.%s", req->ns, req->klass);
+                return -1;
+            }
+            void* name_args[1] = {name_str};
+            void* name_exc = nullptr;
+            void* type_obj = g_api.runtime_invoke(get_type, nullptr, name_args, &name_exc);
+            if (name_exc != nullptr) {
+                log_tide("tide: Type.GetType threw for '%s'", assembly_qualified);
+                capture_exception(*req, name_exc);
+                return -2;
+            }
+            log_tide("tide: FindObject type_obj=%p", type_obj);
+            if (type_obj == nullptr) {
+                log_tide("tide: unknown type '%s'", assembly_qualified);
+                return -1;
+            }
+            void* core = find_assembly("UnityEngine.CoreModule");
+            void* obj_class =
+                core != nullptr
+                    ? g_api.class_from_name(g_api.assembly_get_image(core), "UnityEngine",
+                                            "Object")
+                    : nullptr;
+            if (obj_class == nullptr) {
+                log_tide("tide: UnityEngine.Object not found");
+                return -1;
+            }
+            // TEMP-EXPERIMENT: plural wrapper instead of singular (different managed path).
+            void* find = find_method_in_hierarchy(obj_class, "FindObjectsOfType", 1);
+            log_tide("tide: FindObject method=%p", find);
+            if (find == nullptr) {
+                log_tide("tide: no FindObjectsOfType entry on UnityEngine.Object");
+                return -1;
+            }
+            void* find_args[1] = {type_obj};
+            void* exc = nullptr;
+            log_tide("tide: FindObject invoking");
+            void* found = g_api.runtime_invoke(find, nullptr, find_args, &exc);
+            log_tide("tide: FindObject returned found=%p exc=%p", found, exc);
+            if (exc != nullptr) {
+                log_tide("tide: FindObject threw");
+                capture_exception(*req, exc);
+                return -2;
+            }
+            // Plural returns an (never-null) array: miss on empty, else element 0 via
+            // System.Array.GetValue(int) — same overload-exact path as ArrayGet.
+            if (found == nullptr || g_api.array_length == nullptr) {
+                if (req->ret != nullptr) {
+                    req->ret->type = TideType_Object;
+                    req->ret->data.handle = 0;
+                }
+                log_tide("tide: FindObject %s.%s miss", req->ns, req->klass);
+                return 0;
+            }
+            const int len = g_api.array_length(found);
+            if (len <= 0) {
+                if (req->ret != nullptr) {
+                    req->ret->type = TideType_Object;
+                    req->ret->data.handle = 0;
+                }
+                log_tide("tide: FindObject %s.%s miss (empty)", req->ns, req->klass);
+                return 0;
+            }
+            void* arr_class = g_api.object_get_class(found);
+            TideValue idx_tv;
+            idx_tv.type = TideType_I32;
+            idx_tv.data.i32 = 0;
+            void* get_value = g_api.class_get_methods != nullptr &&
+                                      g_api.method_signature != nullptr
+                                  ? find_method_for_args(arr_class, "GetValue", 1, &idx_tv,
+                                                         /*exact_only=*/true)
+                                  : nullptr;
+            if (get_value == nullptr) {
+                get_value = find_method_in_hierarchy(arr_class, "GetValue", 1);
+            }
+            if (get_value == nullptr) {
+                log_tide("tide: System.Array.GetValue(int) not found");
+                return -1;
+            }
+            int32_t raw_index = 0;
+            void* elem_args[1] = {&raw_index};
+            void* elem_exc = nullptr;
+            void* element = g_api.runtime_invoke(get_value, found, elem_args, &elem_exc);
+            if (elem_exc != nullptr) {
+                log_tide("tide: FindObject GetValue threw");
+                capture_exception(*req, elem_exc);
+                return -2;
+            }
+            if (req->ret != nullptr) {
+                req->ret->type = TideType_Object;
+                req->ret->data.handle =
+                    element != nullptr ? handle_store_create(element) : 0;
+            }
+            log_tide("tide: FindObject %s.%s %s", req->ns, req->klass,
+                     element != nullptr ? "hit" : "miss");
+            return 0;
+        }
 
         case TideCall_ArrayLength: {
             if (req->arg_count < 1 || req->args[0].type != TideType_Object ||
@@ -1233,10 +1368,13 @@ extern "C" __declspec(dllexport) int nami_tide_object_op(void* request) {
     return ok ? local.result_code : -3;
 }
 
-// Export: run a CallRequest on the game main thread AFTER the current mono_runtime_invoke
-// returns (outside the nested frame). Use for Unity scene-iteration APIs that are not
-// re-entrant from within a nested runtime_invoke (Object.FindObjectOfType etc.).
-extern "C" __declspec(dllexport) int nami_tide_object_op_post(void* request) {
+// Export: run a CallRequest on the game main thread inside its window procedure
+// (frame boundary — no runtime_invoke on the stack). Use for Unity scene-iteration
+// APIs (Object.FindObjectOfType etc.): the invoke drain (pre- AND post-queue) still
+// nests inside the game's in-flight invoke, which Unity aborts with 0xe0000001.
+// Must be called from a NON-main thread (the window message is pumped at frame
+// boundaries); needs a visible game window.
+extern "C" __declspec(dllexport) int nami_tide_object_op_window(void* request) {
     using nami::tide::CallRequest;
 
     auto* req = static_cast<CallRequest*>(request);
@@ -1251,8 +1389,8 @@ extern "C" __declspec(dllexport) int nami_tide_object_op_post(void* request) {
         }
     };
 
-    const bool ok = nami::tide::run_on_main_thread(Shim::run, &local, 0,
-                                                   nami::tide::RequestFlag_PostInvoke);
+    const bool ok =
+        nami::il2cpp::run_il2cpp_op(Shim::run, &local, 30000);
     *req = local;  // write back (ret slot, result_code)
     return ok ? local.result_code : -3;
 }

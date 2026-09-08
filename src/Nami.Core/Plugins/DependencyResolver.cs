@@ -52,22 +52,29 @@ public static class DependencyResolver
             }
         }
 
-        // 3. Verify dependencies resolve to active plugins.
+        // 3. Verify dependencies resolve to active plugins with satisfying versions.
         foreach (var m in active.ToList())
         {
-            foreach (var depId in m.Dependencies)
+            foreach (var dep in m.Dependencies)
             {
-                if (!byId.TryGetValue(depId, out var dep))
+                if (!byId.TryGetValue(dep.Id, out var provider))
                 {
                     active.Remove(m);
-                    skipped[m.Id] = $"dependency '{depId}' not found";
+                    skipped[m.Id] = $"dependency '{dep.Id}' not found";
                     break;
                 }
 
-                if (!active.Contains(dep))
+                if (!active.Contains(provider))
                 {
                     active.Remove(m);
-                    skipped[m.Id] = $"dependency '{depId}' was skipped ({skipped.GetValueOrDefault(depId, "inactive")})";
+                    skipped[m.Id] = $"dependency '{dep.Id}' was skipped ({skipped.GetValueOrDefault(dep.Id, "inactive")})";
+                    break;
+                }
+
+                if (!VersionSatisfies(provider.Version, dep.MinimumVersion))
+                {
+                    active.Remove(m);
+                    skipped[m.Id] = $"dependency '{dep.Id}' needs v{dep.MinimumVersion} (found {provider.Version})";
                     break;
                 }
             }
@@ -86,8 +93,8 @@ public static class DependencyResolver
             for (var i = 0; i < remaining.Count; i++)
             {
                 var candidate = remaining[i];
-                var depsSatisfied = candidate.Dependencies.All(depId =>
-                    byId.TryGetValue(depId, out var dep) && placed.Contains(dep));
+                var depsSatisfied = candidate.Dependencies.All(dep =>
+                    byId.TryGetValue(dep.Id, out var provider) && placed.Contains(provider));
                 if (!depsSatisfied)
                 {
                     continue;
@@ -113,6 +120,26 @@ public static class DependencyResolver
         }
 
         return new ResolutionResult(order, skipped);
+    }
+
+    /// <summary>
+    /// True when <paramref name="providerVersion"/> satisfies <paramref name="minimum"/>:
+    /// SemVer-style numeric compare when both parse as <see cref="Version"/>, exact match
+    /// otherwise (covers prerelease tags <see cref="Version"/> cannot parse).
+    /// </summary>
+    internal static bool VersionSatisfies(string providerVersion, string? minimum)
+    {
+        if (string.IsNullOrWhiteSpace(minimum))
+        {
+            return true;
+        }
+
+        if (Version.TryParse(providerVersion, out var have) && Version.TryParse(minimum, out var need))
+        {
+            return have >= need;
+        }
+
+        return string.Equals(providerVersion, minimum, StringComparison.Ordinal);
     }
 
     private static (PluginManifest Disabled, string Reason) DisablePair(PluginManifest a, PluginManifest b)

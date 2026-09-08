@@ -53,18 +53,22 @@ public sealed class Il2CppFieldInfo
 /// native dependencies, never touches the game. Dev-time only: powers <c>nami interop</c>,
 /// never the runtime bridge (runtime access resolves through the game's own il2cpp_* API).
 ///
- /// The metadata format is versioned, so the reader is defensive by construction:
- ///  1. the header is read as (offset,size) pairs in the canonical order (stable from v24.1
- ///     through v31; later versions append pairs rather than reorder);
- ///  2. every region is bounds-checked before use;
- ///  3. the Il2CppTypeDefinition / Il2CppMethodDefinition struct strides are CALIBRATED in-file by
- ///     sampling candidate strides and accepting the first whose decoded name strings are mostly
- ///     plausible (IL names like "&lt;Module&gt;" and ".ctor" count) — robust to Unity adding
- ///     fields, without hard-coded per-version tables;
- ///  4. the type-definition field shift is resolved per file too: v24.1 keeps byrefTypeIndex
- ///     (declaringType at +16) while v27+ drops it (declaringType at +12); the probe picks the
- ///     offset whose declaring indices decode sanely. Method/field struct heads (nameIndex at
- ///     +0; parameterCount in the final uint16) never moved.
+///  The metadata format is versioned, so the reader is defensive by construction:
+///  1. the header is read as (offset,size) pairs in the canonical order (stable from v24.1
+///     through v38; v38+ writes (offset,size,count) TRIPLETS — the count is skipped);
+///     later versions append pairs rather than reorder;
+///  2. every region is bounds-checked before use;
+///  3. the Il2CppTypeDefinition / Il2CppMethodDefinition struct strides are CALIBRATED in-file by
+///     sampling candidate strides and accepting the first whose decoded name strings are mostly
+///     plausible (IL names like "&lt;Module&gt;" and ".ctor" count) — robust to Unity adding
+///     fields, without hard-coded per-version tables;
+///  4. the type-definition field shift is resolved per file too: v24.1 keeps byrefTypeIndex
+///     (declaringType at +16) while v27+ drops it (declaringType at +12); v35 (Unity 6000.3)
+///     drops elementTypeIndex (rows shrink 88 to 84, post fields shift by -4). Method/field
+///     struct heads (nameIndex at +0; parameterCount in the final uint16) never moved.
+///  Versions without documented struct changes (v32-v34, v36-v37) parse as their neighbor
+///  layout; every file still has to pass the sentinel + stride + declaring-index validation,
+///  so an unknown layout fails loud instead of returning shifted garbage.
 /// </summary>
 public sealed class Il2CppMetadata
 {
@@ -98,26 +102,30 @@ public sealed class Il2CppMetadata
         if (magic != ExpectedMagic)
         {
             throw new MetadataFormatException(
-                $"bad magic 0x{magic:X8} (expected 0x{ExpectedMagic:X8}) — encrypted or not an il2cpp metadata");
+                $"bad magic 0x{magic:X8} (expected 0x{ExpectedMagic:X8}) — not plaintext il2cpp metadata " +
+                "(single-byte XOR probe found no key: custom encryption/obfuscation needs per-game reversing)");
         }
 
         MetadataVersion = BinaryPrimitives.ReadInt32LittleEndian(data.AsSpan(4));
-        if (MetadataVersion is < 24 or > 31)
+        if (MetadataVersion is < 24 or > 38)
         {
             throw new MetadataFormatException(
-                $"metadata version {MetadataVersion} is outside the supported range (24-31)");
+                MetadataVersion < 24
+                    ? $"metadata version {MetadataVersion} is older than the supported range (24-38)"
+                    : $"metadata version {MetadataVersion} is newer than the tested range (24-38) — run `nami interop header` to diagnose the layout");
         }
 
         // (offset, size) pairs follow {sanity, version}. The canonical order is stable, but v29+
-        // REMOVED the (deprecated) fieldMarshaledSizes pair, shifting everything after it. We
-        // parse both variants and keep the one that validates (sentinel string + stride
-        // calibration) — self-correcting against version drift without hard-coded tables.
+        // REMOVED the (deprecated) fieldMarshaledSizes pair, shifting everything after it, and
+        // v38 writes (offset, size, count) TRIPLETS. We parse every variant and keep the one
+        // that validates (sentinel string + stride calibration) — self-correcting against
+        // version drift without hard-coded tables.
         Exception? lastError = null;
-        foreach (var includeMarshaledSizes in new[] { false, true })
+        foreach (var variant in new (bool Triplets, bool Marshaled)[] { (false, false), (false, true), (true, false), (true, true) })
         {
             try
             {
-                ParseHeader(data, includeMarshaledSizes);
+                ParseHeader(data, variant.Marshaled, variant.Triplets);
             }
             catch (MetadataFormatException ex)
             {
@@ -135,9 +143,9 @@ public sealed class Il2CppMetadata
         }
     }
 
-    private void ParseHeader(byte[] data, bool includeMarshaledSizes)
+    private void ParseHeader(byte[] data, bool includeMarshaledSizes, bool triplets)
     {
-        // Reset calibration state: ParseHeader is tried for both header variants and a
+        // Reset calibration state: ParseHeader is tried for every header variant and a
         // failed attempt must not leave a stale stride behind that looks like success.
         _typeDefinitionStride = _methodStride = _fieldStride = 0;
 
@@ -146,7 +154,7 @@ public sealed class Il2CppMetadata
         {
             var o = BinaryPrimitives.ReadInt32LittleEndian(data.AsSpan(idx * 4));
             var s = BinaryPrimitives.ReadInt32LittleEndian(data.AsSpan((idx + 1) * 4));
-            idx += 2;
+            idx += triplets ? 3 : 2; // v38 triplets carry a count we don't need
             return (o, s);
         }
 
@@ -191,7 +199,7 @@ public sealed class Il2CppMetadata
                 $"header looks shifted (first metadata string is {Describe(sentinel)}) — unsupported metadata layout");
         }
 
-        _typeDefinitionStride = CalibrateStride(_typeDefinitions, minStride: 88, maxStride: 92, "typeDefinitions");
+        _typeDefinitionStride = CalibrateStride(_typeDefinitions, minStride: 84, maxStride: 92, "typeDefinitions");
         _methodStride = CalibrateStride(_methods, minStride: 32, maxStride: 40, "methods");
         _fieldStride = CalibrateStride(_fields, minStride: 8, maxStride: 16, "fields");
         _typeShift = ResolveTypeLayout();
@@ -200,9 +208,11 @@ public sealed class Il2CppMetadata
     /// <summary>
     /// Resolves the Il2CppTypeDefinition field shift from the calibrated stride: v24.1 rows
     /// are 92 bytes (byrefTypeIndex present, declaringType at +16) while v27+ rows are 88
-    /// bytes (declaringType at +12). The winning offset is validated by checking that
-    /// declaring indices decode sanely (top-level types store -1); anything else fails
-    /// loud instead of returning shifted garbage.
+    /// bytes (declaringType at +12); v35 drops elementTypeIndex (84-byte rows — declaring
+    /// stays at +12 since the removed field sits after it, everything after shifts by -4).
+    /// The winning layout is validated by checking that declaring indices decode sanely
+    /// (top-level types store -1); anything else fails loud instead of returning shifted
+    /// garbage.
     /// </summary>
     private int ResolveTypeLayout()
     {
@@ -226,33 +236,26 @@ public sealed class Il2CppMetadata
             return seen == 0 ? 0 : good * 100 / seen;
         }
 
-        // The stride already disambiguates the two known layouts; the score only confirms
+        // The stride already disambiguates the three known layouts; the score only confirms
         // the chosen declaring offset decodes sanely (a future layout that breaks the
         // assumption fails loud here instead of returning shifted garbage).
-        var shift = _typeDefinitionStride == 92 ? 4 : 0;
-        var score = Score(12 + shift);
+        var declaringOffset = _typeDefinitionStride == 92 ? 16 : 12;
+        var score = Score(declaringOffset);
         if (score >= 50)
         {
-            return shift;
+            // Post-elementTypeIndex fields shift with the stride vs the v27 88-byte base.
+            return _typeDefinitionStride - 88;
         }
 
         throw new MetadataFormatException(
-            $"could not resolve the type-definition layout (stride {_typeDefinitionStride}: +{12 + shift} scored {score}%)" +
+            $"could not resolve the type-definition layout (stride {_typeDefinitionStride}: +{declaringOffset} scored {score}%)" +
             " — run `nami interop header` to diagnose the layout");
     }
 
     /// <summary>Loads and parses a <c>global-metadata.dat</c> file.</summary>
     public static Il2CppMetadata Load(string path)
     {
-        byte[] data;
-        try
-        {
-            data = File.ReadAllBytes(path);
-        }
-        catch (Exception ex)
-        {
-            throw new MetadataFormatException($"unreadable metadata '{path}': {ex.Message}");
-        }
+        var data = ReadFileBytes(path);
 
         try
         {
@@ -268,16 +271,60 @@ public sealed class Il2CppMetadata
         }
     }
 
+    /// <summary>
+    /// Reads a metadata file, transparently undoing single-byte XOR obfuscation: the key is
+    /// derived from the first byte against the magic and accepted only if it decodes all
+    /// four magic bytes (2^-24 false-positive rate). Catches the weakest real-world scheme;
+    /// multi-byte/rolling/custom encryption still needs per-game reversing.
+    /// </summary>
+    private static byte[] ReadFileBytes(string path)
+    {
+        byte[] data;
+        try
+        {
+            data = File.ReadAllBytes(path);
+        }
+        catch (Exception ex)
+        {
+            throw new MetadataFormatException($"unreadable metadata '{path}': {ex.Message}");
+        }
+
+        if (data.Length >= 8 && BinaryPrimitives.ReadUInt32LittleEndian(data) != ExpectedMagic)
+        {
+            var key = (byte)(data[0] ^ (ExpectedMagic & 0xFF));
+            var hit = true;
+            for (var i = 0; i < 4; i++)
+            {
+                if ((data[i] ^ key) != ((ExpectedMagic >> (8 * i)) & 0xFF))
+                {
+                    hit = false;
+                    break;
+                }
+            }
+
+            if (hit)
+            {
+                for (var i = 0; i < data.Length; i++)
+                {
+                    data[i] ^= key;
+                }
+            }
+        }
+
+        return data;
+    }
+
     /// <summary>Reads the metadata version without parsing the header.</summary>
     public static int ReadVersion(string path)
     {
-        using var stream = File.OpenRead(path);
-        Span<byte> header = stackalloc byte[8];
-        if (stream.Read(header) < 8)
+        var data = ReadFileBytes(path);
+        if (data.Length < 8)
         {
             throw new MetadataFormatException("file too small");
         }
 
+        Span<byte> header = stackalloc byte[8];
+        data.AsSpan(0, 8).CopyTo(header);
         var magic = BinaryPrimitives.ReadUInt32LittleEndian(header);
         if (magic != ExpectedMagic)
         {
@@ -291,11 +338,12 @@ public sealed class Il2CppMetadata
     /// Diagnostic: reads the header's (offset,size) pairs without interpreting them. Used by
     /// `nami interop header` to make layout problems visible on unsupported metadata versions.
     /// The pair count is derived from the first region's offset (which equals the header size),
-    /// so string-heap bytes are never misread as header pairs.
+    /// so string-heap bytes are never misread as header pairs. v38+ triplet headers report
+    /// (offset,size), skipping the per-section count.
     /// </summary>
     public static IReadOnlyList<(int Offset, int Size)> DumpHeaderPairs(string path)
     {
-        var data = File.ReadAllBytes(path);
+        var data = ReadFileBytes(path);
         if (data.Length < 8 + 2 * 4)
         {
             throw new MetadataFormatException("file too small");
@@ -308,31 +356,75 @@ public sealed class Il2CppMetadata
         }
 
         var headerSize = BinaryPrimitives.ReadInt32LittleEndian(data.AsSpan(8));
-        if (headerSize < 8 || headerSize > data.Length || (headerSize - 8) % 8 != 0)
+        if (headerSize < 8 || headerSize > data.Length)
         {
             throw new MetadataFormatException($"implausible header size {headerSize}");
         }
 
-        var pairCount = (headerSize - 8) / 8;
-        if (pairCount is <= 0 or > 256)
+        // Pairs vs v38+ triplets is ambiguous from size alone (a 22-triplet header is
+        // also a whole number of pairs), so validate candidates by bounds and break ties
+        // by version (triplets exist only at v38+). Pairs first (legacy default).
+        var version = BinaryPrimitives.ReadInt32LittleEndian(data.AsSpan(4));
+        var strides = new List<int>(2);
+        if ((headerSize - 8) % 8 == 0)
         {
-            throw new MetadataFormatException($"implausible header pair count {pairCount}");
+            strides.Add(8);
         }
 
-        var pairs = new List<(int, int)>(pairCount);
-        for (var i = 0; i < pairCount; i++)
+        if ((headerSize - 8) % 12 == 0)
         {
-            var o = BinaryPrimitives.ReadInt32LittleEndian(data.AsSpan(8 + i * 8));
-            var s = BinaryPrimitives.ReadInt32LittleEndian(data.AsSpan(8 + i * 8 + 4));
-            if (o < 0 || s < 0 || o + (long)s > data.Length)
+            strides.Add(12); // v38+ (offset,size,count) triplets
+        }
+
+        if (strides.Count == 0)
+        {
+            throw new MetadataFormatException($"implausible header size {headerSize}");
+        }
+
+        List<(int, int)>? pairsPreferred = null;
+        foreach (var stride in strides)
+        {
+            var pairCount = (headerSize - 8) / stride;
+            if (pairCount is <= 0 or > 256)
             {
-                throw new MetadataFormatException($"header pair {i + 1} [{o}, {s}) exceeds the file — encrypted or unsupported metadata?");
+                continue;
             }
 
-            pairs.Add((o, s));
+            var pairs = new List<(int, int)>(pairCount);
+            var valid = true;
+            for (var i = 0; i < pairCount; i++)
+            {
+                var o = BinaryPrimitives.ReadInt32LittleEndian(data.AsSpan(8 + i * stride));
+                var s = BinaryPrimitives.ReadInt32LittleEndian(data.AsSpan(8 + i * stride + 4));
+                if (o < 0 || s < 0 || o + (long)s > data.Length)
+                {
+                    valid = false;
+                    break;
+                }
+
+                pairs.Add((o, s));
+            }
+
+            if (!valid)
+            {
+                continue;
+            }
+
+            // Triplets at v38+, pairs below — matches the format's introduction version.
+            if ((stride == 12) == (version >= 38))
+            {
+                return pairs;
+            }
+
+            pairsPreferred ??= pairs;
         }
 
-        return pairs;
+        if (pairsPreferred is not null)
+        {
+            return pairsPreferred;
+        }
+
+        throw new MetadataFormatException("header pairs exceed the file — encrypted or unsupported metadata?");
     }
 
     /// <summary>
@@ -342,7 +434,7 @@ public sealed class Il2CppMetadata
     /// </summary>
     public static IReadOnlyList<(int Offset, int Size, List<int> PlausibleStrides)> AnalyzeRegions(string path)
     {
-        var data = File.ReadAllBytes(path);
+        var data = ReadFileBytes(path);
         var magic = BinaryPrimitives.ReadUInt32LittleEndian(data);
         if (magic != ExpectedMagic)
         {
@@ -613,15 +705,16 @@ public sealed class Il2CppMetadata
     // ------------------------------------------------------------------- types
 
     // Il2CppTypeDefinition, v24.1 (92 bytes, byrefTypeIndex present) vs v27+ (88 bytes,
-    // byrefTypeIndex removed): every field after byvalTypeIndex shifts by exactly 4.
-    // _typeShift is 4 on the v24.1 layout and 0 on v27+; resolved empirically per file
+    // byrefTypeIndex removed) vs v35+ (84 bytes, elementTypeIndex removed): every field
+    // at/after the removal point shifts by exactly 4 per step. _typeShift is +4 on the
+    // v24.1 layout, 0 on v27+, -4 on v35+; resolved empirically per file
     // (see ResolveTypeLayout) so minor-version drift needs no hard-coded table.
     // v27+ bases: name +0, namespace +4, declaring +12, flags +28, fieldStart +32,
     // methodStart +36, propertyStart +44, method_count +64, property_count +66,
     // field_count +68. Method/field struct heads (nameIndex +0) never moved.
     private int _typeShift;
 
-    private int TypeDeclaringOffset => 12 + _typeShift;
+    private int TypeDeclaringOffset => _typeDefinitionStride == 92 ? 16 : 12;
     private int TypeFlagsOffset => 28 + _typeShift;
     private int TypeFieldStartOffset => 32 + _typeShift;
     private int TypeMethodStartOffset => 36 + _typeShift;
@@ -699,7 +792,8 @@ public sealed class Il2CppMetadata
     // ----------------------------------------------------------------- methods
 
     // Il2CppMethodDefinition, v24.1+: nameIndex +0; flags(u32) at stride-8; parameterCount(u16)
-    // is the struct's final uint16 (stride-2) — invariant across v24.1..v31.
+    // is the struct's final uint16 (stride-2) — invariant across v24.1..v38 (v31 only
+    // inserts returnParameterToken mid-struct, which the relative tail layout absorbs).
     private const MethodAttributes MethodStatic = MethodAttributes.Static;
 
     /// <summary>Enumerates the methods of a type (from <see cref="Il2CppTypeInfo.MethodStart"/>).</summary>

@@ -128,9 +128,8 @@ public sealed class TideProbePlugin : NamiPlugin
         _sceneProbeDone = true;
         var log = Context.Log;
 
-        // 6. Scene-object discovery via the SAFE static-accessor route. Unity forbids
-        //    Object.FindObjectOfType from foreign re-entry (aborts 0xe0000001), but static
-        //    scene accessors like Camera.main run through the normal property path.
+        // 6. Scene-object discovery via the SAFE static-accessor route (baseline for
+        //    step 7 below).
         try
         {
             var cameraClass = GameClass.Resolve("UnityEngine.CoreModule", "UnityEngine", "Camera");
@@ -147,6 +146,43 @@ public sealed class TideProbePlugin : NamiPlugin
         catch (Exception ex)
         {
             log.Error($"Camera.main access failed: {ex.Message}");
+        }
+
+        // 7. Scene-object discovery via Object.FindObjectOfType (post-invoke export).
+        //    Same target as step 6 — the two routes must agree.
+        // 7a. Name-based search (GameObject.Find needs no Type arg — kept as the
+        //     tripwire: if the Type-based step below ever regresses, this tells us
+        //     whether scene iteration itself or only the Type path broke).
+        try
+        {
+            var goClass = GameClass.Resolve("UnityEngine.CoreModule", "UnityEngine", "GameObject");
+            var v = goClass.CallStaticValue("Find", new[] { TideValue.FromString("Main Camera") }, TideType.Object);
+            using var byName = GameObject.FromHandle(v.Handle);
+            log.Info(byName is not null
+                ? $"GameObject.Find hit (handle={byName.HandleValue})"
+                : "GameObject.Find -> none");
+        }
+        catch (Exception ex)
+        {
+            log.Error($"GameObject.Find failed: {ex.Message}");
+        }
+
+        try
+        {
+            var cameraClass = GameClass.Resolve("UnityEngine.CoreModule", "UnityEngine", "Camera");
+            using var found = cameraClass.FindObject();
+            log.Info(found is not null
+                ? $"FindObject(Camera) hit (handle={found.HandleValue})"
+                : "FindObject(Camera) -> none");
+            if (found is not null)
+            {
+                var name = found.GetString("name");
+                log.Info($"found Camera.name = '{name}'");
+            }
+        }
+        catch (Exception ex)
+        {
+            log.Error($"FindObject(Camera) failed: {ex.Message}");
         }
 
         log.Info("TideProbe verification complete");

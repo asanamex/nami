@@ -4,10 +4,10 @@ using Nami.Interop;
 namespace Nami.Cli.Tests;
 
 /// <summary>Regression tests for offline global-metadata.dat parsing + projection.
-/// Covers the two Il2CppTypeDefinition layouts (v27+ 88B, v24.1 92B with byref),
-/// IL-style names ("&lt;Module&gt;", ".ctor") that strict checks reject, malformed
-/// inputs, and — when present locally — the real Unity 6000 v31 file
-/// (fixtures-dev/, never committed).</summary>
+/// Covers the three Il2CppTypeDefinition layouts (v27+ 88B, v24.1 92B with byref, v35+
+/// 84B), v38 triplet headers, single-byte XOR de-obfuscation, IL-style names
+/// ("&lt;Module&gt;", ".ctor") that strict checks reject, malformed inputs, and — when
+/// present locally — the real Unity 6000 v31 file (fixtures-dev/, never committed).</summary>
 public sealed class InteropTests : IDisposable
 {
     private readonly List<string> _tempFiles = new();
@@ -41,7 +41,8 @@ public sealed class InteropTests : IDisposable
 
     // Builds a minimal metadata blob: 22 header pairs (no fieldMarshaledSizes), one
     // image, caller-supplied type/method/field rows. typeStride 88 omits byrefTypeIndex,
-    // 92 includes it — mirroring the real v27+/v24.1 layouts.
+    // 92 includes it, 84 additionally drops elementTypeIndex (v35+) — mirroring the real
+    // layouts. triplets=true writes v38 (offset,size,count) header entries.
     private static byte[] BuildMetadata(
         int version,
         int typeStride,
@@ -49,7 +50,8 @@ public sealed class InteropTests : IDisposable
         IReadOnlyList<(string Name, string Ns, int Flags, int Declaring, int MethodStart, int MethodCount, int FieldStart, int FieldCount)> types,
         IReadOnlyList<(string Name, bool IsStatic, int ParamCount)> methods,
         IReadOnlyList<string> fields,
-        string imageName = "Assembly-CSharp.dll")
+        string imageName = "Assembly-CSharp.dll",
+        bool triplets = false)
     {
         // First pass: collect names in a fixed order so "mscorlib" is the sentinel.
         var ordered = new List<string> { "mscorlib", string.Empty };
@@ -124,7 +126,11 @@ public sealed class InteropTests : IDisposable
 
             BitConverter.GetBytes(declaring).CopyTo(row, o); o += 4; // declaringTypeIndex
             BitConverter.GetBytes(-1).CopyTo(row, o); o += 4; // parentIndex
-            BitConverter.GetBytes(-1).CopyTo(row, o); o += 4; // elementTypeIndex
+            if (typeStride != 84)
+            {
+                BitConverter.GetBytes(-1).CopyTo(row, o); o += 4; // elementTypeIndex (gone in v35+)
+            }
+
             BitConverter.GetBytes(-1).CopyTo(row, o); o += 4; // genericContainerIndex
             BitConverter.GetBytes((uint)flags).CopyTo(row, o); o += 4; // flags
             BitConverter.GetBytes(fieldStart).CopyTo(row, o); o += 4;
@@ -151,7 +157,7 @@ public sealed class InteropTests : IDisposable
         BitConverter.GetBytes(types.Count).CopyTo(imageRow, 12); // typeCount
         BitConverter.GetBytes(-1).CopyTo(imageRow, 24); // entryPointIndex
 
-        // Header: magic + version + 22 (offset,size) pairs, regions laid out in order.
+        // Header: magic + version + 22 (offset,size[,count]) entries, regions laid out in order.
         var empty = Array.Empty<byte>();
         var regions = new List<byte[]>
         {
@@ -168,7 +174,7 @@ public sealed class InteropTests : IDisposable
         };
         Assert.Equal(22, regions.Count);
 
-        var headerSize = 8 + regions.Count * 8;
+        var headerSize = 8 + regions.Count * (triplets ? 12 : 8);
         var offset = headerSize;
         using var stream = new MemoryStream();
         using var writer = new BinaryWriter(stream, Encoding.UTF8, leaveOpen: true);
@@ -178,6 +184,10 @@ public sealed class InteropTests : IDisposable
         {
             writer.Write(offset);
             writer.Write(region.Length);
+            if (triplets)
+            {
+                writer.Write(region.Length); // count (ignored by the reader)
+            }
             offset += region.Length;
         }
 
@@ -291,6 +301,101 @@ public sealed class InteropTests : IDisposable
         Assert.Equal("RunB", runB.Name);
         Assert.Equal(2, runB.ParameterCount);
         Assert.False(runB.IsStatic);
+    }
+
+    [Fact]
+    public void LoadsV32Layout()
+    {
+        // v32 carries no documented struct changes vs v31: same 88/36 rows, new version.
+        var types = new[]
+        {
+            ("Player", "Game", 1, -1, 0, 2, 0, 1),
+        };
+        var methods = new (string, bool, int)[] { ("Jump", true, 0), ("Run", false, 1) };
+        var path = TempPath();
+        File.WriteAllBytes(path, BuildMetadata(32, 88, 36, types, methods, new[] { "health" }));
+
+        var metadata = Il2CppMetadata.Load(path);
+        Assert.Equal(32, metadata.MetadataVersion);
+        var player = Assert.Single(metadata.TypesInImage("Assembly-CSharp.dll"));
+        Assert.Equal("Player", player.Name);
+        Assert.Equal(2, metadata.MethodsOf(player).Count);
+        Assert.Equal("health", Assert.Single(metadata.FieldsOf(player)).Name);
+    }
+
+    [Fact]
+    public void LoadsV35LayoutWithShortRows()
+    {
+        // v35 drops elementTypeIndex: 84-byte type rows, post fields shifted by -4.
+        // Non-zero method/field counts prove the shift (misaligned reads would fail).
+        var types = new[]
+        {
+            ("Player", "Game", 1, -1, 0, 2, 0, 1),
+        };
+        var methods = new (string, bool, int)[] { ("Jump", true, 0), ("Run", false, 1) };
+        var path = TempPath();
+        File.WriteAllBytes(path, BuildMetadata(35, 84, 36, types, methods, new[] { "health" }));
+
+        var metadata = Il2CppMetadata.Load(path);
+        Assert.Equal(35, metadata.MetadataVersion);
+        var player = Assert.Single(metadata.TypesInImage("Assembly-CSharp.dll"));
+        var playerMethods = metadata.MethodsOf(player);
+        Assert.Equal(2, playerMethods.Count);
+        Assert.Equal("Run", playerMethods[1].Name);
+        Assert.Equal(1, playerMethods[1].ParameterCount);
+        Assert.Equal("health", Assert.Single(metadata.FieldsOf(player)).Name);
+    }
+
+    [Fact]
+    public void LoadsV38TripletLayout()
+    {
+        // v38 headers are (offset,size,count) triplets; structs match v35.
+        var types = new[]
+        {
+            ("Player", "Game", 1, -1, 0, 1, 0, 1),
+        };
+        var methods = new (string, bool, int)[] { ("Jump", false, 0) };
+        var path = TempPath();
+        File.WriteAllBytes(path, BuildMetadata(38, 84, 36, types, methods, new[] { "health" },
+            imageName: "Assembly-CSharp.dll", triplets: true));
+
+        Assert.Equal(22, Il2CppMetadata.DumpHeaderPairs(path).Count);
+        var metadata = Il2CppMetadata.Load(path);
+        Assert.Equal(38, metadata.MetadataVersion);
+        var player = Assert.Single(metadata.TypesInImage("Assembly-CSharp.dll"));
+        Assert.Equal("Jump", Assert.Single(metadata.MethodsOf(player)).Name);
+        Assert.Equal("health", Assert.Single(metadata.FieldsOf(player)).Name);
+    }
+
+    [Fact]
+    public void LoadsSingleByteXorEncrypted()
+    {
+        var types = new[]
+        {
+            ("Player", "Game", 1, -1, 0, 1, 0, 0),
+        };
+        var methods = new (string, bool, int)[] { ("Jump", false, 0) };
+        var plain = BuildMetadata(30, 88, 32, types, methods, Array.Empty<string>());
+        var key = (byte)0x5A;
+        var encrypted = plain.Select(b => (byte)(b ^ key)).ToArray();
+        var path = TempPath();
+        File.WriteAllBytes(path, encrypted);
+
+        var metadata = Il2CppMetadata.Load(path);
+        Assert.Equal(30, metadata.MetadataVersion);
+        Assert.Equal("Player", Assert.Single(metadata.TypesInImage("Assembly-CSharp.dll")).Name);
+    }
+
+    [Fact]
+    public void RejectsNewerThan38()
+    {
+        var path = TempPath();
+        File.WriteAllBytes(path, BuildMetadata(39, 88, 32,
+            new[] { ("A", string.Empty, 1, -1, 0, 0, 0, 0) },
+            Array.Empty<(string, bool, int)>(), Array.Empty<string>()));
+
+        var ex = Assert.Throws<MetadataFormatException>(() => Il2CppMetadata.Load(path));
+        Assert.Contains("24-38", ex.Message, StringComparison.Ordinal);
     }
 
     [Theory]

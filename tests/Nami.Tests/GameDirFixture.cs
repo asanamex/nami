@@ -16,13 +16,15 @@ public sealed class GameDirFixture : IDisposable
     public string ModsDir => Path.Combine(Root, "mods");
 
     /// <summary>Writes a nami.json with the given overrides.</summary>
-    public void WriteConfig(bool quarantineEnabled = true, int threshold = 3)
+    public void WriteConfig(bool quarantineEnabled = true, int threshold = 3,
+        List<string>? enabledPlugins = null)
     {
         var config = new NamiConfig
         {
             RootPath = Root,
             QuarantineEnabled = quarantineEnabled,
-            QuarantineThreshold = threshold
+            QuarantineThreshold = threshold,
+            EnabledPlugins = enabledPlugins ?? new List<string>()
         };
         config.Save();
     }

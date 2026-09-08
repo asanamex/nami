@@ -71,6 +71,17 @@ public sealed class TideProbeIl2CppPlugin : NamiPlugin
             log.Error($"Debug.Log(string) failed: {ex.Message}");
         }
 
+        // 1b. The UnityLog convenience wrapper (same Debug.Log call, first-class API).
+        try
+        {
+            bool ok = Tide.UnityLog("TideProbe-IL2CPP: Tide.UnityLog OK");
+            log.Info($"Tide.UnityLog returned {ok}");
+        }
+        catch (Exception ex)
+        {
+            log.Error($"Tide.UnityLog failed: {ex.Message}");
+        }
+
         // 2. Static property read: Application.runInBackground (typed Get<bool>).
         try
         {

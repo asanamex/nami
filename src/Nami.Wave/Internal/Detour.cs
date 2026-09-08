@@ -6,24 +6,29 @@ namespace Nami.Wave.Internal;
 /// A single inline detour on an x64 code address.
 ///
 /// Installation:
-///   1. Decode the prologue until it is long enough to hold a 14-byte absolute jump
-///      (mov rax, imm64; jmp rax) and contains no instruction we refuse to relocate
-///      (relative branches, end-of-block, indirect control flow).
+///   1. Decode the prologue until it is long enough to hold a jump and contains no
+///      instruction we refuse to relocate (relative branches, end-of-block, indirect
+///      control flow). Preferred form is the 14-byte absolute jump (mov rax, imm64;
+///      jmp rax); prologues with only 5+ clean bytes use a 5-byte relative jump
+///      (E9 rel32) with a near (±2GB) trampoline instead.
 ///   2. Allocate a trampoline: relocated prologue bytes, RIP-relative operands fixed up,
 ///      then a jump back to the original function past the patch site.
-///   3. Overwrite the prologue with the absolute jump to the detour target.
+///   3. Overwrite the prologue with the jump to the detour target.
 ///
 /// Uninstallation restores the original bytes exactly.
 /// </summary>
 internal sealed unsafe class Detour : IDisposable
 {
     private const int MinJumpSize = 14; // mov rax, imm64 (10) + jmp rax (2) — see EmitAbsoluteJump
+    private const int MinNearJumpSize = 5; // E9 rel32 — see EmitRelativeJump
     private const int MaxPrologueBytes = 64;
 
     private readonly byte* _target;
     private byte* _detour;
     private readonly int _patchLength;
+    private readonly bool _nearJump;
     private readonly byte[] _originalBytes;
+    private byte[]? _installedBytes;
     private readonly byte* _trampoline;
     private readonly nuint _trampolineSize;
     private readonly List<IntPtr> _allocations = new();
@@ -43,10 +48,11 @@ internal sealed unsafe class Detour : IDisposable
     /// <summary>True if the target prologue could be safely decoded.</summary>
     public bool CanInstall => _patchLength > 0;
 
-    private Detour(byte* target, int patchLength, byte[] original, byte* trampoline, nuint trampolineSize)
+    private Detour(byte* target, int patchLength, bool nearJump, byte[] original, byte* trampoline, nuint trampolineSize)
     {
         _target = target;
         _patchLength = patchLength;
+        _nearJump = nearJump;
         _originalBytes = original;
         _trampoline = trampoline;
         _trampolineSize = trampolineSize;
@@ -61,49 +67,59 @@ internal sealed unsafe class Detour : IDisposable
 
         var t = (byte*)target;
 
-        // Decode the prologue until we have >= MinJumpSize relocatable bytes.
-        var decoded = new List<X64Decoder.Instruction>();
-        int offset = 0;
-        bool ok = true;
-        while (offset < MinJumpSize)
+        // Decode the prologue until we have >= needed relocatable bytes.
+        static bool TryDecode(byte* t, int need, out List<X64Decoder.Instruction> decoded, out int offset)
         {
-            var ins = X64Decoder.Decode(t + offset, MaxPrologueBytes - offset);
-            if (ins is null)
+            decoded = new List<X64Decoder.Instruction>();
+            offset = 0;
+            while (offset < need)
             {
-                ok = false;
-                break;
+                var ins = X64Decoder.Decode(t + offset, MaxPrologueBytes - offset);
+                if (ins is null)
+                {
+                    return false;
+                }
+
+                decoded.Add(ins);
+                offset += ins.Length;
+
+                // If the prologue ends (ret/jmp/...) before covering the jump, we cannot
+                // install a detour at this address safely.
+                if (ins.EndsBasicBlock && offset < need)
+                {
+                    return false;
+                }
+
+                // If the block ends exactly at/after the need with a relative/indirect
+                // control-flow instruction as the last decoded one, we refuse: copying a
+                // relative branch into the trampoline would point at the wrong target.
+                if (ins.IsRelativeControlFlow || ins.IsIndirectControlFlow)
+                {
+                    return false;
+                }
+
+                if (offset > MaxPrologueBytes)
+                {
+                    return false;
+                }
             }
 
-            decoded.Add(ins);
-            offset += ins.Length;
-
-            // If the prologue ends (ret/jmp/...) before covering the jump, we cannot
-            // install a detour at this address safely.
-            if (ins.EndsBasicBlock && offset < MinJumpSize)
-            {
-                ok = false;
-                break;
-            }
-
-            // If the block ends exactly at/after MinJumpSize with a relative/indirect
-            // control-flow instruction as the last decoded one, we refuse: copying a
-            // relative branch into the trampoline would point at the wrong target.
-            if (ins.IsRelativeControlFlow || ins.IsIndirectControlFlow)
-            {
-                ok = false;
-                break;
-            }
-
-            if (offset > MaxPrologueBytes)
-            {
-                ok = false;
-                break;
-            }
+            return offset >= need;
         }
 
-        if (!ok || offset < MinJumpSize)
+        // Preferred: 14-byte absolute jump. Fallback: 5-byte relative jump for prologues
+        // with only 5+ clean bytes (tiny methods), with a near trampoline.
+        var nearJump = false;
+        List<X64Decoder.Instruction> decoded;
+        int offset;
+        if (!TryDecode(t, MinJumpSize, out decoded, out offset))
         {
-            return null;
+            if (!TryDecode(t, MinNearJumpSize, out decoded, out offset))
+            {
+                return null;
+            }
+
+            nearJump = true;
         }
 
         // Copy original bytes.
@@ -131,8 +147,24 @@ internal sealed unsafe class Detour : IDisposable
         }
 
         // Allocate the run-original trampoline and (if needed) a skip trampoline.
-        var trampoline = (byte*)RawMemory.AllocExecutable((nuint)(offset + MinJumpSize + 32));
-        var detourObj = new Detour(t, offset, original, trampoline, (nuint)(offset + MinJumpSize + 32))
+        var trampolineSize = (nuint)(offset + MinJumpSize + 32);
+        byte* trampoline;
+        if (nearJump)
+        {
+            var near = RawMemory.TryAllocExecutableNear(t, trampolineSize);
+            if (near == null)
+            {
+                return null;
+            }
+
+            trampoline = (byte*)near;
+        }
+        else
+        {
+            trampoline = (byte*)RawMemory.AllocExecutable(trampolineSize);
+        }
+
+        var detourObj = new Detour(t, offset, nearJump, original, trampoline, trampolineSize)
         {
             FrameSafe = pushedRegs.Count == 0 && totalReserve == 0,
             PushedRegisters = pushedRegs.ToArray(),
@@ -175,8 +207,16 @@ internal sealed unsafe class Detour : IDisposable
 
         // Trampoline A: relocated prologue + jump back into the original past the patch site.
         int tp = EmitRelocated(trampoline);
-        EmitAbsoluteJump(trampoline + tp, t + offset);
-        tp += MinJumpSize;
+        if (nearJump)
+        {
+            EmitRelativeJump(trampoline + tp, t + offset);
+            tp += MinNearJumpSize;
+        }
+        else
+        {
+            EmitAbsoluteJump(trampoline + tp, t + offset);
+            tp += MinJumpSize;
+        }
         RawMemory.FlushCode(trampoline, (nuint)tp);
         RawMemory.MakeExecutable(trampoline, (nuint)tp);
 
@@ -246,6 +286,9 @@ internal sealed unsafe class Detour : IDisposable
 
     public int PatchLength => _patchLength;
 
+    /// <summary>The method-body address this detour was created for.</summary>
+    public IntPtr TargetAddress => (IntPtr)_target;
+
     /// <summary>Points the detour at its final target (the per-site dispatcher stub).</summary>
     public void Retarget(IntPtr detour) => _detour = (byte*)detour;
 
@@ -256,17 +299,67 @@ internal sealed unsafe class Detour : IDisposable
             return;
         }
 
-        // Write the 14-byte absolute jump to the detour over the prologue.
-        RawMemory.MakeWritable(_target, (nuint)MinJumpSize);
-        try
+        // Re-validate immediately before writing: tiered re-JIT can reclaim or replace
+        // the code page between resolution and install. Refuse loudly instead of faulting.
+        if (!RawMemory.IsExecutableCode(_target))
         {
-            EmitAbsoluteJump(_target, _detour);
+            throw new WaveHookException(
+                $"cannot install detour: target {(nint)_target:X} is no longer executable code " +
+                "(tiered re-JIT raced the install — retry the patch)");
         }
-        finally
+
+        if (_nearJump)
         {
-            RawMemory.RestoreProtection(_target, (nuint)MinJumpSize, RawMemory.PageExecuteRead);
+            // 5-byte relative jump; reachability was verified at creation.
+            var saved = RawMemory.MakeWritable(_target, (nuint)MinNearJumpSize);
+            try
+            {
+                EmitRelativeJump(_target, _detour);
+            }
+            finally
+            {
+                RawMemory.RestoreProtection(_target, (nuint)MinNearJumpSize, saved);
+            }
+        }
+        else
+        {
+            // 14-byte absolute jump to the detour over the prologue.
+            var saved = RawMemory.MakeWritable(_target, (nuint)MinJumpSize);
+            try
+            {
+                EmitAbsoluteJump(_target, _detour);
+            }
+            finally
+            {
+                RawMemory.RestoreProtection(_target, (nuint)MinJumpSize, saved);
+            }
+        }
+
+        _installedBytes = new byte[_patchLength];
+        for (int i = 0; i < _patchLength; i++)
+        {
+            _installedBytes[i] = _target[i];
         }
         _installed = true;
+    }
+
+    /// <summary>True when the bytes currently at the target are exactly what Install wrote.</summary>
+    private bool MatchesInstalled()
+    {
+        if (_installedBytes is null || _installedBytes.Length != _patchLength)
+        {
+            return false;
+        }
+
+        for (int i = 0; i < _patchLength; i++)
+        {
+            if (_target[i] != _installedBytes[i])
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     public void Uninstall()
@@ -276,7 +369,22 @@ internal sealed unsafe class Detour : IDisposable
             return;
         }
 
-        RawMemory.MakeWritable(_target, (nuint)_patchLength);
+        // Restore only if OUR jump is still there. Tiered re-JIT can replace the method
+        // entry out from under the patch (or reclaim the page): restoring then would
+        // corrupt foreign code or fault. Anything else present means there is nothing
+        // of ours left to restore.
+        System.Console.Error.WriteLine(
+            $"[detour-diag] uninstall target={(nint)_target:X} pageoff={(nint)_target & 4095} len={_patchLength}");
+        if (_installedBytes is null || !RawMemory.IsExecutableCode(_target) || !MatchesInstalled())
+        {
+            _installed = false;
+            return;
+        }
+
+        // Restore via VirtualProtect like install: WriteProcessMemory is blocked on
+        // hardened hosts (HVCI denies protection-bypassing writes to executable pages
+        // with NOACCESS) while the VP flip is the tracked, legitimate flow.
+        var saved = RawMemory.MakeWritable(_target, (nuint)_patchLength);
         try
         {
             for (int i = 0; i < _patchLength; i++)
@@ -286,7 +394,7 @@ internal sealed unsafe class Detour : IDisposable
         }
         finally
         {
-            RawMemory.RestoreProtection(_target, (nuint)_patchLength, RawMemory.PageExecuteRead);
+            RawMemory.RestoreProtection(_target, (nuint)_patchLength, saved);
         }
         _installed = false;
     }
@@ -320,6 +428,13 @@ internal sealed unsafe class Detour : IDisposable
         WriteU64(p + 2, (ulong)destination);
         p[10] = 0xFF; p[11] = 0xE0; // jmp rax
         p[12] = 0x90; p[13] = 0x90; // nop padding (never executed)
+    }
+
+    /// <summary>Emits `jmp rel32` at <paramref name="p"/> (5 bytes); destination must be ±2GB.</summary>
+    public static void EmitRelativeJump(byte* p, byte* destination)
+    {
+        p[0] = 0xE9; // jmp rel32
+        WriteI32(p + 1, (int)(destination - (p + 5)));
     }
 
     private static long ReadI32(byte* p) => *(int*)p;

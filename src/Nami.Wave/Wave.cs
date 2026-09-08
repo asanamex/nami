@@ -242,7 +242,7 @@ public static unsafe partial class Wave
         var addr = NativeInterop.GetCodeAddress(target);
         if (addr == IntPtr.Zero)
         {
-            throw new HookException($"cannot hook {target}: no native code address (open generic?)");
+            ThrowForOpenGeneric(target, "hook");
         }
 
         var site = new HookSite(target, addr);
