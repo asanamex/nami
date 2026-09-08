@@ -71,6 +71,20 @@ public static class Boot
             // generation without restarting the game (opt out via hotReload.enabled=false).
             chainloader.StartHotReload();
 
+            // Boot-guard: the native boot phase ends here. The loader wrote <root>/boot-pending
+            // at boot start; deleting it means a crash from this point on is a runtime crash,
+            // not a boot crash — only the latter marks the next boot safe (see native/core/
+            // bootguard.h). Any fault before this line (inex arm, CoreCLR hosting, chainloader
+            // load, the Tide self-test) auto-enables safe mode for the next boot.
+            try
+            {
+                File.Delete(Path.Combine(namiRoot, "boot-pending"));
+            }
+            catch
+            {
+                // Best-effort: a leftover marker only costs one safe-mode boot.
+            }
+
             // Spin: keep the managed runtime (and any plugin update loops) alive on this thread.
             while (true)
             {

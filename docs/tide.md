@@ -473,3 +473,27 @@ game alive and stable (60+ s post-probe, zero crashes)
 
 The Mono backend is untouched: `Tide.ActiveBackend == Mono` on Mono titles and everything
 behaves as documented above (regression-verified on ROUNDS).
+
+### Patching IL2CPP methods (WaveIl2Cpp, v1)
+
+`Wave.Patch` is a CoreCLR engine — it patches *managed* methods by copying IL. An IL2CPP
+method is native x64 code in GameAssembly.dll, so patching it needs a different engine:
+`WaveIl2Cpp` (Nami.Wave) resolves the `Il2CppMethodInfo` for a class method
+(`il2cpp_class_get_method_from_name`, by arity), takes its native entry (`methodPointer`
+— the first field in metadata v24-v39), follows leading jump thunks (shared-generic
+stubs, same rule as the exports), and installs a **dispatch-stub detour**
+(`native/loader/native_stub.cpp` — the shared Tide detour toolkit: 14-byte absolute
+jump, refuses prologues under 14 clean bytes, exact restore on unhook).
+
+- **ABI (v1, honest)**: the callback runs on the game's main thread (window-proc
+executor) with the RAW argument registers — `args[0]` is `this` (an `Il2CppObject*`)
+for instance methods, else the first parameter; only 4 register args are exposed
+(stack args are not). Returning `true` skips the original (skip return value is 0 —
+value-typed returns are not observable yet). No argument marshaling in v1.
+- **Requires a game window**: install runs on the main thread like every op; call
+`Tide.EnsureReady()` first. Failures throw `WaveIl2Cpp.Il2CppHookException` and never
+corrupt (uninstall restores the exact bytes).
+- **Status**: the detour/stub/trampoline/restore machinery is verified by the native
+smoke suite (hook a real function: observe args, skip, exact restore) and the managed
+contract is unit-tested; end-to-end verification against a real IL2CPP title is the
+next step (fixtures under `fixtures-dev/`).

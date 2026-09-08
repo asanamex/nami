@@ -1,5 +1,6 @@
 #include "loader.h"
 
+#include "../core/bootguard.h"
 #include "../core/runtime_host.h"
 #include "inex_bootstrap.h"
 #include "tide_il2cpp.h"
@@ -56,6 +57,37 @@ void loader_main(const wchar_t* nami_root) {
         }
     }
 
+    // Boot-guard (crash containment + safe mode): install the crash handler FIRST so
+    // every stage below is covered. Faults on this (Nami-owned) thread are contained —
+    // hook-ready is signaled and the thread dies, so the game boots unmodded instead
+    // of the whole process faulting. The handler also logs crashes to nami-crash.log
+    // and marks the next boot safe while boot-pending exists.
+    bootguard::InstallCrashHandler(root, &inex::signal_hook_ready);
+    bootguard::MarkThreadOwned(true);
+
+    if (bootguard::SafeModeEnabled(root)) {
+        // A previous boot crashed mid-boot. Consume one recovery boot: skip EVERY
+        // native stage (inex arm, runtime wait, CoreCLR hosting) so the game boots
+        // clean and unmodded. The marker auto-clears after N clean boots (or delete
+        // <root>/safe-mode manually for an immediate full boot).
+        const int remaining = bootguard::ConsumeSafeModeBoot(root);
+        if (marker) {
+            std::fwprintf(marker,
+                          L"[loader] SAFE MODE (boot-guard): skipping inex + CoreCLR; "
+                          L"game runs unmodded (%d clean boot(s) remaining)\n",
+                          remaining - 1);
+            std::fflush(marker);
+        }
+        inex::signal_hook_ready();
+        bootguard::MarkBootComplete(root);
+        if (marker) {
+            std::fclose(marker);
+        }
+        return;
+    }
+
+    bootguard::MarkBootStart(root, bootguard::Stage_InexArm);
+
     // Legacy lane (nami-inex) FIRST, while the game main thread is still suspended
     // (the injector holds it until we signal hook-ready): the mono_jit_init detour
     // only wins its race when installed before the main thread runs. Both modules
@@ -77,6 +109,8 @@ void loader_main(const wchar_t* nami_root) {
         inex::signal_hook_ready();
     }
 
+    bootguard::MarkStage(root, bootguard::Stage_WaitRuntime);
+
     // Wait for the game's managed runtime to load: Mono DLLs on Mono titles, GameAssembly.dll
     // on IL2CPP titles. Import-loaded runtimes are already present (see above); this
     // wait only matters for exotic dynamic loads. The loader is injected at process start.
@@ -97,6 +131,8 @@ void loader_main(const wchar_t* nami_root) {
         std::fflush(marker);
     }
 
+    bootguard::MarkStage(root, bootguard::Stage_HostCoreClr);
+
     RuntimeHost host;
     if (root.empty() || host.initialize(root) != Status::Ok) {
         if (marker) {
@@ -104,6 +140,9 @@ void loader_main(const wchar_t* nami_root) {
             std::fflush(marker);
         }
     } else {
+        // The managed runtime (Nami.Runtime.Boot.Run) clears boot-pending once its
+        // update loop is ticking; until then any fault here marks the next boot safe.
+        bootguard::MarkStage(root, bootguard::Stage_ManagedBoot);
         host.run_boot();
     }
 

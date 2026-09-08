@@ -10,7 +10,8 @@ nami-inex lane boots real BepInEx 5.x for legacy mods (see below).
 > core hosts .NET 10 inside five verified Unity games — four Mono: Project Hardline
 > (2022.3.27f1), Parasocial (2022.3.5f1), ROUNDS (2022.3.34f1), The Gaspy Color War (Unity 6,
 > 6000.5.4f1); one IL2CPP: D1AL-ogue (Unity 6, 6000.0.61); Wave patches methods
-> with in-house x64 detours and Harmony-style IL-copy prefix/postfix patching (closed methods);
+> with in-house x64 detours and Harmony-style IL-copy prefix/postfix patching (closed methods),
+> plus v1 IL2CPP method hooks on GameAssembly titles (WaveIl2Cpp — observe + skip; see docs/tide.md);
 > **Tide** lets mods call into the game — typed static/instance field access, typed method
 > calls, and live object creation/calls, all executed on the game's main thread and verified
 > stable in-game, on both backends (Mono and IL2CPP auto-detected). The flag
@@ -41,9 +42,9 @@ nami-inex lane boots real BepInEx 5.x for legacy mods (see below).
   runtime name-based resolution through Tide (no 100–400 MB / multi-second interop preload
   on the player's machine).
 - **No player-side generation.** Interop/reference dumping is an offline dev tool, never a
-  first-launch cost.
-- **Per-mod isolation & crash quarantine.** A throwing mod disables itself; the game keeps
-  running. Mods **hot-reload live**: rebuild or drop a top-level DLL into `nami/mods` and it
+  first-launch cost.- **Per-mod isolation & crash quarantine.** A throwing mod disables itself; the game
+  keeps running. A **boot-guard** contains native loader crashes so the game still boots
+  (auto-recovering safe mode; see docs/architecture.md). Mods **hot-reload live**: rebuild or drop a top-level DLL into `nami/mods` and it
   swaps into a new generation without restarting the game (unloadable ALCs + a file watcher +
   mod files loaded without file locks).
 - **Built-in per-mod profiler.** Every plugin gets tick timings (avg/p95/max) and a periodic

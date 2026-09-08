@@ -218,6 +218,16 @@ chainloader lines.)
 If a mod misbehaves (throws repeatedly in `OnUpdate`), Nami **quarantines** it — disables it,
 calls `OnUnload`, logs the reason, and the game keeps running.
 
+### Boot-guard safe mode
+
+If Nami's own native boot code crashes (inex arm, CoreCLR hosting, the Tide self-test), a
+crash handler contains faults on Nami's own threads so the game itself keeps running
+unmodded, and writes `nami/nami-crash.log`. If the crash happened during boot (the
+`nami/boot-pending` marker still exists), the next launch runs in **safe mode**: inex and
+Nami's runtime are skipped entirely and the game boots clean. Safe mode auto-clears after 3
+clean boots — or delete `nami/safe-mode` to restore Nami immediately. `nami doctor` reports
+the state.
+
 ### Hot reload: iterate without restarting the game
 
 With `hotReload.enabled` (default on) you never relaunch to update a mod:
@@ -407,7 +417,7 @@ dotnet test Nami.slnx              :: runs all four test projects
 
 (Or individually: `dotnet test tests/Nami.Tests`, `tests/Nami.Wave.Tests`,
 `tests/Nami.Cli.Tests`, `tests/Nami.Tide.Tests`.) Current counts by project:
-(38 + 58 + 39 + 35 tests), and `dotnet test` exit code stays
+(38 + 61 + 39 + 35 tests), and `dotnet test` exit code stays
 the source of truth.
 
 ## 10. Known limitations

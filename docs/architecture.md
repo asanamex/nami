@@ -35,8 +35,10 @@ native/                          C++17 (Windows x64 first)
   injector/injector_exe.cpp      nami_boot.exe entry (wmain): parses <game> <loader> [--root]
   loader/loader_exports.cpp      nami_loader.dll: DllMain spawns the boot thread
                                  (CreateThread) — no separate export is called by the injector
-  loader/loader_main.cpp         boot thread: waits for the game runtime — mono-2.0-bdwgc.dll /
-                                 mono.dll OR GameAssembly.dll (60s), then hosts CoreCLR
+  loader/loader_main.cpp         boot thread: boot-guard crash handler + safe-mode check
+                                 FIRST (core/bootguard.cpp), then waits for the game runtime
+                                 — mono-2.0-bdwgc.dll / mono.dll OR GameAssembly.dll (60s),
+                                 then hosts CoreCLR
   loader/tide_pump.cpp           Tide Mono main-thread executor: mono_runtime_invoke hook + pre/
                                  post drain queues, install lock, re-entrancy guard; shared
                                  detour toolkit (measure_relocatable_prologue /
@@ -56,6 +58,12 @@ native/                          C++17 (Windows x64 first)
                                  the game's main window; ops run inside its message pump)
   loader/tide_il2cpp_ops.cpp     Tide IL2CPP typed game access (mirrors tide_objects.cpp against
                                  the il2cpp_* exports)
+  loader/tide_il2cpp_patch.cpp   IL2CPP method patching (WaveIl2Cpp backend): resolve
+                                 Il2CppMethodInfo on the main thread, follow jump thunks,
+                                 install/remove dispatch-stub detours (nami_il2cpp_hook/unhook)
+  loader/native_stub.cpp         dispatch-stub detours for native (IL2CPP) method hooks: save
+                                 arg regs → managed dispatch (observe + skip) → tail-jump the
+                                 trampoline or return; exact restore (shared with smoke tests)
   loader/tide_abi.h              shared Tide value/request ABI (TideValue, CallRequest)
   core/runtime_host.cpp          hostfxr: initialize_for_runtime_config → get_runtime_delegate(
                                  hdt_load_assembly_and_get_function_pointer) →
@@ -115,7 +123,8 @@ samples/TideProbeIl2Cpp/         in-game proof of the Tide IL2CPP backend (same 
 3. `ComponentEntry.EntryPoint` parses the `BootArgs` blob (wide root path + Mono module
    handle — null on IL2CPP, currently unused by `Boot.Run`), calls `Boot.Run`.
 4. `Boot.Run` writes `nami.log`, loads `nami.json` config, starts the chainloader, starts the
-   hot-reload file watcher, and spins the update loop on the boot thread (16 ms ticks). Each
+   hot-reload file watcher, deletes the boot-guard `boot-pending` marker (the native boot
+   phase is over), and spins the update loop on the boot thread (16 ms ticks). Each
    tick drains queued reload commands first, then updates active mods (profiler-timed when
    `profiler.enabled`).
 
@@ -136,6 +145,7 @@ inex/BepInEx/{core,plugins,patchers,config} (optional legacy payload; cache/ nev
 inex/enabled                             (sentinel file; absent = pure Nami boot)
 native/nami-inex.log                     (legacy-lane log, only when armed)
 inex/BepInEx/LogOutput.log               (BepInEx's own log, last-run evidence)
+boot-pending / safe-mode / nami-crash.log  (boot-guard markers — see below)
 nami.json                                  (written by `nami install`; `launch set` adds gameExe)
 nami.log                                   (runtime log)
 ```
@@ -198,6 +208,28 @@ Doorstop's proxy — no `winhttp.dll`, no `doorstop_config.ini`; the tree lives 
   hot-reload — a legacy crash is a game crash); `nami inex disable` returns to pure
   Nami. IL2CPP titles skip `arm` (BepInEx 6 needs its own CoreCLR lane).
 
+## Boot-guard (crash safety on the native path)
+
+The native boot path (inex arm, runtime wait, hostfxr hosting, the Tide self-test) runs
+inside the game process; a fault there used to take the whole game down with zero recovery.
+Boot-guard fixes that (native/core/bootguard.cpp):
+
+- **Crash handler first.** The loader installs a vectored exception handler before any risky
+  work. Faults on Nami-owned threads (the loader boot thread) are **contained**: the
+  injector's hook-ready event is signaled and the faulting thread is terminated — the game
+  main thread resumes and the game boots clean and unmodded.
+- **Evidence + safe mode.** Any fault while `boot-pending` exists (i.e. during the native
+  boot phase) appends a record to `nami-crash.log` (stage, code, rip, address, thread) and
+  writes `safe-mode`. On the next launch the loader skips inex + CoreCLR hosting entirely
+  and the game boots unmodded.
+- **Auto-recovery.** `safe-mode` carries a boots-remaining counter (3); each clean boot
+  decrements it and at 0 the marker is deleted and Nami is fully back. Delete
+  `<root>/safe-mode` manually (or wait 3 boots) to restore Nami immediately.
+- **Boundary.** `Boot.Run` deletes `boot-pending` once the update loop is ticking — crashes
+  after that point are runtime crashes (mods, Tide) and do not trigger safe mode; managed
+  mod failures stay in the quarantine path.
+- `nami doctor` reports the boot-guard state.
+
 ## Design notes
 
 - Discovery probes plugin DLLs in a throwaway collectible ALC; `Nami.Sdk`/framework refs resolve
@@ -224,8 +256,12 @@ Doorstop's proxy — no `winhttp.dll`, no `doorstop_config.ini`; the tree lives 
 
 - Inex: early-boot fidelity shipped (injector holds the main thread until hook-ready;
   Ldr load-watch catches dynamically-loaded Mono; `early preloader start rc=0`
-  verified), BepInEx 6 / IL2CPP lane (own CoreCLR + interop
-  orchestration), boot-guard safe mode, legacy-pack distribution.
+  verified) and boot-guard safe mode shipped (crash containment + auto-recovery —
+  see above); BepInEx 6 / IL2CPP lane (own CoreCLR + interop
+  orchestration) and legacy-pack distribution remain.
+- IL2CPP patching: v1 dispatch-stub hooks shipped (WaveIl2Cpp — observe + skip with raw
+  pointer args, see docs/tide.md §9); argument/result marshaling and stack-arg support
+  (the BepInEx-6-equivalent patching surface) remain.
 - Shipped: `Nami.Interop` — offline (dev-time) typed projection for IL2CPP modders
   (`nami interop images/dump/generate/header`; metadata v24-38, verified on a
   Unity 6000.0.61 title — see `src/Nami.Interop/Il2CppMetadata.cs`).

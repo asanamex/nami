@@ -11,9 +11,9 @@ namespace nami {
 /// This function never returns.
 void loader_main(const wchar_t* nami_root);
 
-/// Polls for mono-2.0-bdwgc.dll / mono.dll to be loaded in this process
-/// (i.e. Unity's Mono runtime initialized), up to ~30s.
-bool wait_for_mono(int timeout_ms = 30'000);
+/// Polls for the game's managed runtime to load: mono-2.0-bdwgc.dll / mono.dll on
+/// Mono titles, GameAssembly.dll on IL2CPP titles. Returns false on timeout.
+bool wait_for_runtime(int timeout_ms);
 
 }  // namespace nami
 

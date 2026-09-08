@@ -21,6 +21,7 @@ add_compile_options(-Wall -Wextra)
 
 add_library(nami_core STATIC
   core/runtime_host.cpp
+  core/bootguard.cpp
 )
 target_include_directories(nami_core PUBLIC core)
 
@@ -33,6 +34,8 @@ add_library(nami_loader SHARED
   loader/tide_objects.cpp
   loader/tide_il2cpp.cpp
   loader/tide_il2cpp_ops.cpp
+  loader/tide_il2cpp_patch.cpp
+  loader/native_stub.cpp
 )
 set_target_properties(nami_loader PROPERTIES
   OUTPUT_NAME "nami_loader"
@@ -51,10 +54,18 @@ add_executable(nami_boot
 target_link_libraries(nami_boot PRIVATE nami_core)
 target_link_options(nami_boot PRIVATE -municode)
 
-# Smoke test: prove the toolchain/link works and version macros are sane.
-add_executable(nami_smoke smoke/smoke_main.cpp)
+# Smoke test: prove the toolchain/link works, version macros are sane, and the
+# dispatch-stub detour machinery (native_stub.cpp + the shared tide toolkit) is correct.
+add_executable(nami_smoke
+  smoke/smoke_main.cpp
+  loader/native_stub.cpp
+  loader/tide_pump.cpp
+)
 target_link_libraries(nami_smoke PRIVATE nami_core)
 target_include_directories(nami_smoke PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+# Static CRT link (like nami_loader): ctest may run with no MinGW bin dir on PATH,
+# and the smoke exe must not depend on libstdc++-6.dll / libgcc_s_seh-1.dll.
+target_link_options(nami_smoke PRIVATE -static -static-libgcc -static-libstdc++)
 
 enable_testing()
 add_test(NAME smoke COMMAND nami_smoke)

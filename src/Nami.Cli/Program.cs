@@ -289,6 +289,13 @@ internal static class Program
         var inexEnabled = File.Exists(InexCommand.SentinelPath(root));
         Console.WriteLine($"inex     : {(inexPayload ? "payload staged" : "no payload")}" +
                           (inexPayload ? (inexEnabled ? " (enabled)" : " (disabled)") : ""));
+
+        var safeMode = File.Exists(Path.Combine(root, "safe-mode"));
+        var bootPending = File.Exists(Path.Combine(root, "boot-pending"));
+        Console.WriteLine($"bootguard: {(safeMode
+            ? "SAFE MODE — previous boot crashed; native stages skipped (auto-clears after clean boots; delete nami/safe-mode to restore now)"
+            : "normal")}" +
+                          (bootPending ? " (boot-pending — a Nami boot is in progress or the last boot crashed mid-boot)" : ""));
         return 0;
     }
 

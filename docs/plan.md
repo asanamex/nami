@@ -37,7 +37,13 @@ Full blueprint: `~/.commandcode/plans/nami-unity-mod-loader.md` (or via `/plans`
   - **Remaining (future "Nami-Install" product):** a self-contained downloadable installer
     that bundles the .NET runtime into a single artifact for end users (today `nami install`
     stages from a local build).
-- **M4 — done (runtime bridge).** Same main-thread drain pattern for the runtime bridge.
+- **M4 — done (runtime bridge + v1 patching).** Same main-thread drain pattern for the runtime bridge.
+  - **Shipped:** `WaveIl2Cpp` — native dispatch-stub detours on IL2CPP game methods
+    (resolve `Il2CppMethodInfo` → `methodPointer` → jump-thunk following → detour;
+    prefix observer + skip, raw register args, exact restore; install on the main
+    thread via the window-proc executor). Machinery verified by native smoke tests
+    (observe/skip/restore on a real function) + managed contract tests; in-game
+    verification on a real IL2CPP title pending (`fixtures-dev/`).
   - **Shipped:** a working IL2CPP backend — loader auto-detects `GameAssembly.dll`, the
     managed Tide layer routes to `nami_il2cpp_*` exports, and ops run on the game's main
     thread inside its window procedure (subclassed drain). Verified live on D1AL-ogue
@@ -103,8 +109,10 @@ Full blueprint: `~/.commandcode/plans/nami-unity-mod-loader.md` (or via `/plans`
   gitignored): Hardline Logger 1.0.0 + Gaspy Menu 3.0.0 load and run on Project Hardline
   with boot logs identical to the Doorstop baseline; only automated coverage is the CLI
   file-ops suite (`InexCommandTests`).
-  Remaining: BepInEx 6 / IL2CPP lane (own CoreCLR, interop orchestration), boot-guard safe mode,
-  legacy-pack distribution.
+  Shipped: boot-guard safe mode (vectored crash handler, fault containment on loader
+  threads, `nami-crash.log` + `safe-mode` markers, 3-boot auto-recovery — see
+  docs/architecture.md). Remaining: BepInEx 6 / IL2CPP lane (own CoreCLR, interop
+  orchestration), legacy-pack distribution.
 
 ## Verified in-game evidence
 
