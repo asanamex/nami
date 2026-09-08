@@ -343,7 +343,11 @@ patching demo — it hooks real game methods in phases and self-reports PASS/FAI
 
 ```
 nami version                        print version
-nami install [gameDir]              stage a Nami root next to a game (from build outputs)
+nami install [gameDir] [--from <zip|url>]
+                                    install a Nami root (from build outputs, or from a
+                                    self-contained installer artifact via --from)
+nami pack [out.zip]                 build the self-contained installer artifact (managed +
+                                    native + bundled .NET runtime, hash-verified manifest)
 nami launch set <game.exe> [--steam-id <appid>] [--force] [gameDir]
                                     remember which executable is the game
 nami launch [offline|steam] [gameDir]
@@ -357,6 +361,8 @@ nami interop images|dump|generate|header [args...] [gameDir]
                                     offline IL2CPP typed-projection tooling (dev-time)
 nami inex install|enable|disable|status [args...] [gameDir]
                                     legacy BepInEx lane (boots BepInEx 5.x in game Mono)
+nami nmod info|install [args...] [gameDir]
+                                    .nmod package distribution (manifest info / install)
 nami help                           show help
 ```
 
@@ -418,7 +424,7 @@ dotnet test Nami.slnx              :: runs all four test projects
 
 (Or individually: `dotnet test tests/Nami.Tests`, `tests/Nami.Wave.Tests`,
 `tests/Nami.Cli.Tests`, `tests/Nami.Tide.Tests`.) Current counts by project:
-(38 + 61 + 39 + 35 tests), and `dotnet test` exit code stays
+(38 + 68 + 55 + 35 tests), and `dotnet test` exit code stays
 the source of truth.
 
 ## 10. Known limitations

@@ -10,8 +10,10 @@ toolkit, and the legacy inex lane brings its own unmodified BepInEx/Harmony stac
 src/Nami.Wave/           the engine
   Wave.cs                M1 public API: Wave.Hook / Unhook / UnhookAll / IsHooked / UnhookEverything
   Wave.Patch.cs          M2 public API: Wave.Patch / Unpatch / UnpatchAll / IsPatched / UnpatchEverything
-  Wave.Il2Cpp.cs         IL2CPP method patching: WaveIl2Cpp.Hook / UnhookAll / Il2CppHook —
-                         native dispatch-stub detours on GameAssembly methods (see tide.md §9)
+  Wave.Il2Cpp.cs         IL2CPP method patching: WaveIl2Cpp.Hook / HookFull / UnhookAll /
+                         Il2CppHook — native dispatch-stub detours on GameAssembly methods
+                         (fast observe/skip path; full path adds all-args + result
+                         observation/rewriting; see tide.md §9)
   Internal/Detour.cs     one inline detour: prologue decode → trampoline → patch → restore
   Internal/X64Decoder.cs conservative x64 instruction-length decoder (relocation-safe)
   Internal/RawMemory.cs  W^X virtual-memory helpers (VirtualAlloc/VirtualProtect)
@@ -22,14 +24,14 @@ src/Nami.Wave/           the engine
   Internal/CalliSignature.cs  ECMA-335 calli StandaloneSig parser — managed/unmanaged fnptr
                          call sites re-emitted faithfully; vararg/nested-fnptr/generic sites
                          refused with a precise error
-tests/Nami.Wave.Tests/   57 [Fact] + 2 [Theory] (4 rows) in Release (61 tests): M1 + M2
+tests/Nami.Wave.Tests/   62 [Fact] + 2 [Theory] (6 rows) in Release (68 tests): M1 + M2
                          semantics, IL-copy fidelity, restore, the scope suite
                          (WavePatchScopeTests: closed generics, struct receivers, filter EH
                          clauses, tiny-method near detours, managed + unmanaged calli), and
-                         the WaveIl2Cpp contract (no-loader behavior, arg validation). The
-                         deep M2 suite (WavePatchDeepTests) compiles in Release only; in
-                         DEBUG only a placeholder runs instead — 52 [Fact] + 2 [Theory]
-                         (4 rows) there
+                         the WaveIl2Cpp contract (no-loader behavior, arg validation,
+                         HookFull). The deep M2 suite (WavePatchDeepTests) compiles in
+                         Release only; in DEBUG only a placeholder runs instead — 57 [Fact]
+                         + 2 [Theory] (6 rows) there (63 tests)
 bench/Wave.Bench/        hooked-call overhead benchmark (1M calls)
 ```
 

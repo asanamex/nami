@@ -134,7 +134,9 @@ struct HookOp {
     char klass[160];
     char method[160];
     int argc;
-    uint64_t dispatch;
+    uint64_t dispatch;         // prefix entry (fast path) or prefix dispatch (full path)
+    uint64_t dispatch_postfix; // 0 = fast path; non-null = full path
+    int return_kind;           // full path only: 0..4 (see native_stub.h)
     uint64_t user_handle;
     uint64_t trampoline;
     uint64_t hook_id;
@@ -184,8 +186,15 @@ int RunHookOp(void* arg) {
         return -1;
     }
 
-    auto* rec = nami::stub::hook_native_at(entry, reinterpret_cast<void*>(op->dispatch),
-                                           op->user_handle, op->argc);
+    nami::stub::HookRecord* rec = nullptr;
+    if (op->dispatch_postfix != 0) {
+        rec = nami::stub::hook_native_full(entry, reinterpret_cast<void*>(op->dispatch),
+                                           reinterpret_cast<void*>(op->dispatch_postfix),
+                                           op->return_kind, op->user_handle, op->argc);
+    } else {
+        rec = nami::stub::hook_native_at(entry, reinterpret_cast<void*>(op->dispatch),
+                                         op->user_handle, op->argc);
+    }
     if (rec == nullptr) {
         const auto* b = static_cast<const unsigned char*>(entry);
         log_tide("il2cpp patch: detour refused at %p (prologue < 5 clean bytes? first bytes: "
@@ -214,7 +223,8 @@ int RunHookOp(void* arg) {
 extern "C" __declspec(dllexport) int nami_il2cpp_hook(const char* assembly, const char* ns,
                                                       const char* klass, const char* method,
                                                       int argc, uint64_t dispatch,
-                                                      uint64_t user_handle,
+                                                      uint64_t dispatch_postfix,
+                                                      int return_kind, uint64_t user_handle,
                                                       uint64_t* trampoline_out,
                                                       uint64_t* hook_id_out) {
     using namespace nami::il2cpp::patch;
@@ -222,6 +232,14 @@ extern "C" __declspec(dllexport) int nami_il2cpp_hook(const char* assembly, cons
     if (assembly == nullptr || ns == nullptr || klass == nullptr || method == nullptr ||
         argc < 0 || dispatch == 0 || trampoline_out == nullptr || hook_id_out == nullptr) {
         return -1;
+    }
+    if (dispatch_postfix != 0) {
+        // Full path: stack args up to 12 slots, return_kind must be 0..4.
+        if (argc > 12 || return_kind < 0 || return_kind > 4) {
+            return -1;
+        }
+    } else if (argc > 4) {
+        return -1;  // fast path exposes register args only
     }
 
     HookOp op{};
@@ -231,6 +249,8 @@ extern "C" __declspec(dllexport) int nami_il2cpp_hook(const char* assembly, cons
     strncpy_s(op.method, method, sizeof(op.method) - 1);
     op.argc = argc;
     op.dispatch = dispatch;
+    op.dispatch_postfix = dispatch_postfix;
+    op.return_kind = return_kind;
     op.user_handle = user_handle;
 
     const bool ran = nami::il2cpp::run_il2cpp_op(RunHookOp, &op, 30000);

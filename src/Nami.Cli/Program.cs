@@ -20,6 +20,7 @@ internal static class Program
             {
                 "version" => Version(),
                 "install" => Install(rest),
+                "pack" => Pack(rest),
                 "launch" => Launch(rest),
                 "create" => Create(rest),
                 "run" => Run(rest),
@@ -27,6 +28,7 @@ internal static class Program
                 "list" => List(rest),
                 "interop" => Interop(rest),
                 "inex" => Inex(rest),
+                "nmod" => Nmod(rest),
                 "help" or "--help" or "-h" => Help(),
                 _ => Unknown(command)
             };
@@ -47,8 +49,40 @@ internal static class Program
 
     private static int Install(string[] args)
     {
-        var gameDir = ParseGameDir(args, out var positional);
-        return InstallCommand.Run(gameDir);
+        // nami install [gameDir] [--from <artifact.zip|url>]
+        string? artifact = null;
+        var rest = args.ToList();
+        for (var i = 0; i < rest.Count - 1; i++)
+        {
+            if (rest[i] == "--from")
+            {
+                artifact = rest[i + 1];
+                rest.RemoveRange(i, 2);
+                break;
+            }
+        }
+
+        var gameDir = ParseGameDir(rest.ToArray(), out _);
+        return InstallCommand.Run(gameDir, artifact);
+    }
+
+    private static int Pack(string[] args)
+    {
+        // nami pack [out.zip] [--artifacts <root>]
+        string? artifactsRoot = null;
+        var rest = args.ToList();
+        for (var i = 0; i < rest.Count - 1; i++)
+        {
+            if (rest[i] == "--artifacts")
+            {
+                artifactsRoot = rest[i + 1];
+                rest.RemoveRange(i, 2);
+                break;
+            }
+        }
+
+        var outPath = rest.Count > 0 ? rest[0] : null;
+        return PackCommand.Run(outPath, artifactsRoot);
     }
 
     private static int Launch(string[] args)
@@ -251,6 +285,24 @@ internal static class Program
         return InexCommand.Run(gameDir, rest);
     }
 
+    /// <summary>
+    /// nami nmod info|install — .nmod package distribution format on top of loose DLLs
+    /// (see NamiPackage). Trailing [gameDir] must be an existing directory.
+    /// </summary>
+    private static int Nmod(string[] args)
+    {
+        // nami nmod <sub> [subArgs...] [gameDir]
+        var gameDir = Directory.GetCurrentDirectory();
+        var rest = args;
+        if (args.Length > 1 && Directory.Exists(args[^1]))
+        {
+            gameDir = Path.GetFullPath(args[^1]);
+            rest = args[..^1];
+        }
+
+        return NmodCommand.Run(gameDir, rest);
+    }
+
     private static int Doctor(string[] args)
     {
         var gameDir = ParseGameDir(args, out _);
@@ -363,7 +415,13 @@ internal static class Program
 
             commands:
               version                 print the Nami version
-              install  [gameDir]      stage a Nami root next to a game from the build outputs
+              install  [gameDir] [--from <artifact.zip|url>]
+                                      install a Nami root next to a game (from the build
+                                      outputs, or from a self-contained installer artifact
+                                      produced by `nami pack`)
+              pack     [out.zip] [--artifacts <root>]
+                                      build the self-contained installer artifact (managed +
+                                      native + bundled .NET runtime, hash-verified manifest)
               launch   set <game.exe> [--steam-id <appid>] [--force] [gameDir]
                                       remember which executable is the game
               launch   [offline|steam] [gameDir]
@@ -379,6 +437,8 @@ internal static class Program
                                       offline IL2CPP typed-projection tooling (dev-time)
               inex     install|enable|disable|status [args...] [gameDir]
                                       legacy BepInEx lane (boots BepInEx 5.x in game Mono)
+              nmod     info|install [args...] [gameDir]
+                                      .nmod package distribution (manifest info / install)
               help                    show this help
             """);
         return 0;

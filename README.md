@@ -11,9 +11,10 @@ nami-inex lane boots real BepInEx 5.x for legacy mods (see below).
 > (2022.3.27f1), Parasocial (2022.3.5f1), ROUNDS (2022.3.34f1), The Gaspy Color War (Unity 6,
 > 6000.5.4f1); one IL2CPP: D1AL-ogue (Unity 6, 6000.0.61); Wave patches methods
 > with in-house x64 detours and Harmony-style IL-copy prefix/postfix patching (closed methods),
-> plus v1 IL2CPP method hooks on GameAssembly titles (WaveIl2Cpp — observe + skip,
-> verified in-game on D1AL-ogue: hook, pass-through, skip, exact restore, Unity 6
-> lazy-init thunks; see docs/tide.md);
+> plus IL2CPP method hooks on GameAssembly titles (WaveIl2Cpp — fast observe/skip
+> hooks and full-path patching with all args + result observation/rewriting via
+> `HookFull`, verified in-game on D1AL-ogue: hook, pass-through, skip, postfix
+> rewrite, exact restore, Unity 6 lazy-init thunks; see docs/tide.md);
 > **Tide** lets mods call into the game — typed static/instance field access, typed method
 > calls, and live object creation/calls, all executed on the game's main thread and verified
 > stable in-game, on both backends (Mono and IL2CPP auto-detected). The flag
@@ -23,8 +24,10 @@ nami-inex lane boots real BepInEx 5.x for legacy mods (see below).
 > `nami install`/`nami run` — a modder goes from template to a running mod without hand
 > staging. **M6 legacy lane shipped (Mono):** `nami inex install|enable|disable|status`
 > stages and boots unmodified BepInEx 5.x mods from `nami/inex/` (verified: Hardline Logger
-> 1.0.0 + Gaspy Menu 3.0.0 on Project Hardline). Remaining: the self-contained downloadable
-> installer, the BepInEx 6 / IL2CPP lane, and a few documented edges (see docs).
+> 1.0.0 + Gaspy Menu 3.0.0 on Project Hardline). **Nami-Install shipped:** `nami pack` builds
+> the self-contained installer artifact (managed + native + bundled .NET runtime in one zip,
+> SHA-256 manifest) and `nami install --from <zip|url>` installs it end-user style (hash-
+> verified, upgrade-safe). Remaining: the BepInEx 6 / IL2CPP lane, and a few documented edges (see docs).
 
 ## Getting started
 
@@ -69,7 +72,7 @@ src/
   Nami.Runtime/    In-game managed bootstrap: Boot.Run
   Nami.Tide/       Typed game access: Tide, GameClass, GameObject, TideValue
   Nami.Wave/       Patching engine: x64 detours + Harmony-style IL-copy prefix/postfix
-  Nami.Cli/        nami command-line tool (install/launch/create/run/doctor/list/interop/inex/version/help)
+  Nami.Cli/        nami command-line tool (install/pack/launch/create/run/doctor/list/interop/inex/nmod/version/help)
   Nami.Interop/    Offline IL2CPP interop: global-metadata.dat reader (v24-38, single-byte XOR transparent) +
                    typed projection generator (`nami interop`)
 tools/
@@ -78,7 +81,8 @@ tools/
 artifacts/         local NuGet feed (packages/); a `dotnet/` runtime tree at the repo root
                    if present, else the runtime is bundled from your local .NET 10 install
 samples/       HelloNami (log-only) + TideProbe (Mono game access proof) +
-               TideProbeIl2Cpp (IL2CPP game access proof)
+               TideProbeIl2Cpp (IL2CPP game access proof) + TideProbeIl2CppPatch (IL2CPP
+               method-patching proof, incl. full-path HookFull phases A–F)
 tests/         Unit/integration tests (Core, Wave, Cli, Tide) + plugin fixtures
 bench/         Loader (Nami.Bench — not in the solution; run via project path) + patching
                (Wave.Bench, incl. HarmonyX head-to-head) benchmarks with regression gates
@@ -129,7 +133,11 @@ dotnet run --project bench/Nami.Bench -c Release   # headline loader benchmark
 
 ```
 nami version                        print version
-nami install [gameDir]              stage a Nami root next to a game (from build outputs)
+nami install [gameDir] [--from <zip|url>]
+                                    install a Nami root (from build outputs, or from a
+                                    self-contained installer artifact via --from)
+nami pack [out.zip]                 build the self-contained installer artifact (managed +
+                                    native + bundled .NET runtime, hash-verified manifest)
 nami launch set <game.exe> [--steam-id <appid>] [--force] [gameDir]
                                     remember which executable is the game
 nami launch [offline|steam] [gameDir]
@@ -144,11 +152,13 @@ nami interop images|dump|generate|header [args...] [gameDir]
                                     offline IL2CPP typed-projection tooling (dev-time)
 nami inex install|enable|disable|status [args...] [gameDir]
                                     legacy BepInEx 5.x lane (boots in game Mono, no proxy)
+nami nmod info|install [args...] [gameDir]
+                                    .nmod package distribution (manifest info / install)
 nami help                           show help
 ```
 
 *(`launch` auto-detects the game as the largest `.exe` when none is set. The self-contained
-downloadable "Nami-Install" product and log-tail arrive with later milestones; hot reload,
+"Nami-Install" product is shipped (`nami pack` + `nami install --from`); hot reload,
 the per-mod profiler, the offline interop projection, the bench gates and the nami-inex
 Mono lane are shipped — see TUTORIAL.md.)*
 

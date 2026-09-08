@@ -34,4 +34,70 @@ public unsafe class WaveIl2CppTests
             WaveIl2Cpp.Hook("GameAssembly", "MyGame", "Player", "TakeDamage", argCount,
                 (instance, args, count) => false, "test.mod"));
     }
+
+    [Fact]
+    public void Il2Cpp_WithoutLoader_HookFullThrowsClearError()
+    {
+        var ex = Assert.Throws<WaveIl2Cpp.Il2CppHookException>(() =>
+            WaveIl2Cpp.HookFull("GameAssembly", "MyGame", "Player", "GetHealth", 0,
+                WaveIl2Cpp.Il2CppReturnKind.I32,
+                (instance, args, count, result, kind) => false, null, "test.mod"));
+        Assert.Contains("requires the Nami loader", ex.Message);
+    }
+
+    [Fact]
+    public void Il2Cpp_HookFull_RequiresPrefixOrPostfix()
+    {
+        var ex = Assert.Throws<ArgumentException>(() =>
+            WaveIl2Cpp.HookFull("GameAssembly", "MyGame", "Player", "GetHealth", 0,
+                WaveIl2Cpp.Il2CppReturnKind.I32, null, null, "test.mod"));
+        Assert.Contains("prefix/postfix", ex.Message);
+    }
+
+    [Fact]
+    public void Il2Cpp_HookFull_PostfixOnly_IsValidSignature()
+    {
+        // Only postfix (no prefix) must pass validation and reach the no-loader gate,
+        // not throw the "at least one" argument error.
+        var ex = Assert.Throws<WaveIl2Cpp.Il2CppHookException>(() =>
+            WaveIl2Cpp.HookFull("GameAssembly", "MyGame", "Player", "GetHealth", 0,
+                WaveIl2Cpp.Il2CppReturnKind.F32, null,
+                (instance, args, count, result, kind) => { }, "test.mod"));
+        Assert.Contains("requires the Nami loader", ex.Message);
+    }
+
+    [Theory]
+    [InlineData(-1)]
+    [InlineData(13)]
+    public void Il2Cpp_HookFull_ArgCountOutOfRange_Throws(int argCount)
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            WaveIl2Cpp.HookFull("GameAssembly", "MyGame", "Player", "Compute", argCount,
+                WaveIl2Cpp.Il2CppReturnKind.I64,
+                (instance, args, count, result, kind) => false,
+                (instance, args, count, result, kind) => { }, "test.mod"));
+    }
+
+    [Fact]
+    public void Il2Cpp_HookFull_ReturnKindOutOfRange_Throws()
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            WaveIl2Cpp.HookFull("GameAssembly", "MyGame", "Player", "Compute", 1,
+                (WaveIl2Cpp.Il2CppReturnKind)99,
+                (instance, args, count, result, kind) => false,
+                (instance, args, count, result, kind) => { }, "test.mod"));
+    }
+
+    [Fact]
+    public void Il2Cpp_HookFull_AcceptsStackArgCounts()
+    {
+        // Up to 12 args is legal (register + stack); 12 must pass validation and reach
+        // the no-loader gate rather than the argument-range check.
+        var ex = Assert.Throws<WaveIl2Cpp.Il2CppHookException>(() =>
+            WaveIl2Cpp.HookFull("GameAssembly", "MyGame", "Player", "Wide", 12,
+                WaveIl2Cpp.Il2CppReturnKind.Void,
+                (instance, args, count, result, kind) => false,
+                (instance, args, count, result, kind) => { }, "test.mod"));
+        Assert.Contains("requires the Nami loader", ex.Message);
+    }
 }

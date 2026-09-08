@@ -34,9 +34,17 @@ Full blueprint: `~/.commandcode/plans/nami-unity-mod-loader.md` (or via `/plans`
     <game.exe>`, `launch [offline|steam]` (Steam relay to a clean session after exit),
     `create` (double-click `launchNami.exe` + `run-with-nami.bat` in the nami root), and
     `doctor` reporting the configured game exe. Auto-detects the game as the largest `.exe`.
-  - **Remaining (future "Nami-Install" product):** a self-contained downloadable installer
-    that bundles the .NET runtime into a single artifact for end users (today `nami install`
-    stages from a local build).
+  - **Shipped — Nami-Install (self-contained installer artifact):** `nami pack [out.zip]`
+    builds a single end-user artifact — managed runtime + native injector/loader + bundled
+    .NET runtime, with a SHA-256 `manifest.json` (every file hashed; user content like mods/
+    and logs is never part of the artifact). `nami install <game> --from <zip|url>` installs
+    it: hash-verified extraction (tampered/corrupt artifacts are refused per-file without
+    clobbering a working install), upgrade-safe over an existing root (only framework files
+    are replaced; mods/, inex/, logs and boot-guard markers survive), nami.json written with
+    the actual root path. Verified by 8 CLI tests (pack completeness, install, upgrade
+    preserves user content, tamper detection, non-artifact rejection, file:// URL install)
+    plus an end-to-end pack → install → doctor pass on this machine (199 files, ~80 MB,
+    bundled .NET 10.0.10).
 - **M4 — done (runtime bridge + v1 patching).** Same main-thread drain pattern for the runtime bridge.
   - **Shipped + verified in-game:** `WaveIl2Cpp` — native dispatch-stub detours on IL2CPP
     game methods (resolve `Il2CppMethodInfo` → `methodPointer` → jump-thunk following →
@@ -47,6 +55,15 @@ Full blueprint: `~/.commandcode/plans/nami-unity-mod-loader.md` (or via `/plans`
     (TideProbeIl2CppPatch sample: baseline → hook → pass-through → skip → restore all
     PASS; `Time::get_deltaTime` hook installed). Machinery additionally covered by the
     native smoke suite (raw-byte leaf shapes + 4-byte refusal) + managed contract tests.
+  - **Shipped + verified in-game (M6.5):** `WaveIl2Cpp.HookFull` — the full patching
+    ABI: prefix (skip + optional replacement result) → original via trampoline →
+    postfix (result rewrite), ALL arguments up to 12 (register + stack) and
+    value/float results through a 2-slot rax/xmm0 result pointer. The stub frame keeps
+    all state above a reserved scratch zone the JIT dispatch callees' frames grow into
+    (the in-game failure was callee-frame clobbering — see tide.md §9). Verified live
+    on D1AL-ogue (`Math.Max`: postfix observes the real result, rewrite reaches the
+    caller byte-visibly, unhook restores exactly) + smoke suite (stack-arg/float/
+    skip/rewrite/short-leaf cases) + managed contract tests.
   - **Shipped:** a working IL2CPP backend — loader auto-detects `GameAssembly.dll`, the
     managed Tide layer routes to `nami_il2cpp_*` exports, and ops run on the game's main
     thread inside its window procedure (subclassed drain). Verified live on D1AL-ogue

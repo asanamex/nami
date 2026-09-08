@@ -294,6 +294,352 @@ int TestNativeStub() {
 }
 
 // ---------------------------------------------------------------------------
+// 3a2. Full-path stub: results + stack args + float args. The stub CALLS the
+//      trampoline, dispatches prefix + postfix around it with a result slot
+//      (rax/xmm0 bits) and return_kind, and exposes all arguments (regs + stack).
+// ---------------------------------------------------------------------------
+
+// Distinct coefficients verify every argument slot (e/f are stack args).
+__declspec(noinline) __attribute__((optimize("O0")))
+int smoke_six(int a, int b, int c, int d, int e, int f) {
+    return a + 2 * b + 3 * c + 4 * d + 5 * e + 6 * f;
+}
+
+// Float args travel in xmm0/xmm1; the result returns in xmm0. The dispatch calls
+// clobber xmm regs, so the stub must save/restore the ARG regs around them and the
+// RESULT reg across the postfix.
+__declspec(noinline) __attribute__((optimize("O0")))
+float smoke_fmul(float a, float b) {
+    return a * b;
+}
+
+// Mixed ABI: float args in xmm0/xmm1, ints in r8/r9, then e/f on the stack. Exercises
+// the xmm save area sitting next to the stack-arg copy regions (n = 2).
+__declspec(noinline) __attribute__((optimize("O0")))
+float smoke_fmix(float a, float b, int c, int d, int e, int f) {
+    return a * b + (float)(c * d + e + f);
+}
+
+volatile LONG g_full_prefix_calls = 0;
+volatile LONG g_full_postfix_calls = 0;
+volatile LONG g_full_skip = 0;
+volatile LONG g_full_rewrite = 0;  // 0 = none, 1 = postfix rewrite, 2 = prefix skip-rewrite
+volatile uint64_t g_rewrite_bits = 0;
+uint64_t g_full_args[6] = {};
+uint64_t g_full_result = 0;      // result slot[0] (rax bits) as seen by postfix
+uint64_t g_full_result_xmm = 0;  // result slot[1] (xmm0 bits) as seen by postfix
+
+// Full-path dispatch ABI: (handle, args, arg_count, result_slot, return_kind).
+extern "C" int __cdecl smoke_full_prefix(uint64_t handle, uint64_t* args, int argc,
+                                         uint64_t* result, int kind) {
+    (void)handle;
+    (void)kind;
+    InterlockedIncrement(&g_full_prefix_calls);
+    for (int i = 0; i < argc && i < 6; i++) {
+        g_full_args[i] = args[i];
+    }
+    if (g_full_skip) {
+        if (g_full_rewrite == 2 && result != nullptr) {
+            result[0] = g_rewrite_bits;  // skip WITH a replacement result
+        }
+        return 1;
+    }
+    return 0;
+}
+
+extern "C" void __cdecl smoke_full_postfix(uint64_t handle, uint64_t* args, int argc,
+                                           uint64_t* result, int kind) {
+    (void)handle;
+    (void)args;
+    (void)argc;
+    InterlockedIncrement(&g_full_postfix_calls);
+    if (result == nullptr) {
+        return;
+    }
+    g_full_result = result[0];
+    g_full_result_xmm = result[1];
+    if (g_full_rewrite == 1) {
+        // Rewrite the result by kind: xmm0 slot for floats, rax slot otherwise.
+        if (kind == 3 || kind == 4) {
+            result[1] = g_rewrite_bits;
+        } else {
+            result[0] = g_rewrite_bits;
+        }
+    }
+}
+
+// Records the exact crash context (registers + stack) to crash-regs.txt so a failure
+// inside the full-path stub can be diagnosed without gdb guessing.
+LONG WINAPI StubCrashRecorder(EXCEPTION_POINTERS* ep) {
+    FILE* f = nullptr;
+    if (_wfopen_s(&f, L"crash-regs.txt", L"a") == 0 && f != nullptr) {
+        const auto* c = ep->ContextRecord;
+        const auto* er = ep->ExceptionRecord;
+        std::fprintf(f, "code=0x%lX at rip=%p flags=%lX fault=%p\n", er->ExceptionCode,
+                     (void*)c->Rip, er->ExceptionFlags,
+                     er->NumberParameters >= 2 ? (void*)er->ExceptionInformation[1] : nullptr);
+        if (er->NumberParameters >= 1) {
+            std::fprintf(f, "access=%llu\n", (unsigned long long)er->ExceptionInformation[0]);
+        }
+        std::fprintf(f, "rax=%llx rbx=%llx rcx=%llx rdx=%llx\n", (unsigned long long)c->Rax,
+                     (unsigned long long)c->Rbx, (unsigned long long)c->Rcx, (unsigned long long)c->Rdx);
+        std::fprintf(f, "r8=%llx r9=%llx r10=%llx r11=%llx\n", (unsigned long long)c->R8,
+                     (unsigned long long)c->R9, (unsigned long long)c->R10, (unsigned long long)c->R11);
+        std::fprintf(f, "rsp=%llx rbp=%llx rsi=%llx rdi=%llx\n", (unsigned long long)c->Rsp,
+                     (unsigned long long)c->Rbp, (unsigned long long)c->Rsi, (unsigned long long)c->Rdi);
+        const auto* sp = reinterpret_cast<const unsigned long long*>(c->Rsp);
+        for (int i = -4; i < 16; i++) {
+            std::fprintf(f, "  [rsp%+d] = %016llx\n", 8 * i, (unsigned long long)sp[i]);
+        }
+        std::fprintf(f, "bytes: ");
+        const auto* p = reinterpret_cast<const unsigned char*>(c->Rip);
+        MEMORY_BASIC_INFORMATION mbi{};
+        const bool mapped =
+            VirtualQuery(p, &mbi, sizeof(mbi)) != 0 && mbi.State == MEM_COMMIT;
+        for (int i = 0; i < 16 && mapped; i++) {
+            std::fprintf(f, "%02X ", p[i]);
+        }
+        std::fprintf(f, "\n---\n");
+        std::fclose(f);
+    }
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+
+unsigned char* MakeExec(const unsigned char* bytes, int len);  // defined below (short-prologue tests)
+
+int TestNativeStubFull() {
+    using namespace nami::stub;
+    int rc = 0;
+    void* veh = AddVectoredExceptionHandler(1, StubCrashRecorder);
+
+    // --- minimal: full path with NO stack args (argc=2 on the known-good smoke_add) ---
+    {
+        auto* rec0 = hook_native_full(reinterpret_cast<void*>(&smoke_add),
+                                      reinterpret_cast<void*>(&smoke_full_prefix),
+                                      reinterpret_cast<void*>(&smoke_full_postfix),
+                                      /*return_kind=*/2, 0xABCD, 2);
+        if (rec0 == nullptr) {
+            std::printf("  native stub full: FAIL (minimal hook refused)\n");
+            rc = 20;
+        } else {
+            const auto* tb = static_cast<const unsigned char*>(rec0->trampoline);
+            const auto* ep = static_cast<const unsigned char*>(rec0->target);
+            std::printf("  stub full minimal: stub=%p tramp=%p entry=%02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X\n",
+                        (void*)rec0->stub, rec0->trampoline, ep[0], ep[1], ep[2], ep[3], ep[4],
+                        ep[5], ep[6], ep[7], ep[8], ep[9], ep[10], ep[11], ep[12], ep[13]);
+            FILE* dbg = nullptr;
+            if (_wfopen_s(&dbg, L"stub-full.bin", L"wb") == 0 && dbg != nullptr) {
+                std::fwrite(rec0->stub, 1, static_cast<size_t>(rec0->stub_size), dbg);
+                std::fclose(dbg);
+            }
+            const long post_before = g_full_postfix_calls;
+            const int r0 = smoke_add(2, 3);  // = 20
+            if (r0 != 20 || g_full_postfix_calls != post_before + 1) {
+                std::printf("  native stub full: FAIL (minimal pass-through: r=%d post=%ld)\n",
+                            r0, (long)g_full_postfix_calls);
+                rc = 21;
+            }
+            unhook_native(rec0);
+        }
+    }
+    if (rc != 0) {
+        RemoveVectoredExceptionHandler(veh);
+        std::printf("  native stub full: FAIL (minimal)\n");
+        return rc;
+    }
+
+    // --- i64 result, 6 args (2 on the stack) ---
+    auto* rec = hook_native_full(reinterpret_cast<void*>(&smoke_six),
+                                 reinterpret_cast<void*>(&smoke_full_prefix),
+                                 reinterpret_cast<void*>(&smoke_full_postfix),
+                                 /*return_kind=*/2, 0xFEED, 6);
+    if (rec == nullptr) {
+        std::printf("  native stub full: FAIL (hook refused)\n");
+        return 1;
+    }
+    std::printf("  native stub full: stub=%p tramp=%p size=%d\n", rec->stub, rec->trampoline,
+                rec->stub_size);
+    {
+        FILE* dbg = nullptr;
+        if (_wfopen_s(&dbg, L"stub-full.bin", L"wb") == 0 && dbg != nullptr) {
+            std::fwrite(rec->stub, 1, static_cast<size_t>(rec->stub_size), dbg);
+            std::fclose(dbg);
+        }
+    }
+
+    // Pass-through: prefix saw all 6 args (incl. stack args), postfix saw the real
+    // result, and the caller got the real value (proves the trampoline received the
+    // copied stack args correctly). smoke_six(1,2,3,4,5,6) = 1+4+9+16+25+36 = 91.
+    const long post0 = g_full_postfix_calls;  // the minimal test above fired it once
+    const int r1 = smoke_six(1, 2, 3, 4, 5, 6);
+    if (r1 != 91 || g_full_postfix_calls != post0 + 1 || g_full_result != 91 ||
+        g_full_args[0] != 1 || g_full_args[1] != 2 || g_full_args[2] != 3 ||
+        g_full_args[3] != 4 || g_full_args[4] != 5 || g_full_args[5] != 6) {
+        std::printf("  native stub full: FAIL (pass-through: r=%d post=%ld result=%llu args=%llu %llu %llu %llu %llu %llu)\n",
+                    r1, (long)g_full_postfix_calls, (unsigned long long)g_full_result,
+                    (unsigned long long)g_full_args[0], (unsigned long long)g_full_args[1],
+                    (unsigned long long)g_full_args[2], (unsigned long long)g_full_args[3],
+                    (unsigned long long)g_full_args[4], (unsigned long long)g_full_args[5]);
+        rc = 2;
+    }
+
+    // Postfix rewrite: the original ran (postfix observed its real result), then the
+    // rewritten value is what the caller receives.
+    if (rc == 0) {
+        g_full_rewrite = 1;
+        g_rewrite_bits = 0x12345;
+        const int r2 = smoke_six(1, 1, 1, 1, 1, 1);  // = 21
+        g_full_rewrite = 0;
+        if (r2 != 0x12345 || g_full_result != 21) {
+            std::printf("  native stub full: FAIL (postfix rewrite: r=%x observed=%llu)\n",
+                        r2, (unsigned long long)g_full_result);
+            rc = 3;
+        }
+    }
+
+    // Skip WITH a replacement result: prefix writes the slot, original never runs.
+    if (rc == 0) {
+        const long post_before = g_full_postfix_calls;
+        g_full_skip = 1;
+        g_full_rewrite = 2;
+        g_rewrite_bits = 0x777;
+        const int r3 = smoke_six(2, 2, 2, 2, 2, 2);
+        g_full_rewrite = 0;
+        g_full_skip = 0;
+        if (r3 != 0x777 || g_full_postfix_calls != post_before) {
+            std::printf("  native stub full: FAIL (skip-rewrite: r=%x post=%ld)\n",
+                        r3, (long)g_full_postfix_calls);
+            rc = 4;
+        }
+    }
+
+    // Skip WITHOUT a rewrite: returns 0, postfix never fires.
+    if (rc == 0) {
+        const long post_before = g_full_postfix_calls;
+        g_full_skip = 1;
+        const int r4 = smoke_six(3, 3, 3, 3, 3, 3);
+        g_full_skip = 0;
+        if (r4 != 0 || g_full_postfix_calls != post_before) {
+            std::printf("  native stub full: FAIL (skip: r=%d post=%ld)\n", r4, (long)g_full_postfix_calls);
+            rc = 5;
+        }
+    }
+
+    // Exact restore.
+    if (rc == 0) {
+        unhook_native(rec);
+        const long post_before = g_full_postfix_calls;
+        const int r5 = smoke_six(1, 1, 1, 1, 1, 1);
+        if (r5 != 21 || g_full_postfix_calls != post_before) {
+            std::printf("  native stub full: FAIL (restore: r=%d post=%ld)\n", r5, (long)g_full_postfix_calls);
+            rc = 6;
+        }
+    }
+
+    // --- f32 result with float args (xmm0 path) ---
+    if (rc == 0) {
+        rec = hook_native_full(reinterpret_cast<void*>(&smoke_fmul),
+                               reinterpret_cast<void*>(&smoke_full_prefix),
+                               reinterpret_cast<void*>(&smoke_full_postfix),
+                               /*return_kind=*/3, 0xBEEF, 2);
+        if (rec == nullptr) {
+            std::printf("  native stub full: FAIL (float hook refused)\n");
+            return 7;
+        }
+
+        // Pass-through: 2.5f * 4.0f = 10.0f. If the stub failed to preserve the xmm
+        // ARG regs across the prefix dispatch, the product would be garbage.
+        const float f1 = smoke_fmul(2.5f, 4.0f);
+        if (f1 != 10.0f) {
+            std::printf("  native stub full: FAIL (float pass-through: %f)\n", (double)f1);
+            rc = 8;
+        } else if (g_full_result_xmm == 0) {
+            std::printf("  native stub full: FAIL (postfix saw no xmm0 result bits)\n");
+            rc = 9;
+        } else {
+            // Postfix rewrite of the xmm0 slot: the caller must receive the new float.
+            g_full_rewrite = 1;
+            float three_point_five = 3.5f;
+            std::memcpy(const_cast<uint64_t*>(&g_rewrite_bits), &three_point_five, 4);
+            const float f2 = smoke_fmul(2.0f, 8.0f);  // = 16.0f, rewritten to 3.5f
+            g_full_rewrite = 0;
+            if (f2 != 3.5f) {
+                std::printf("  native stub full: FAIL (float rewrite: %f)\n", (double)f2);
+                rc = 10;
+            }
+        }
+        unhook_native(rec);
+    }
+
+    // --- full path over a SHORT leaf (5-byte near-jump patch, like IL2CPP getters) ---
+    if (rc == 0) {
+        const unsigned char skeleton[7] = { 0x8B, 0x05, 0, 0, 0, 0, 0xC3 };
+        auto* target = MakeExec(skeleton, sizeof(skeleton));
+        auto* field = reinterpret_cast<int*>(target + 0x20);
+        *field = 42;
+        const int disp = reinterpret_cast<const char*>(field) -
+                         reinterpret_cast<const char*>(target + 6);
+        std::memcpy(target + 2, &disp, 4);
+
+        auto* rec2 = hook_native_full(target, reinterpret_cast<void*>(&smoke_full_prefix),
+                                      reinterpret_cast<void*>(&smoke_full_postfix),
+                                      /*return_kind=*/1, 0xABCD, 0);
+        if (rec2 == nullptr) {
+            std::printf("  native stub full: FAIL (short-leaf full hook refused)\n");
+            rc = 13;
+        } else {
+            const long post_before = g_full_postfix_calls;
+            const int v = reinterpret_cast<int (*)()>(target)();
+            if (v != 42 || g_full_result != 42 || g_full_postfix_calls != post_before + 1) {
+                std::printf("  native stub full: FAIL (short-leaf full: v=%d result=%llu post=%ld)\n",
+                            v, (unsigned long long)g_full_result, (long)g_full_postfix_calls);
+                rc = 14;
+            } else {
+                std::printf("  native stub full: short-leaf full-path PASS (42, postfix saw it)\n");
+            }
+            unhook_native(rec2);
+        }
+    }
+
+    // --- mixed float args + stack args (xmm0/xmm1 + r8/r9 + 2 stack slots) ---
+    if (rc == 0) {
+        rec = hook_native_full(reinterpret_cast<void*>(&smoke_fmix),
+                               reinterpret_cast<void*>(&smoke_full_prefix),
+                               reinterpret_cast<void*>(&smoke_full_postfix),
+                               /*return_kind=*/3, 0xCAFE, 6);
+        if (rec == nullptr) {
+            std::printf("  native stub full: FAIL (fmix hook refused)\n");
+            return 11;
+        }
+        // 2*3 + (2*3+4+5) = 6 + 15 = 21.0f. Wrong xmm arg, register-arg, or stack-arg
+        // handling all show up here (prefix dispatch runs between the save and the
+        // trampoline call). The args buffer holds the INTEGER regs (Win64: float args
+        // travel only in xmm0/xmm1, so rcx/rdx are unspecified for this signature) —
+        // args[2..3] = c/d from r8/r9, args[4..5] = e/f copied from the caller stack.
+        const float f3 = smoke_fmix(2.0f, 3.0f, 2, 3, 4, 5);
+        const bool args_ok = g_full_args[2] == 2 && g_full_args[3] == 3 &&
+                             g_full_args[4] == 4 && g_full_args[5] == 5;
+        if (f3 != 21.0f || !args_ok) {
+            std::printf("  native stub full: FAIL (fmix: f=%f args=%llu %llu %llu %llu %llu %llu)\n",
+                        (double)f3, (unsigned long long)g_full_args[0],
+                        (unsigned long long)g_full_args[1], (unsigned long long)g_full_args[2],
+                        (unsigned long long)g_full_args[3], (unsigned long long)g_full_args[4],
+                        (unsigned long long)g_full_args[5]);
+            rc = 12;
+        } else {
+            std::printf("  native stub full: fmix float+stack PASS (21.0f, r8/r9+stack args)\n");
+        }
+        unhook_native(rec);
+    }
+
+    if (veh != nullptr) {
+        RemoveVectoredExceptionHandler(veh);
+    }
+    std::printf("  native stub full: %s\n", rc == 0 ? "PASS" : "FAIL");
+    return rc;
+}
+
+// ---------------------------------------------------------------------------
 // 3b. Short-prologue detour: IL2CPP leaf getters (`mov eax, [rip+x]; ret`) are
 //     far below the 14-byte absolute-jump minimum and must fall back to the
 //     5-byte relative jump with RIP-relative disp32 fixup. Built from raw bytes
@@ -494,6 +840,10 @@ int main() {
         return rc;
     }
     rc = TestNativeStub();
+    if (rc != 0) {
+        return rc;
+    }
+    rc = TestNativeStubFull();
     if (rc != 0) {
         return rc;
     }

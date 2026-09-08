@@ -494,14 +494,28 @@ prologues under 5 clean bytes refuse (never corrupt).
 - **ABI (v1, honest)**: the callback runs on the game's main thread (window-proc
 executor) with the RAW argument registers — `args[0]` is `this` (an `Il2CppObject*`)
 for instance methods, else the first parameter; only 4 register args are exposed
-(stack args are not). Returning `true` skips the original (skip return value is 0 —
-value-typed returns are not observable yet). No argument marshaling in v1.
+(stack args are not). Returning `true` skips the original (skip return value is 0).
+No argument marshaling in v1.
+- **Full path (`WaveIl2Cpp.HookFull`)** adds result observation/rewriting and ALL
+arguments (register + stack, up to 12): a prefix runs first (may skip — optionally
+with a replacement written into the 2-slot result pointer: rax bits / xmm0 bits per
+`Il2CppReturnKind`), then the ORIGINAL is called through the trampoline (its result
+saved), then a postfix may rewrite the result the caller receives. The stub frame
+keeps every args buffer slot and the result slot ABOVE a reserved scratch zone that
+the JIT-compiled dispatchers' stack frames grow into — earlier layouts put the
+buffer/result below the dispatch call site, where a JIT callee frame silently
+overwrote them (observed in-game as garbage args/results while the C++ smoke
+dispatchers' tiny frames masked it).
 - **Requires a game window**: install runs on the main thread like every op; call
 `Tide.EnsureReady()` first. Failures throw `WaveIl2Cpp.Il2CppHookException` and never
 corrupt (uninstall restores the exact bytes).
 - **Status**: verified end-to-end in-game on D1AL-ogue (Unity 6, 6000.0.61) by the
 `TideProbeIl2CppPatch` sample — hook install on `System.Environment::get_TickCount`
 (a RIP-relative leaf) and on the `UnityEngine.Time::get_deltaTime` lazy-init thunk,
-pass-through preserves real values, skip returns 0, unhook restores exactly. The
-machinery is also covered by the native smoke suite (raw-byte leaf functions in all
-supported shapes + a 4-byte refusal) and the managed contract tests.
+pass-through preserves real values, skip returns 0, unhook restores exactly; the full
+path is verified on `System.Math::Max` — the postfix observes the REAL result (7 for
+`Max(3,7)`), a rewrite changes what the caller receives (byte-visible sentinel — the
+resolved overload returns a byte, so the caller reads only `al`), and unhook restores
+exactly. The machinery is also covered by the native smoke suite (raw-byte leaf
+functions in all supported shapes, full-path stack-arg/float/skip/rewrite cases, +
+a 4-byte refusal) and the managed contract tests.

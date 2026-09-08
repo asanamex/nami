@@ -53,7 +53,7 @@ lazy on-demand in-process materialization remains design intent, not shipped beh
 | Calling game code from mods | yes (in-process) | **Tide** — typed fields/properties, calls, objects (parameterless `NewObject()`), a generic `Get<T>`/`Set<T>`/`Call<T>` API, enums (underlying int; `long`-backed as `I64`), arrays, live scene objects via statics plus `GameClass.FindObject()` (window executor, plural `FindObjectsOfType` + element 0, active objects) — Mono and IL2CPP (Mono bridge behind `enableMonoBridge`, which gates the boot self-test). Legacy Mono mods call game code directly in-process via BepInEx, not Tide. |
 | Ecosystem / existing mods | huge | native API: zero (clean-slate API) — but unmodified BepInEx 5.x Mono mods run via the nami-inex lane (`nami inex install`/`enable` → `nami/inex/BepInEx/plugins`; IL2CPP/6 excluded) |
 | Years of edge-case hardening | yes | no — expect bugs |
-| Packaging / templates / installer | mature | **in** — NuGet packages (`Nami.Sdk`/`Nami.Tide`), `dotnet new nami-mod`, `nami install`/`run`, `nami launch`/`create`, `nami interop`, `nami inex` (legacy lane); self-contained downloadable installer next |
+| Packaging / templates / installer | mature | **in** — NuGet packages (`Nami.Sdk`/`Nami.Tide`), `dotnet new nami-mod`, `nami install`/`run`, `nami launch`/`create`, `nami interop`, `nami inex` (legacy lane), `nami nmod` (.nmod package distribution); self-contained downloadable installer shipped (`nami pack` + `nami install --from <zip|url>`, bundled runtime) |
 
 ## The bet
 

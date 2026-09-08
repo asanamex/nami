@@ -64,9 +64,12 @@ native/                          C++17 (Windows x64 first)
                                  install/remove dispatch-stub detours (nami_il2cpp_hook/unhook);
                                  covers short prologues (5-byte near jump) incl. leaf
                                  getters and Unity 6 lazy-init thunks
-  loader/native_stub.cpp         dispatch-stub detours for native (IL2CPP) method hooks: save
-                                 arg regs → managed dispatch (observe + skip) → tail-jump the
-                                 trampoline or return; exact restore (shared with smoke tests)
+  loader/native_stub.cpp         dispatch-stub detours for native (IL2CPP) method hooks: fast
+                                 path (save arg regs → managed dispatch observe/skip →
+                                 tail-jump the trampoline or return) and full path (all args
+                                 incl. stack, prefix/postfix dispatch, result save/rewrite
+                                 via a 2-slot rax/xmm0 pointer, all state above a reserved
+                                 callee scratch zone); exact restore (shared with smoke tests)
   loader/tide_abi.h              shared Tide value/request ABI (TideValue, CallRequest)
   core/runtime_host.cpp          hostfxr: initialize_for_runtime_config → get_runtime_delegate(
                                  hdt_load_assembly_and_get_function_pointer) →
@@ -98,7 +101,12 @@ src/Nami.Cli/                    `nami` console tool: version/doctor/list/help +
                                  root). Game exe auto-detection (GameLocator) picks the largest
                                  .exe, skipping crash handlers/updaters.
   Stager.cs                      stages <game>/nami from the repo build outputs: managed runtime,
-                                 native injector/loader, bundled .NET runtime, mods/, nami.json
+                                 native injector/loader, bundled .NET runtime, mods/, nami.json;
+                                 and the Nami-Install artifact flow — Pack() (self-contained
+                                 zip + SHA-256 manifest.json) / InstallFromArtifact()
+                                 (hash-verified, upgrade-safe extract; local path or URL)
+  PackCommand.cs                 `nami pack [out.zip]` — builds the installer artifact
+                                 (managed + native + bundled .NET runtime, one zip)
 tools/launch-shim/               launchNami.exe — tiny self-contained console app, embedded in
                                  Nami.Cli; spawns nami_boot.exe with paths from its own location
 tools/templates/nami-mod/        `dotnet new nami-mod` template: a net10.0 mod project referencing
@@ -153,11 +161,15 @@ nami.json                                  (written by `nami install`; `launch s
 nami.log                                   (runtime log)
 ```
 
-The root is created by `nami install <game>` (Stager stages the managed runtime, native
-injector/loader and a bundled .NET runtime from the repo's build outputs); `nami run`/`nami
-launch`/`launchNami.exe` then invoke `native/nami_boot.exe <game.exe> native/nami_loader.dll`;
-  the loader derives the root as two levels up and the game executable comes from `nami.json`
-  (`gameExe`).
+The root is created by `nami install <game>` — either staged from the repo's build outputs
+(dev flow) or extracted from the self-contained Nami-Install artifact (`nami pack` →
+`nami install <game> --from <zip|url>`; end-user flow). The artifact is the nami-root layout
+in one zip (managed + native + bundled .NET runtime) with a SHA-256 `manifest.json`;
+install verifies every file against it, refuses tampered entries without clobbering a working
+install, and replaces only framework files on upgrade (mods/, inex/, logs and boot-guard
+markers survive). `nami run`/`nami launch`/`launchNami.exe` then invoke
+`native/nami_boot.exe <game.exe> native/nami_loader.dll`; the loader derives the root as two
+levels up and the game executable comes from `nami.json` (`gameExe`).
 
  Legacy lane (Mono only, non-blocking): if `inex/BepInEx/core/BepInEx.Preloader.dll`
   **and** `inex/enabled` both exist, `inex::arm` sets the four `DOORSTOP_*` env vars,
@@ -269,10 +281,11 @@ Boot-guard fixes that (native/core/bootguard.cpp):
   verified) and boot-guard safe mode shipped (crash containment + auto-recovery —
   see above); BepInEx 6 / IL2CPP lane (own CoreCLR + interop
   orchestration) and legacy-pack distribution remain.
-- IL2CPP patching: v1 dispatch-stub hooks shipped and verified in-game (WaveIl2Cpp —
-  observe + skip with raw pointer args, short-prologue + RIP-relative support incl.
-  Unity 6 lazy-init thunks, see docs/tide.md §9); argument/result marshaling and
-  stack-arg support (the BepInEx-6-equivalent patching surface) remain.
+- IL2CPP patching: dispatch-stub hooks shipped and verified in-game (WaveIl2Cpp —
+  fast path observe/skip with raw pointer args, full path with all-args +
+  result observation/rewriting via `HookFull`, short-prologue + RIP-relative support
+  incl. Unity 6 lazy-init thunks, see docs/tide.md §9). Remaining vs BepInEx 6:
+  argument marshaling to managed types (raw slots only today) and per-title coverage.
 - Shipped: `Nami.Interop` — offline (dev-time) typed projection for IL2CPP modders
   (`nami interop images/dump/generate/header`; metadata v24-38, verified on a
   Unity 6000.0.61 title — see `src/Nami.Interop/Il2CppMetadata.cs`).

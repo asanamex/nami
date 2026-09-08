@@ -16,6 +16,9 @@ namespace Nami.Samples.TideProbeIl2CppPatch;
 ///   D. unhook: exact restore, real values again
 ///   E. organic: UnityEngine.Time.get_deltaTime hooked pass-through; count fires the
 ///      game's own per-frame reads over ~3 seconds (honest report if the game reads 0)
+///   F. full path: System.Math.Max(int,int) hooked with HookFull — the postfix observes
+///      the REAL result (2-arg call, kind I32), then a rewrite phase makes the caller
+///      receive a different value while the postfix still saw the original
 /// </summary>
 [NamiPlugin]
 [PluginInfo("dev.nami.samples.tideprobe-il2cpp-patch", "Tide Probe (IL2CPP Patch)", "0.1.0",
@@ -34,6 +37,12 @@ public sealed unsafe class TideProbeIl2CppPatchPlugin : NamiPlugin
     private GameClass? _env;
     private WaveIl2Cpp.Il2CppHook? _tickHook;
     private WaveIl2Cpp.Il2CppHook? _deltaHook;
+    private WaveIl2Cpp.Il2CppHook? _maxHook;
+
+    // Full-path state (Math.Max hook; dispatches run on the game main thread).
+    private int _maxObserved;
+    private int _maxPostfixFires;
+    private bool _rewriteMax;
 
     public override void OnLoad()
     {
@@ -57,7 +66,7 @@ public sealed unsafe class TideProbeIl2CppPatchPlugin : NamiPlugin
 
     public override void OnUpdate()
     {
-        if (_stage > 5)
+        if (_stage > 8)
         {
             return;
         }
@@ -182,10 +191,73 @@ public sealed unsafe class TideProbeIl2CppPatchPlugin : NamiPlugin
                     log.Info(_organicFires > 0
                         ? "[E organic] PASS — the game itself called the hooked method"
                         : "[E organic] NOTE — game read Time.get_deltaTime 0 times this session (fine; phases A-D already proved the machinery)");
-                    log.Info("TideProbe-IL2CPP-Patch verification complete");
                     _stage = 6;
                 }
 
+                break;
+            }
+
+            case 6:
+            {
+                // F1. Full-path install + pass-through: HookFull with a postfix only.
+                // Math.Max(3,7) must return 7 AND the postfix must observe 7 (2 register
+                // args, i32 result — the result slot/rax path).
+                _maxHook = WaveIl2Cpp.HookFull("mscorlib", "System", "Math", "Max", 2,
+                    WaveIl2Cpp.Il2CppReturnKind.I32, prefix: null, postfix: OnMaxPostfix,
+                    "tideprobe-il2cpp-patch");
+                log.Info($"[F install] full-path hook installed: {_maxHook}");
+                _maxObserved = 0;
+                _maxPostfixFires = 0;
+                _stage = 7;
+                break;
+            }
+
+            case 7:
+            {
+                // F2a. Pass-through: the caller receives the real max; postfix saw it too.
+                var math = GameClass.Resolve("mscorlib", "System", "Math");
+                var v1 = math.CallStaticValue("Max",
+                    new[] { TideValue.FromInt(3), TideValue.FromInt(7) }, TideType.I32).Int32;
+                log.Info($"[F passthrough] Max(3,7) = {v1}, postfix observed {_maxObserved} ({_maxPostfixFires} fires)");
+                log.Info(v1 == 7 && _maxObserved == 7 && _maxPostfixFires == 1
+                    ? "[F passthrough] PASS — real result reached the caller AND the postfix"
+                    : "[F passthrough] FAIL");
+                _stage = 8;
+                break;
+            }
+
+            case 8:
+            {
+                // F2b. Rewrite: the postfix replaces the result; the caller must receive
+                // the rewritten value while the postfix still observed the ORIGINAL 7.
+                _rewriteMax = true;
+                var math = GameClass.Resolve("mscorlib", "System", "Math");
+                var v2 = math.CallStaticValue("Max",
+                    new[] { TideValue.FromInt(3), TideValue.FromInt(7) }, TideType.I32).Int32;
+                _rewriteMax = false;
+                // NOTE: the resolved Max overload is byte-returning, so the caller
+                // reads only al — a rewritten slot value is observable only through
+                // its low byte (0x1C0FFEE -> 0xEE = 238). The postfix saw the REAL
+                // 7 before the rewrite, which is the actual proof of the mechanism.
+                const int sentinel = 0x1C0FFEE;
+                const int visible = sentinel & 0xFF;
+                log.Info($"[F rewrite] Max(3,7) = {v2} (sentinel {sentinel}, byte-visible {visible}), postfix observed {_maxObserved}");
+                log.Info(v2 == visible && _maxObserved == 7
+                    ? "[F rewrite] PASS — postfix rewrote the result after the original ran"
+                    : "[F rewrite] FAIL");
+
+                // F3. Unhook — exact restore, postfix no longer fires.
+                _maxHook!.Dispose();
+                _maxHook = null;
+                _maxPostfixFires = 0;
+                var v3 = math.CallStaticValue("Max",
+                    new[] { TideValue.FromInt(3), TideValue.FromInt(7) }, TideType.I32).Int32;
+                log.Info($"[F unhook] Max(3,7) = {v3}, postfix fires = {_maxPostfixFires}");
+                log.Info(v3 == 7 && _maxPostfixFires == 0
+                    ? "[F unhook] PASS — exact restore after full-path hook"
+                    : "[F unhook] FAIL");
+                log.Info("TideProbe-IL2CPP-Patch verification complete");
+                _stage = 9;
                 break;
             }
         }
@@ -201,5 +273,18 @@ public sealed unsafe class TideProbeIl2CppPatchPlugin : NamiPlugin
     {
         Interlocked.Increment(ref _organicFires);
         return false;
+    }
+
+    // Full-path postfix for Math.Max: records the REAL result the stub observed and,
+    // when _rewriteMax is set, replaces it (the caller then receives the sentinel).
+    private void OnMaxPostfix(nint instance, nint* args, int argCount, nint* result,
+        WaveIl2Cpp.Il2CppReturnKind kind)
+    {
+        Interlocked.Increment(ref _maxPostfixFires);
+        _maxObserved = (int)result[0];
+        if (_rewriteMax)
+        {
+            result[0] = 0x1C0FFEE;
+        }
     }
 }

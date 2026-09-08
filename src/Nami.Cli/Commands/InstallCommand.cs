@@ -1,14 +1,18 @@
 namespace Nami.Cli.Commands;
 
 /// <summary>
-/// `nami install [gameDir]` — stages a runnable Nami root next to a game from this repo's
-/// build outputs (managed runtime + native injector + bundled .NET runtime).
-/// The self-contained downloadable installer (bundling the runtime into a single artifact for
-/// end users) is the future "Nami-Install" product; this stages from a local build.
+/// `nami install [gameDir] [--from &lt;artifact.zip|url&gt;]` — installs a Nami root next to a game.
+///
+/// Without `--from`: stages from this repo's build outputs (managed runtime + native injector +
+/// bundled .NET runtime) — the developer-facing flow.
+///
+/// With `--from`: installs the self-contained Nami-Install artifact (see `nami pack`) — the
+/// end-user flow. The artifact is hash-verified against its manifest and extracts over an
+/// existing root without touching mods/, inex/, logs or boot-guard markers.
 /// </summary>
 internal static class InstallCommand
 {
-    public static int Run(string gameDir)
+    public static int Run(string gameDir, string? artifact = null)
     {
         if (!Directory.Exists(gameDir))
         {
@@ -16,19 +20,29 @@ internal static class InstallCommand
             return 1;
         }
 
-        // Locate the repo root by walking up from the executing assembly's location, or use
-        // --artifacts if provided (kept simple: repo-relative outputs).
-        var repoRoot = FindRepoRoot();
-        if (repoRoot is null)
-        {
-            Console.Error.WriteLine("could not locate the Nami repo root — run `nami install` from a repo checkout, " +
-                                    "or copy build outputs manually (see docs).");
-            return 1;
-        }
-
         try
         {
-            var staged = Stager.Stage(gameDir, repoRoot);
+            StagedRoot staged;
+            if (artifact is not null)
+            {
+                staged = Stager.InstallFromArtifact(gameDir, artifact);
+                Console.WriteLine($"installed Nami {staged.Version} from {artifact}");
+            }
+            else
+            {
+                // Locate the repo root by walking up from the current directory (or use
+                // --artifacts if provided; kept simple: repo-relative outputs).
+                var repoRoot = Stager.FindRepoRoot();
+                if (repoRoot is null)
+                {
+                    Console.Error.WriteLine("could not locate the Nami repo root — run `nami install` from a repo checkout, " +
+                                            "or copy build outputs manually (see docs).");
+                    return 1;
+                }
+
+                staged = Stager.Stage(gameDir, repoRoot);
+            }
+
             Console.WriteLine($"staged Nami root: {staged.Root}");
             foreach (var created in staged.Created)
             {
@@ -46,23 +60,5 @@ internal static class InstallCommand
             Console.Error.WriteLine(ex.Message);
             return 1;
         }
-    }
-
-    private static string? FindRepoRoot()
-    {
-        // Walk up from the current directory looking for Nami.slnx (works when run from a
-        // repo checkout, e.g. the repo root or a subfolder).
-        var dir = new DirectoryInfo(Directory.GetCurrentDirectory());
-        while (dir is not null)
-        {
-            if (File.Exists(Path.Combine(dir.FullName, "Nami.slnx")))
-            {
-                return dir.FullName;
-            }
-
-            dir = dir.Parent;
-        }
-
-        return null;
     }
 }
