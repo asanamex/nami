@@ -11,7 +11,9 @@ nami-inex lane boots real BepInEx 5.x for legacy mods (see below).
 > (2022.3.27f1), Parasocial (2022.3.5f1), ROUNDS (2022.3.34f1), The Gaspy Color War (Unity 6,
 > 6000.5.4f1); one IL2CPP: D1AL-ogue (Unity 6, 6000.0.61); Wave patches methods
 > with in-house x64 detours and Harmony-style IL-copy prefix/postfix patching (closed methods),
-> plus v1 IL2CPP method hooks on GameAssembly titles (WaveIl2Cpp — observe + skip; see docs/tide.md);
+> plus v1 IL2CPP method hooks on GameAssembly titles (WaveIl2Cpp — observe + skip,
+> verified in-game on D1AL-ogue: hook, pass-through, skip, exact restore, Unity 6
+> lazy-init thunks; see docs/tide.md);
 > **Tide** lets mods call into the game — typed static/instance field access, typed method
 > calls, and live object creation/calls, all executed on the game's main thread and verified
 > stable in-game, on both backends (Mono and IL2CPP auto-detected). The flag

@@ -187,7 +187,11 @@ int RunHookOp(void* arg) {
     auto* rec = nami::stub::hook_native_at(entry, reinterpret_cast<void*>(op->dispatch),
                                            op->user_handle, op->argc);
     if (rec == nullptr) {
-        log_tide("il2cpp patch: detour refused at %p (prologue < 14 clean bytes?)", entry);
+        const auto* b = static_cast<const unsigned char*>(entry);
+        log_tide("il2cpp patch: detour refused at %p (prologue < 5 clean bytes? first bytes: "
+                 "%02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X)",
+                 entry, b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7], b[8], b[9], b[10],
+                 b[11], b[12], b[13], b[14], b[15]);
         return -1;
     }
 

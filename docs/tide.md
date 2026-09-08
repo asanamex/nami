@@ -273,9 +273,10 @@ copying `Nami.*` DLLs from a mod's output into `mods/`.
 
 - `install_main_thread_drain()` — resolves `mono_runtime_invoke`, measures its prologue with
   `measure_relocatable_prologue()` (whole instructions ≥ 14 bytes out of a ≤32-byte scan;
-  refuses VEX/EVEX/XOP, relative branches, `ret`/`int3`, all `0F`-prefixed opcodes, and
-  RIP-relative operands), builds a trampoline (`build_trampoline`), then writes the
-  14-byte absolute jump under `VirtualProtect(PAGE_EXECUTE_READWRITE)`. Installation is
+  with the default flags it refuses VEX/EVEX/XOP, relative branches, `ret`/`int3`, unknown
+  `0F`-prefixed opcodes, and RIP-relative operands), builds a trampoline
+  (`build_trampoline`), then writes the 14-byte absolute jump under
+  `VirtualProtect(PAGE_EXECUTE_READWRITE)`. Installation is
   serialized under an SRW lock (concurrent first calls are safe; the queue critical section is
   initialized once). The same measure/build pair backs the generic `install_native_detour`
   (own SRW lock) used by the inex lane; the drain installer inlines its own patch sequence.
@@ -483,7 +484,12 @@ method is native x64 code in GameAssembly.dll, so patching it needs a different 
 — the first field in metadata v24-v39), follows leading jump thunks (shared-generic
 stubs, same rule as the exports), and installs a **dispatch-stub detour**
 (`native/loader/native_stub.cpp` — the shared Tide detour toolkit: 14-byte absolute
-jump, refuses prologues under 14 clean bytes, exact restore on unhook).
+jump preferred, with a 5-byte near-jump fallback for short prologues; RIP-relative
+operands — including 0F-prefixed SIMD loads — are relocated with disp32 fixup, and
+trampolines are allocated within ±2GB of the target so the fixups always reach; exact
+restore on unhook). This covers IL2CPP leaf getters (`mov eax, [rip+x]; ret`) and
+Unity 6 lazy-init thunks (`sub rsp,0x28; mov rax,[rip+holder]; test; jne …`); only
+prologues under 5 clean bytes refuse (never corrupt).
 
 - **ABI (v1, honest)**: the callback runs on the game's main thread (window-proc
 executor) with the RAW argument registers — `args[0]` is `this` (an `Il2CppObject*`)
@@ -493,7 +499,9 @@ value-typed returns are not observable yet). No argument marshaling in v1.
 - **Requires a game window**: install runs on the main thread like every op; call
 `Tide.EnsureReady()` first. Failures throw `WaveIl2Cpp.Il2CppHookException` and never
 corrupt (uninstall restores the exact bytes).
-- **Status**: the detour/stub/trampoline/restore machinery is verified by the native
-smoke suite (hook a real function: observe args, skip, exact restore) and the managed
-contract is unit-tested; end-to-end verification against a real IL2CPP title is the
-next step (fixtures under `fixtures-dev/`).
+- **Status**: verified end-to-end in-game on D1AL-ogue (Unity 6, 6000.0.61) by the
+`TideProbeIl2CppPatch` sample — hook install on `System.Environment::get_TickCount`
+(a RIP-relative leaf) and on the `UnityEngine.Time::get_deltaTime` lazy-init thunk,
+pass-through preserves real values, skip returns 0, unhook restores exactly. The
+machinery is also covered by the native smoke suite (raw-byte leaf functions in all
+supported shapes + a 4-byte refusal) and the managed contract tests.

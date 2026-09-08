@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>Nami.Samples.TideProbeIl2CppPatch</RootNamespace>
+    <AssemblyName>TideProbeIl2CppPatch</AssemblyName>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Nami.Sdk\Nami.Sdk.csproj" />
+    <ProjectReference Include="..\..\src\Nami.Tide\Nami.Tide.csproj" />
+    <ProjectReference Include="..\..\src\Nami.Wave\Nami.Wave.csproj" />
+  </ItemGroup>
+
+</Project>

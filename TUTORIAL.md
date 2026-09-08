@@ -336,7 +336,8 @@ nami run "samples\HelloNami\HelloNami.csproj" "%GAME%"
 
 It logs once on load (`HelloNami loaded inside the Nami CoreCLR runtime!`) and then every
 ~120 update ticks. (`samples/TideProbe/` and `samples/TideProbeIl2Cpp/` are the Tide
-bridge probes for Mono and IL2CPP.)
+bridge probes for Mono and IL2CPP; `samples/TideProbeIl2CppPatch/` is the IL2CPP
+patching demo — it hooks real game methods in phases and self-reports PASS/FAIL.)
 
 ## 8. CLI
 

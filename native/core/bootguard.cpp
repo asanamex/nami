@@ -110,12 +110,22 @@ LONG WINAPI CrashHandler(EXCEPTION_POINTERS* ep) {
     const bool owned = IsNamiThread();
     const Stage stage = static_cast<Stage>(g_stage);
 
-    // Only hard faults interest us; benign exceptions (breakpoints, debugger) pass through.
+    // Only HARD FAULTS interest us — genuine hardware/OS failure codes. Everything else
+    // must pass through untouched: catchable software exceptions (0xE06D7363 C++ throws,
+    // 0xE0434352 .NET exceptions raised by CoreCLR, 0x4000001F debugger breakpoints)
+    // are NORMAL control flow that the surrounding try/catch handles. The old catch-all
+    // `(code & 0x80000000) != 0` treated those as crashes and killed Nami-owned threads
+    // on a perfectly catchable exception — e.g. the first C++ throw during managed boot.
     const bool hard_fault =
-        code == EXCEPTION_ACCESS_VIOLATION || code == EXCEPTION_ILLEGAL_INSTRUCTION ||
-        code == EXCEPTION_STACK_OVERFLOW || code == EXCEPTION_INT_DIVIDE_BY_ZERO ||
-        code == EXCEPTION_PRIV_INSTRUCTION || code == EXCEPTION_ARRAY_BOUNDS_EXCEEDED ||
-        (code & 0x80000000) != 0;
+        code == EXCEPTION_ACCESS_VIOLATION ||        // 0xC0000005
+        code == EXCEPTION_IN_PAGE_ERROR ||           // 0xC0000006 (MMIO/disk failure)
+        code == EXCEPTION_ARRAY_BOUNDS_EXCEEDED ||   // 0xC000008C
+        code == EXCEPTION_ILLEGAL_INSTRUCTION ||     // 0xC000001D
+        code == EXCEPTION_PRIV_INSTRUCTION ||        // 0xC0000096
+        code == EXCEPTION_INT_DIVIDE_BY_ZERO ||      // 0xC0000094
+        code == EXCEPTION_STACK_OVERFLOW ||          // 0xC00000FD
+        code == 0xC0000409 ||                        // STATUS_STACK_BUFFER_OVERRUN (/GS)
+        code == 0xC0000374;                          // STATUS_HEAP_CORRUPTION
 
     if (hard_fault) {
         uint64_t address = 0;

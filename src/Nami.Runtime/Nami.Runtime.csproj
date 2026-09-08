@@ -12,6 +12,7 @@
   <ItemGroup>
     <ProjectReference Include="..\Nami.Core\Nami.Core.csproj" />
     <ProjectReference Include="..\Nami.Tide\Nami.Tide.csproj" />
+    <ProjectReference Include="..\Nami.Wave\Nami.Wave.csproj" />
     <None Include="Nami.Runtime.runtimeconfig.json" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
 

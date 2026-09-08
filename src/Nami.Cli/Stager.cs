@@ -35,7 +35,7 @@ public static class Stager
     public static readonly string[] ManagedFiles =
     {
         "Nami.Runtime.dll", "Nami.Runtime.deps.json", "Nami.Runtime.runtimeconfig.json",
-        "Nami.Core.dll", "Nami.Sdk.dll", "Nami.Tide.dll"
+        "Nami.Core.dll", "Nami.Sdk.dll", "Nami.Tide.dll", "Nami.Wave.dll"
     };
 
     /// <summary>

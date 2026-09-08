@@ -38,12 +38,15 @@ Full blueprint: `~/.commandcode/plans/nami-unity-mod-loader.md` (or via `/plans`
     that bundles the .NET runtime into a single artifact for end users (today `nami install`
     stages from a local build).
 - **M4 — done (runtime bridge + v1 patching).** Same main-thread drain pattern for the runtime bridge.
-  - **Shipped:** `WaveIl2Cpp` — native dispatch-stub detours on IL2CPP game methods
-    (resolve `Il2CppMethodInfo` → `methodPointer` → jump-thunk following → detour;
-    prefix observer + skip, raw register args, exact restore; install on the main
-    thread via the window-proc executor). Machinery verified by native smoke tests
-    (observe/skip/restore on a real function) + managed contract tests; in-game
-    verification on a real IL2CPP title pending (`fixtures-dev/`).
+  - **Shipped + verified in-game:** `WaveIl2Cpp` — native dispatch-stub detours on IL2CPP
+    game methods (resolve `Il2CppMethodInfo` → `methodPointer` → jump-thunk following →
+    detour; prefix observer + skip, raw register args, exact restore; install on the
+    main thread via the window-proc executor). Short-prologue support (5-byte near
+    jump), RIP-relative disp32 fixup (incl. 0F-prefixed SIMD loads) and Unity 6
+    lazy-init thunk prologues were added during bring-up on D1AL-ogue
+    (TideProbeIl2CppPatch sample: baseline → hook → pass-through → skip → restore all
+    PASS; `Time::get_deltaTime` hook installed). Machinery additionally covered by the
+    native smoke suite (raw-byte leaf shapes + 4-byte refusal) + managed contract tests.
   - **Shipped:** a working IL2CPP backend — loader auto-detects `GameAssembly.dll`, the
     managed Tide layer routes to `nami_il2cpp_*` exports, and ops run on the game's main
     thread inside its window procedure (subclassed drain). Verified live on D1AL-ogue

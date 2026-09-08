@@ -41,11 +41,17 @@ bool IsTideOnMainThread();
 
 /// Measures whole x64 instructions from `target` until >= min_bytes; 0 = unsafe.
 /// With allow_relative_call, near CALLs (E8 rel32) are measured (len 5) and their
-/// offsets recorded into call_offsets (up to max_calls) for trampoline fixup;
-/// without it (Tide default) any relative control flow refuses, as before.
+/// offsets recorded into call_offsets (up to max_calls) for trampoline fixup.
+/// With allow_rip_relative, RIP-relative memory operands (mod=0/rm=5 and the SIB
+/// base-5 form, including the common 0F-prefixed SIMD moves like movss/movsd/
+/// movaps and movzx/movsx families) are measured and their disp32 offsets
+/// recorded into rip_offsets (up to max_rips) for trampoline fixup — needed for
+/// IL2CPP leaf getters (`mov eax, [rip+x]; ret`). Without either flag, any such
+/// instruction refuses, exactly as before.
 int measure_relocatable_prologue(const unsigned char* target, int min_bytes,
                                  bool allow_relative_call = false, int* call_offsets = nullptr,
-                                 int max_calls = 0);
+                                 int max_calls = 0, bool allow_rip_relative = false,
+                                 int* rip_offsets = nullptr, int max_rips = 0);
 
 /// Copies the measured prologue into an executable trampoline ending in a jump
 /// back to target+prologue_len; returns its entry (the "original"), or nullptr.
@@ -72,5 +78,18 @@ void* install_native_detour(const wchar_t* module_name, const char* export_name,
 void* try_install_native_detour(const wchar_t* module_name, const char* export_name,
                                 void* detour, bool allow_relative_call = false,
                                 bool prefer_near_jump = false);
+
+/// Rebase recorded rel32 (near-call) and disp32 (RIP-relative operand) slots from
+/// the original address to the trampoline copy, in place. Slots are zero-filled:
+/// a recorded offset always points at a real slot (a disp32 cannot start at 0).
+/// Returns false when a rebased target would not fit in rel32 (caller fails the
+/// install — never corrupt).
+bool fixup_relocations(unsigned char* target, unsigned char* trampoline,
+                       const int* call_offsets, const int* rip_offsets);
+
+/// Allocates executable memory within ±2GB of `target` (required for rel32 jumps
+/// and for relocated RIP-relative operands to keep their targets reachable).
+/// Walks the address space down first, then up, in 64KB steps; nullptr on failure.
+void* alloc_near(unsigned char* target, int size);
 
 }  // namespace nami::tide

@@ -27,7 +27,8 @@ namespace nami::stub {
 struct HookRecord {
     unsigned char* target;         // patched address
     unsigned char original[14];    // saved bytes for exact restore
-    int patch_len;                 // 14 (absolute jump) — v1 refuses shorter prologues
+    int patch_len;                 // 14 (absolute jump) or 5 (relative jump)
+    bool near_jump;                // true = E9 rel32 form (short prologue)
     unsigned char* trampoline;     // relocated prologue + jump back ("the original")
     unsigned char* stub;           // dispatch stub (executable)
     int stub_size;
@@ -36,9 +37,12 @@ struct HookRecord {
 
 /// Installs a dispatch-stub detour over `target`. `dispatch` is the native callable
 /// invoked with (user_handle, args, arg_count); the stub tail-jumps to the trampoline
-/// unless dispatch returns nonzero (skip). Requires >= 14 clean, relocatable prologue
-/// bytes (v1: absolute jump only). Returns the record (owned by the caller, free with
-/// unhook_native) or nullptr on any failure — never corrupts.
+/// unless dispatch returns nonzero (skip). Preferred form: 14-byte absolute jump.
+/// Falls back to a 5-byte relative jump when the prologue is >= 5 clean bytes but
+/// < 14 (IL2CPP leaf getters like `mov eax, [rip+x]; ret`) — RIP-relative operands
+/// are relocated with disp32 fixup. Refuses only below 5 clean bytes or on genuinely
+/// unsafe code — never corrupts. Returns the record (owned by the caller, free with
+/// unhook_native) or nullptr on any failure.
 HookRecord* hook_native_at(void* target, void* dispatch, uint64_t user_handle, int arg_count);
 
 /// Restores the original bytes exactly and frees trampoline + stub. Idempotent.

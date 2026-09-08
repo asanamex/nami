@@ -44,8 +44,9 @@ native/                          C++17 (Windows x64 first)
                                  detour toolkit (measure_relocatable_prologue /
                                  build_trampoline / install_native_detour (+ try_ variant —
                                  14-byte mov rax,jmp rax, 5-byte near-jump fallback;
-                                 Tide refuses relative branches/RIP-relative, inex jit
-                                 hooks allow E8 with rel32 fixup)
+                                 opt-in E8 rel32 fixup and RIP-relative disp32 fixup
+                                 (incl. 0F-prefixed SIMD loads); trampolines allocated
+                                 within ±2GB of the target so fixups always reach)
   loader/inex_bootstrap.h/.cpp   nami-inex legacy lane: arm() 0/1/2 (payload+sentinel gating),
                                  DOORSTOP_* env, mono_jit_init_version/mono_jit_init detour
                                  attempt (E8-tolerant + near-jump, Ldr load-watch,
@@ -60,7 +61,9 @@ native/                          C++17 (Windows x64 first)
                                  the il2cpp_* exports)
   loader/tide_il2cpp_patch.cpp   IL2CPP method patching (WaveIl2Cpp backend): resolve
                                  Il2CppMethodInfo on the main thread, follow jump thunks,
-                                 install/remove dispatch-stub detours (nami_il2cpp_hook/unhook)
+                                 install/remove dispatch-stub detours (nami_il2cpp_hook/unhook);
+                                 covers short prologues (5-byte near jump) incl. leaf
+                                 getters and Unity 6 lazy-init thunks
   loader/native_stub.cpp         dispatch-stub detours for native (IL2CPP) method hooks: save
                                  arg regs → managed dispatch (observe + skip) → tail-jump the
                                  trampoline or return; exact restore (shared with smoke tests)
@@ -225,6 +228,13 @@ Boot-guard fixes that (native/core/bootguard.cpp):
 - **Auto-recovery.** `safe-mode` carries a boots-remaining counter (3); each clean boot
   decrements it and at 0 the marker is deleted and Nami is fully back. Delete
   `<root>/safe-mode` manually (or wait 3 boots) to restore Nami immediately.
+- **Only hard faults are contained.** The VEH classifies by exception code: access
+  violations, illegal instructions, stack overflow, division-by-zero, privileged
+  instructions, in-page errors, /GS and heap-corruption codes. Catchable software
+  exceptions pass through untouched — C++ throws (0xE06D7363) and .NET exceptions
+  (0xE0434352, raised by CoreCLR for every managed `throw`) are normal control flow,
+  not crashes. (Regression: the first version's high-bit catch-all killed Nami-owned
+  threads on benign C++/.NET exceptions during managed boot — caught by the smoke suite.)
 - **Boundary.** `Boot.Run` deletes `boot-pending` once the update loop is ticking — crashes
   after that point are runtime crashes (mods, Tide) and do not trigger safe mode; managed
   mod failures stay in the quarantine path.
@@ -259,9 +269,10 @@ Boot-guard fixes that (native/core/bootguard.cpp):
   verified) and boot-guard safe mode shipped (crash containment + auto-recovery —
   see above); BepInEx 6 / IL2CPP lane (own CoreCLR + interop
   orchestration) and legacy-pack distribution remain.
-- IL2CPP patching: v1 dispatch-stub hooks shipped (WaveIl2Cpp — observe + skip with raw
-  pointer args, see docs/tide.md §9); argument/result marshaling and stack-arg support
-  (the BepInEx-6-equivalent patching surface) remain.
+- IL2CPP patching: v1 dispatch-stub hooks shipped and verified in-game (WaveIl2Cpp —
+  observe + skip with raw pointer args, short-prologue + RIP-relative support incl.
+  Unity 6 lazy-init thunks, see docs/tide.md §9); argument/result marshaling and
+  stack-arg support (the BepInEx-6-equivalent patching surface) remain.
 - Shipped: `Nami.Interop` — offline (dev-time) typed projection for IL2CPP modders
   (`nami interop images/dump/generate/header`; metadata v24-38, verified on a
   Unity 6000.0.61 title — see `src/Nami.Interop/Il2CppMetadata.cs`).

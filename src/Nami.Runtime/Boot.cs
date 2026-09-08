@@ -1,3 +1,4 @@
+using System.Reflection;
 using System.Runtime.InteropServices;
 using Nami.Core;
 using Nami.Core.Configuration;
@@ -57,6 +58,23 @@ public static class Boot
             catch (Exception ex)
             {
                 hub.Log("boot", LogLevel.Error, $"tide failed: {ex}");
+            }
+        }
+
+        // Pre-load every Nami.* runtime assembly the loader ships so plugins resolve them as
+        // shared (the plugin ALC's shared branch reuses an already-loaded copy from any
+        // context). Tide is loaded implicitly by the self-test above; Wave is referenced by
+        // the runtime but never touched, so it must be loaded explicitly here — otherwise a
+        // plugin referencing Nami.Wave gets a FileNotFoundException at OnLoad.
+        foreach (var sharedName in new[] { "Nami.Core", "Nami.Sdk", "Nami.Tide", "Nami.Wave" })
+        {
+            try
+            {
+                _ = Assembly.Load(sharedName);
+            }
+            catch (Exception ex)
+            {
+                hub.Log("boot", LogLevel.Error, $"failed to preload {sharedName}: {ex.Message}");
             }
         }
 
