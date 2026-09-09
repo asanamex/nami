@@ -372,8 +372,8 @@ bool build_typed_signature(void* method, int expected_count, const int32_t* expe
         return false;
     }
     const uint32_t user_count = g_api.method_get_param_count(method);
-    if (user_count > 12 || expected_types == nullptr ||
-        expected_count != static_cast<int>(user_count)) {
+    if (user_count > 12 || expected_count != static_cast<int>(user_count) ||
+        (expected_types == nullptr && expected_count != 0)) {
         return false;
     }
     uint32_t iflags = 0;

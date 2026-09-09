@@ -8,7 +8,7 @@
 namespace nami::stub {
 
 constexpr int kMaxTypedHookArgs = 12;
-constexpr int kMaxTypedHookMachineArgs = 13; // 12 user args + instance + hidden metadata
+constexpr int kMaxTypedHookMachineArgs = 14; // 12 user args + instance + hidden metadata
 constexpr int kMaxTypedHookTemps = 64;
 
 // Raw register/stack state captured by the typed IL2CPP stub. The signature pointer

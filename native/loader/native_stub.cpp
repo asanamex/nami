@@ -536,7 +536,7 @@ int EmitTypedStub(unsigned char* s, void* vctx, uint64_t trampoline) {
     // machine_argc counts user args + instance slot + the trailing hidden MethodInfo*
     // slot (see TypedHookSignature); the check must allow for all three, and the
     // stack-capture count n above preserves the hidden slot like any stack slot.
-    if (n < 0 || n > 9 || ctx->return_kind < 0 || ctx->return_kind > 4 ||
+    if (n < 0 || n > 10 || ctx->return_kind < 0 || ctx->return_kind > 4 ||
         ctx->user_argc < 0 || ctx->user_argc > 12 ||
         ctx->machine_argc != ctx->user_argc + ctx->instance_method + 1) {
         return 0;
