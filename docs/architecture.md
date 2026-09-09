@@ -63,10 +63,14 @@ native/                          C++17 (Windows x64 first)
   loader/tide_il2cpp_ops.cpp     Tide IL2CPP typed game access (mirrors tide_objects.cpp against
                                  the il2cpp_* exports)
   loader/tide_il2cpp_patch.cpp   IL2CPP method patching (WaveIl2Cpp backend): resolve
-                                 Il2CppMethodInfo on the main thread, follow jump thunks,
-                                 install/remove dispatch-stub detours (nami_il2cpp_hook/unhook);
-                                 covers short prologues (5-byte near jump) incl. leaf
-                                 getters and Unity 6 lazy-init thunks
+                                 Il2CppMethodInfo/signatures on the main thread, follow jump
+                                 thunks, install/remove dispatch-stub detours
+                                 (nami_il2cpp_hook/unhook/hook_typed);                                  typed callbacks reuse TideValue for the safe
+                                 primitive/string/object/enum subset; direct method-pointer
+                                 signatures account for the trailing MethodInfo* slot and
+                                 reject generic/inflated/virtual/complex ABIs; covers short
+                                 prologues (5-byte near jump) incl. leaf getters and Unity 6
+                                 lazy-init thunks
   loader/native_stub.cpp         dispatch-stub detours for native (IL2CPP) method hooks: fast
                                  path (save arg regs → managed dispatch observe/skip →
                                  tail-jump the trampoline or return) and full path (all args

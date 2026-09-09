@@ -10,6 +10,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Nami.Sdk\Nami.Sdk.csproj" />
+    <ProjectReference Include="..\Nami.Tide\Nami.Tide.csproj" />
   </ItemGroup>
 
   <ItemGroup>

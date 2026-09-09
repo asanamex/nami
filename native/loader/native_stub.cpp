@@ -8,11 +8,20 @@
 
 #include <cstdlib>
 #include <cstring>
+#include <mutex>
 #include <new>
+#include <vector>
 
 namespace nami::stub {
 
 namespace {
+
+// Typed hooks can be unhooked while an invocation is still inside the generated stub.
+// Their executable stub, trampoline, and signature are therefore retired rather than
+// freed immediately; the process is short-lived and this prevents use-after-free at the
+// callback boundary. Raw hooks preserve their existing immediate-free behavior.
+std::mutex g_retired_lock;
+std::vector<HookRecord*> g_retired_typed_hooks;
 
 // ---------------------------------------------------------------------------
 // Prefix-only stub (fast path). Layout (offsets patched at build time):
@@ -499,10 +508,221 @@ struct FullEmitCtx {
     int argc;
 };
 
+// Typed callbacks receive (user_handle, TypedHookFrame*) rather than the legacy five
+// argument raw ABI. The frame points at the same saved GP/XMM/stack/result storage used
+// by the full stub, so typed argument edits can be copied back into the original call.
+struct TypedEmitCtx {
+    uint64_t handle;
+    void* prefix;
+    void* postfix;
+    int return_kind;
+    int machine_argc;
+    int user_argc;
+    int instance_method;
+    uint64_t signature;
+};
+
 int EmitFullStub(unsigned char* s, void* vctx, uint64_t trampoline) {
     auto* ctx = static_cast<FullEmitCtx*>(vctx);
     return EmitStubFull(s, ctx->handle, ctx->prefix, ctx->postfix, ctx->return_kind,
                         ctx->argc, trampoline);
+}
+
+// A typed full stub is emitted separately below. Keeping the legacy emitter byte-stable
+// preserves the raw HookFull contract and its existing smoke coverage.
+int EmitTypedStub(unsigned char* s, void* vctx, uint64_t trampoline) {
+    auto* ctx = static_cast<TypedEmitCtx*>(vctx);
+    const int n = ctx->machine_argc > 4 ? ctx->machine_argc - 4 : 0;
+    // machine_argc counts user args + instance slot + the trailing hidden MethodInfo*
+    // slot (see TypedHookSignature); the check must allow for all three, and the
+    // stack-capture count n above preserves the hidden slot like any stack slot.
+    if (n < 0 || n > 9 || ctx->return_kind < 0 || ctx->return_kind > 4 ||
+        ctx->user_argc < 0 || ctx->user_argc > 12 ||
+        ctx->machine_argc != ctx->user_argc + ctx->instance_method + 1) {
+        return 0;
+    }
+
+    const int xmm_off = 0x140;
+    const int buf_regs = 0x180;
+    const int buf_stack = 0x1A0;
+    const int result_off = buf_stack + 8 * n;
+    const int frame_off = (result_off + 16 + 15) & ~15;
+    const int typed_frame_size = static_cast<int>(offsetof(TypedHookFrame, temporary_handles) +
+                                                  sizeof(uint64_t) * kMaxTypedHookTemps);
+    int frame = (frame_off + typed_frame_size + 15) & ~15;
+    // Entry rsp is 8 mod 16; subtracting a frame congruent to 8 keeps the generated
+    // dispatch/trampoline call sites ABI-aligned.
+    if ((frame & 0x0F) != 8) {
+        frame += 8;
+    }
+    const bool use_xmm = ctx->return_kind == 3 || ctx->return_kind == 4;
+
+    int o = 0;
+    auto emit_disp32 = [&](int value) {
+        *reinterpret_cast<int*>(s + o) = value;
+        o += 4;
+    };
+    auto emit_sub_rsp = [&](int amount) {
+        if (amount <= 0x7F) {
+            s[o++] = 0x48; s[o++] = 0x83; s[o++] = 0xEC;
+            s[o++] = static_cast<unsigned char>(amount);
+        } else {
+            s[o++] = 0x48; s[o++] = 0x81; s[o++] = 0xEC;
+            emit_disp32(amount);
+        }
+    };
+    auto emit_add_rsp = [&](int amount) {
+        if (amount <= 0x7F) {
+            s[o++] = 0x48; s[o++] = 0x83; s[o++] = 0xC4;
+            s[o++] = static_cast<unsigned char>(amount);
+        } else {
+            s[o++] = 0x48; s[o++] = 0x81; s[o++] = 0xC4;
+            emit_disp32(amount);
+        }
+    };
+    auto emit_store_reg = [&](int disp, unsigned char rex, unsigned char modrm) {
+        s[o++] = rex; s[o++] = 0x89; s[o++] = modrm; s[o++] = 0x24;
+        emit_disp32(disp);
+    };
+    auto emit_load_reg = [&](int disp, unsigned char rex, unsigned char modrm) {
+        s[o++] = rex; s[o++] = 0x8B; s[o++] = modrm; s[o++] = 0x24;
+        emit_disp32(disp);
+    };
+    auto emit_mov_imm64_to_mem = [&](int disp, uint64_t value) {
+        s[o++] = 0x48; s[o++] = 0xB8;
+        *reinterpret_cast<uint64_t*>(s + o) = value; o += 8;
+        s[o++] = 0x48; s[o++] = 0x89; s[o++] = 0x84; s[o++] = 0x24;
+        emit_disp32(disp);
+    };
+    auto emit_lea_rax_to_mem = [&](int source_disp, int target_disp) {
+        s[o++] = 0x48; s[o++] = 0x8D; s[o++] = 0x84; s[o++] = 0x24;
+        emit_disp32(source_disp);
+        s[o++] = 0x48; s[o++] = 0x89; s[o++] = 0x84; s[o++] = 0x24;
+        emit_disp32(target_disp);
+    };
+    auto emit_dispatch_call = [&](uint64_t fn) {
+        s[o++] = 0x48; s[o++] = 0xB9;
+        *reinterpret_cast<uint64_t*>(s + o) = ctx->handle; o += 8;
+        s[o++] = 0x48; s[o++] = 0x8D; s[o++] = 0x94; s[o++] = 0x24;
+        emit_disp32(frame_off);
+        s[o++] = 0x48; s[o++] = 0xB8;
+        *reinterpret_cast<uint64_t*>(s + o) = fn; o += 8;
+        s[o++] = 0xFF; s[o++] = 0xD0;
+    };
+
+    emit_sub_rsp(frame);
+
+    // Save all four positional GP registers and all four XMM registers. The signature
+    // decides which bank each logical argument belongs to; saving both banks is what
+    // lets a typed callback expose mixed int/float signatures without guessing.
+    emit_store_reg(buf_regs + 0x00, 0x48, 0x8C);
+    emit_store_reg(buf_regs + 0x08, 0x48, 0x94);
+    emit_store_reg(buf_regs + 0x10, 0x4C, 0x84);
+    emit_store_reg(buf_regs + 0x18, 0x4C, 0x8C);
+    for (int k = 0; k < 4; k++) {
+        s[o++] = 0xF3; s[o++] = 0x0F; s[o++] = 0x7F;
+        s[o++] = static_cast<unsigned char>(0x84 + 8 * k); s[o++] = 0x24;
+        emit_disp32(xmm_off + 16 * k);
+    }
+
+    // Clear both raw result slots before prefix dispatch; a skipping prefix can then
+    // supply a replacement through frame_set_result without an uninitialized register.
+    s[o++] = 0x48; s[o++] = 0xC7; s[o++] = 0x84; s[o++] = 0x24;
+    emit_disp32(result_off); *reinterpret_cast<int*>(s + o) = 0; o += 4;
+    s[o++] = 0x48; s[o++] = 0xC7; s[o++] = 0x84; s[o++] = 0x24;
+    emit_disp32(result_off + 8); *reinterpret_cast<int*>(s + o) = 0; o += 4;
+
+    if (n > 0) {
+        // Capture stack args while the caller's stack is still untouched. The typed
+        // callback can edit this buffer; the edited values are copied to the trampoline
+        // call area after prefix dispatch.
+        s[o++] = 0x4C; s[o++] = 0x8D; s[o++] = 0x94; s[o++] = 0x24;
+        emit_disp32(frame + 0x28);
+        s[o++] = 0x4C; s[o++] = 0x8D; s[o++] = 0x9C; s[o++] = 0x24;
+        emit_disp32(buf_stack);
+        for (int k = 0; k < n; k++) {
+            s[o++] = 0x49; s[o++] = 0x8B; s[o++] = 0x42;
+            s[o++] = static_cast<unsigned char>(8 * k);
+            s[o++] = 0x49; s[o++] = 0x89; s[o++] = 0x43;
+            s[o++] = static_cast<unsigned char>(8 * k);
+        }
+    }
+
+    // Build the frame descriptor in the safe upper region of the stub frame. The managed
+    // callback sees pointers into this stack frame and must finish before returning.
+    emit_mov_imm64_to_mem(frame_off + 0, ctx->signature);
+    emit_lea_rax_to_mem(buf_regs, frame_off + 8);
+    emit_lea_rax_to_mem(xmm_off, frame_off + 16);
+    emit_lea_rax_to_mem(buf_stack, frame_off + 24);
+    emit_lea_rax_to_mem(result_off, frame_off + 32);
+    s[o++] = 0xC7; s[o++] = 0x84; s[o++] = 0x24;
+    emit_disp32(frame_off + 40); *reinterpret_cast<int*>(s + o) = ctx->user_argc; o += 4;
+    s[o++] = 0xC7; s[o++] = 0x84; s[o++] = 0x24;
+    emit_disp32(frame_off + 44); *reinterpret_cast<int*>(s + o) = ctx->instance_method; o += 4;
+    s[o++] = 0xC7; s[o++] = 0x84; s[o++] = 0x24;
+    emit_disp32(frame_off + 48); *reinterpret_cast<int*>(s + o) = 0; o += 4;
+    s[o++] = 0xC7; s[o++] = 0x84; s[o++] = 0x24;
+    emit_disp32(frame_off + 52); *reinterpret_cast<int*>(s + o) = 0; o += 4;
+
+    emit_dispatch_call(reinterpret_cast<uint64_t>(ctx->prefix));
+    s[o++] = 0x85; s[o++] = 0xC0;
+    const int jnz_off = o;
+    s[o++] = 0x0F; s[o++] = 0x85; emit_disp32(0);
+
+    // Restore XMM args and copy possibly edited stack args into the trampoline ABI area.
+    for (int k = 0; k < 4; k++) {
+        s[o++] = 0xF3; s[o++] = 0x0F; s[o++] = 0x6F;
+        s[o++] = static_cast<unsigned char>(0x84 + 8 * k); s[o++] = 0x24;
+        emit_disp32(xmm_off + 16 * k);
+    }
+    if (n > 0) {
+        s[o++] = 0x4C; s[o++] = 0x8D; s[o++] = 0x9C; s[o++] = 0x24;
+        emit_disp32(buf_stack);
+        for (int k = 0; k < n; k++) {
+            s[o++] = 0x49; s[o++] = 0x8B; s[o++] = 0x43;
+            s[o++] = static_cast<unsigned char>(8 * k);
+            s[o++] = 0x48; s[o++] = 0x89; s[o++] = 0x44; s[o++] = 0x24;
+            s[o++] = static_cast<unsigned char>(0x20 + 8 * k);
+        }
+    }
+    emit_load_reg(buf_regs + 0x00, 0x48, 0x8C);
+    emit_load_reg(buf_regs + 0x08, 0x48, 0x94);
+    emit_load_reg(buf_regs + 0x10, 0x4C, 0x84);
+    emit_load_reg(buf_regs + 0x18, 0x4C, 0x8C);
+    s[o++] = 0x48; s[o++] = 0xB8;
+    *reinterpret_cast<uint64_t*>(s + o) = trampoline; o += 8;
+    s[o++] = 0xFF; s[o++] = 0xD0;
+
+    // Save the original result into the frame result slots before postfix dispatch.
+    s[o++] = 0x48; s[o++] = 0x89; s[o++] = 0x84; s[o++] = 0x24;
+    emit_disp32(result_off);
+    s[o++] = 0x66; s[o++] = 0x0F; s[o++] = 0xD6; s[o++] = 0x84; s[o++] = 0x24;
+    emit_disp32(result_off + 8);
+    emit_dispatch_call(reinterpret_cast<uint64_t>(ctx->postfix));
+
+    if (use_xmm) {
+        s[o++] = 0xF3; s[o++] = 0x0F; s[o++] = 0x7E; s[o++] = 0x84; s[o++] = 0x24;
+        emit_disp32(result_off + 8);
+    } else {
+        s[o++] = 0x48; s[o++] = 0x8B; s[o++] = 0x84; s[o++] = 0x24;
+        emit_disp32(result_off);
+    }
+    emit_add_rsp(frame);
+    s[o++] = 0xC3;
+
+    const int skip_off = o;
+    if (use_xmm) {
+        s[o++] = 0xF3; s[o++] = 0x0F; s[o++] = 0x7E; s[o++] = 0x84; s[o++] = 0x24;
+        emit_disp32(result_off + 8);
+    } else {
+        s[o++] = 0x48; s[o++] = 0x8B; s[o++] = 0x84; s[o++] = 0x24;
+        emit_disp32(result_off);
+    }
+    emit_add_rsp(frame);
+    s[o++] = 0xC3;
+
+    *reinterpret_cast<int*>(s + jnz_off + 2) = skip_off - (jnz_off + 6);
+    return o;
 }
 
 }  // namespace
@@ -525,6 +745,23 @@ HookRecord* hook_native_full(void* target, void* dispatch_prefix, void* dispatch
     return InstallDetour(target, kStubSizeFull, EmitFullStub, &ctx);
 }
 
+HookRecord* hook_native_typed(void* target, void* dispatch_prefix, void* dispatch_postfix,
+                              int return_kind, uint64_t user_handle, int machine_arg_count,
+                              int user_arg_count, int instance_method, uint64_t signature) {
+    if (target == nullptr || dispatch_prefix == nullptr || dispatch_postfix == nullptr ||
+        signature == 0 || machine_arg_count < 0 || machine_arg_count > kMaxTypedHookMachineArgs ||
+        user_arg_count < 0 || user_arg_count > 12 || return_kind < 0 || return_kind > 4) {
+        return nullptr;
+    }
+    TypedEmitCtx ctx{user_handle, dispatch_prefix, dispatch_postfix, return_kind,
+                     machine_arg_count, user_arg_count, instance_method, signature};
+    auto* rec = InstallDetour(target, 2048, EmitTypedStub, &ctx);
+    if (rec != nullptr) {
+        rec->typed_signature = reinterpret_cast<void*>(signature);
+    }
+    return rec;
+}
+
 void unhook_native(HookRecord* rec) {
     if (rec == nullptr) {
         return;
@@ -536,6 +773,15 @@ void unhook_native(HookRecord* rec) {
             VirtualProtect(rec->target, rec->patch_len, old_protect, &old_protect);
         }
         rec->installed = false;
+    }
+    // The IL2CPP patch registry owns typed_signature; it frees that metadata after the
+    // native record is removed. Typed records are retained for process lifetime so an
+    // invocation already executing the stub cannot jump into freed executable memory.
+    // Retire BEFORE freeing the executable allocations; the native loader is short-lived.
+    if (rec->typed_signature != nullptr) {
+        std::lock_guard<std::mutex> lock(g_retired_lock);
+        g_retired_typed_hooks.push_back(rec);
+        return;
     }
     if (rec->stub != nullptr) {
         VirtualFree(rec->stub, 0, MEM_RELEASE);

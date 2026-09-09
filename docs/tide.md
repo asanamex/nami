@@ -547,12 +547,59 @@ dispatchers' tiny frames masked it).
 `Tide.EnsureReady()` first. Failures throw `WaveIl2Cpp.Il2CppHookException` and never
 corrupt (uninstall restores the exact bytes).
 - **Status**: verified end-to-end in-game on a Unity 6 IL2CPP title by the
-`TideProbeIl2CppPatch` sample - hook install on `System.Environment::get_TickCount`
-(a RIP-relative leaf) and on the `UnityEngine.Time::get_deltaTime` lazy-init thunk,
-pass-through preserves real values, skip returns 0, unhook restores exactly; the full
-path is verified on `System.Math::Max` - the postfix observes the REAL result (7 for
-`Max(3,7)`), a rewrite changes what the caller receives (byte-visible sentinel - the
-resolved overload returns a byte, so the caller reads only `al`), and unhook restores
-exactly. The machinery is also covered by the native smoke suite (raw-byte leaf
-functions in all supported shapes, full-path stack-arg/float/skip/rewrite cases, +
-a 4-byte refusal) and the managed contract tests.
+  `TideProbeIl2CppPatch` sample - hook install on `System.Environment::get_TickCount`
+  (a RIP-relative leaf) and on the `UnityEngine.Time::get_deltaTime` lazy-init thunk,
+  pass-through preserves real values, skip returns 0, unhook restores exactly; the full
+  path is verified on `System.Math::Max` - the postfix observes the REAL result (7 for
+  `Max(3,7)`), a rewrite changes what the caller receives (byte-visible sentinel - the
+  resolved overload returns a byte, so the caller reads only `al`), and unhook restores
+  exactly. The machinery is also covered by the native smoke suite (raw-byte leaf
+  functions in all supported shapes, full-path stack-arg/float/skip/rewrite cases, +
+  a 4-byte refusal) and the managed contract tests.
+
+### Typed hook arguments (HookTyped, v2)
+
+`WaveIl2Cpp.HookTyped` adds a second, opt-in full-path API that exposes arguments and
+results through the same `TideType`/`TideValue` vocabulary used by `GameClass` and
+`GameObject`:
+
+```csharp
+using Nami;
+using Nami.Wave;
+
+using var hook = WaveIl2Cpp.HookTyped(
+    "Assembly-CSharp", "Game", "Player", "TakeDamage",
+    new[] { TideType.I32 }, TideType.Void,
+    prefix: context =>
+    {
+        var damage = context.GetArgument(0).Int32;
+        context.SetArgument(0, TideValue.FromInt(Math.Min(damage, 1)));
+        return false;
+    },
+    postfix: null,
+    owner: "my.mod");
+```
+
+The native installer resolves the unique overload on the game main thread, reads the
+exported IL2CPP signature APIs once, and stores an immutable signature beside the detour.
+The callback receives `Il2CppHookContext`: `ArgumentCount`, `IsInstanceMethod`, borrowed `This`,
+`GetArgumentType`, `GetArgument`/`SetArgument`, generic typed argument helpers,
+`ResultType`, and `GetResult`/`SetResult`. Instance `this` is not included in the user
+argument indices; use `This` for the borrowed receiver.
+String and object values are converted to UTF-8 or temporary 64-bit IL2CPP GC handles;
+string buffers and callback-scoped native handles are released after dispatch. Use
+`GetString`/`GetResultString` to copy string values before the callback returns. Typed
+native stubs are retired rather than freed on unhook, so an in-flight callback cannot
+race executable-code or signature reclamation; this is a bounded process-lifetime cost.
+
+The v2 safe set is bool, 8/16/32/64-bit integer values (normalized to `I32`/`I64`),
+float, double, string, object/reference values, and enums (normalized to their underlying
+integer). Writes to `Object` slots accept primitives and strings boxed through the shared
+`il2cpp_boxing.h` table (the same rule as Tide object-param calls); all other type
+mismatches stay refused. `ref`/`out`, arbitrary structs, generic or inflated methods, hidden structure
+returns, virtual methods, and ambiguous or unsupported overloads are refused before patch
+installation. The direct method-pointer ABI also includes the trailing `MethodInfo*`
+metadata slot; typed hooks account for it and refuse generic/inflated methods whose hidden
+context ABI cannot be proven. The legacy `Hook` and `HookFull` raw-slot APIs remain
+unchanged for low-level/native use. Typed hooks still require a visible game window and
+`Tide.EnsureReady()` before installation.

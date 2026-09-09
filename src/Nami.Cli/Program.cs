@@ -336,6 +336,8 @@ internal static class Program
 
         var missing = Launcher.MissingRootFiles(root);
         Console.WriteLine(missing.Count == 0 ? "launcher  : complete" : $"launcher  : MISSING {string.Join(", ", missing)}");
+        var obsolete = Stager.FindObsoleteRootFiles(root);
+        Console.WriteLine(obsolete.Count == 0 ? "layout   : current" : $"layout   : OBSOLETE {string.Join(", ", obsolete)} — delete (shadow-load risk)");
 
         var inexPayload = File.Exists(InexCommand.PreloaderPath(root));
         var inexEnabled = File.Exists(InexCommand.SentinelPath(root));

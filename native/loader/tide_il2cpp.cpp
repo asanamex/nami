@@ -64,6 +64,7 @@ Request* g_head = nullptr;
 Request* g_tail = nullptr;
 volatile LONG g_pending = 0;
 volatile LONG g_running = 0;  // set while the drain runs on the main thread
+DWORD g_main_thread_id = 0;
 
 // Main-window subclass state.
 HWND g_hwnd = nullptr;
@@ -168,6 +169,7 @@ bool install_window_executor() {
         return false;
     }
 
+    g_main_thread_id = GetWindowThreadProcessId(g_hwnd, nullptr);
     g_original_proc = reinterpret_cast<WNDPROC>(
         reinterpret_cast<LONG_PTR>(GetWindowLongPtrW(g_hwnd, GWLP_WNDPROC)));
     if (g_original_proc == nullptr) {
@@ -183,11 +185,13 @@ bool install_window_executor() {
 }
 
 bool il2cpp_on_main_thread() {
-    return InterlockedCompareExchange(&g_running, 0, 0) != 0;
+    return InterlockedCompareExchange(&g_running, 0, 0) != 0 ||
+           (g_main_thread_id != 0 && GetCurrentThreadId() == g_main_thread_id);
 }
 
 bool run_il2cpp_op(int (*fn)(void*), void* arg, int timeout_ms) {
-    // Re-entrant: the caller IS the main-thread drain - run inline.
+    // Re-entrant: the caller is already the game main thread (including a typed hook
+    // callback running inside ordinary game code), so never post and wait on itself.
     if (il2cpp_on_main_thread()) {
         return fn(arg) == 0;
     }

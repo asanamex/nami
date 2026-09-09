@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using Nami;
 using Nami.Wave.Internal;
 
 namespace Nami.Wave;
@@ -37,6 +38,299 @@ public static unsafe class WaveIl2Cpp
         F32 = 3,
         F64 = 4,
     }
+
+    /// <summary>
+    /// Typed, callback-scoped access to an IL2CPP hook invocation. Values use the same
+    /// TideValue vocabulary as GameClass/GameObject.
+    /// Object values are borrowed handles valid only during the callback: wrap with
+    /// GetObject/GetResultObject (or GetArgument&lt;GameObject&gt;) for reads, do NOT
+    /// Dispose them (the native frame frees its temporaries after dispatch; disposing
+    /// would double-free the IL2CPP GC handle). Instance receivers are available through
+    /// the borrowed <see cref="This"/> property.
+    /// </summary>
+    public sealed class Il2CppHookContext : IDisposable
+    {
+        private nint _nativeFrame;
+        private bool _cleaned;
+
+        internal Il2CppHookContext(nint nativeFrame) => _nativeFrame = nativeFrame;
+
+        public int ArgumentCount
+        {
+            get { EnsureLive(); return NativeFrameArgCount(_nativeFrame); }
+        }
+
+        public bool IsInstanceMethod
+        {
+            get { EnsureLive(); return NativeFrameIsInstance(_nativeFrame) != 0; }
+        }
+        /// <summary>
+        /// The borrowed receiver for instance-method hooks (null on static methods).
+        /// Valid only during the callback; do NOT Dispose (the native frame frees its
+        /// temporaries via nami_il2cpp_hook_frame_cleanup after dispatch - Dispose is a
+        /// no-op guard, but the handle still dangles after the callback returns).
+        /// </summary>
+        public GameObject? This
+        {
+            get
+            {
+                EnsureLive();
+                if (!IsInstanceMethod)
+                {
+                    return null;
+                }
+
+                var value = default(TideValue);
+                var rc = NativeFrameGetThis(_nativeFrame, &value);
+                if (rc != 0)
+                {
+                    throw new Il2CppHookException($"cannot read typed IL2CPP receiver (code {rc})");
+                }
+
+                return value.Type == TideType.Object ? GameObject.FromBorrowedHandle(value.Handle) : null;
+            }
+        }
+
+        public TideType ResultType
+        {
+            get { EnsureLive(); return (TideType)NativeFrameGetResultType(_nativeFrame); }
+        }
+
+        public TideType GetArgumentType(int index)
+        {
+            EnsureLive();
+            return (TideType)NativeFrameGetType(_nativeFrame, index);
+        }
+
+        public TideValue GetArgument(int index)
+        {
+            EnsureLive();
+            var value = default(TideValue);
+            var rc = NativeFrameGet(_nativeFrame, index, &value);
+            if (rc != 0) throw new Il2CppHookException($"cannot read typed IL2CPP argument {index} (code {rc})");
+            return value;
+        }
+
+        public void SetArgument(int index, TideValue value)
+        {
+            EnsureLive();
+            var rc = NativeFrameSet(_nativeFrame, index, &value);
+            if (rc != 0) throw new Il2CppHookException($"cannot write typed IL2CPP argument {index} (code {rc})");
+        }
+
+        public void SetArgument(int index, string? value)
+        {
+            var typed = TideValue.FromString(value);
+            try
+            {
+                SetArgument(index, typed);
+            }
+            finally
+            {
+                typed.FreeStringBuffer();
+            }
+        }
+
+        public TideValue GetResult()
+        {
+            EnsureLive();
+            var value = default(TideValue);
+            var rc = NativeFrameGetResult(_nativeFrame, &value);
+            if (rc != 0) throw new Il2CppHookException($"cannot read typed IL2CPP result (code {rc})");
+            return value;
+        }
+
+        public void SetResult(TideValue value)
+        {
+            EnsureLive();
+            var rc = NativeFrameSetResult(_nativeFrame, &value);
+            if (rc != 0) throw new Il2CppHookException($"cannot write typed IL2CPP result (code {rc})");
+        }
+
+        public void SetResult(string? value)
+        {
+            var typed = TideValue.FromString(value);
+            try
+            {
+                SetResult(typed);
+            }
+            finally
+            {
+                typed.FreeStringBuffer();
+            }
+        }
+
+        /// <summary>Reads and frees a string argument returned by the native decoder.</summary>
+        public string? GetString(int index)
+        {
+            var value = GetArgument(index);
+            try
+            {
+                return value.String;
+            }
+            finally
+            {
+                value.FreeNativeReturn();
+            }
+        }
+
+        /// <summary>Borrowed read: valid during the callback only, do NOT Dispose.</summary>
+        public GameObject? GetObject(int index)
+        {
+            var value = GetArgument(index);
+            return value.Type == TideType.Object ? GameObject.FromBorrowedHandle(value.Handle) : null;
+        }
+
+        /// <summary>Strongly-typed argument read. Enums map via their underlying int/long.</summary>
+        public T? GetArgument<T>(int index)
+        {
+            var value = GetArgument(index);
+            return ConvertHookValue<T>(value);
+        }
+
+        /// <summary>Strongly-typed argument write. Null maps to the spec's null shape.</summary>
+        public void SetArgument<T>(int index, T? value)
+        {
+            var typed = ToHookValue(index, value);
+            try
+            {
+                SetArgument(index, typed);
+            }
+            finally
+            {
+                typed.FreeStringBuffer();
+            }
+        }
+
+        /// <summary>Strongly-typed result read. Enums map via their underlying int/long.</summary>
+        public T? GetResult<T>()
+        {
+            var value = GetResult();
+            return ConvertHookValue<T>(value);
+        }
+
+        /// <summary>Strongly-typed result write.</summary>
+        public void SetResult<T>(T? value)
+        {
+            var typed = ToHookValue(null, value);
+            try
+            {
+                SetResult(typed);
+            }
+            finally
+            {
+                typed.FreeStringBuffer();
+            }
+        }
+
+        private TideValue ToHookValue<T>(int? index, T? value)
+        {
+            if (value is null)
+            {
+                var spec = index.HasValue ? GetArgumentType(index.Value) : ResultType;
+                return spec == TideType.String ? TideValue.FromString(null) : TideValue.FromHandle(0);
+            }
+
+            var t = typeof(T);
+            if (t.IsEnum)
+            {
+                return Type.GetTypeCode(Enum.GetUnderlyingType(t)) == TypeCode.Int64
+                    ? TideValue.FromLong(System.Convert.ToInt64(value))
+                    : TideValue.FromInt(System.Convert.ToInt32(value));
+            }
+
+            return value switch
+            {
+                int i => TideValue.FromInt(i),
+                long l => TideValue.FromLong(l),
+                float f => TideValue.FromFloat(f),
+                double d => TideValue.FromDouble(d),
+                bool b => TideValue.FromBool(b),
+                string s => TideValue.FromString(s),
+                GameObject go => TideValue.FromHandle(go.HandleValue),
+                _ => throw new NotSupportedException($"type {t} is not supported by typed IL2CPP hooks"),
+            };
+        }
+
+        internal static T? ConvertHookValue<T>(TideValue v)
+        {
+            var t = typeof(T);
+            if (t.IsEnum)
+            {
+                return (T)Enum.ToObject(t, v.Type == TideType.I64 ? v.Int64 : v.Int32);
+            }
+
+            if (t == typeof(int)) return (T)(object)v.Int32;
+            if (t == typeof(long)) return (T)(object)v.Int64;
+            if (t == typeof(float)) return (T)(object)v.Single;
+            if (t == typeof(double)) return (T)(object)v.Double;
+            if (t == typeof(bool)) return (T)(object)v.Boolean;
+            if (t == typeof(string))
+            {
+                try
+                {
+                    var s = v.String;
+                    return s is null ? default : (T)(object)s;
+                }
+                finally
+                {
+                    v.FreeNativeReturn();
+                }
+            }
+
+            if (typeof(GameObject).IsAssignableFrom(t) && v.Type == TideType.Object)
+            {
+                return (T)(object)GameObject.FromBorrowedHandle(v.Handle);
+            }
+
+            return default;
+        }
+
+        /// <summary>Reads and frees a string result returned by the native decoder.</summary>
+        public string? GetResultString()
+        {
+            var value = GetResult();
+            try
+            {
+                return value.String;
+            }
+            finally
+            {
+                value.FreeNativeReturn();
+            }
+        }
+
+        /// <summary>Borrowed read: valid during the callback only, do NOT Dispose.</summary>
+        public GameObject? GetResultObject()
+        {
+            var value = GetResult();
+            return value.Type == TideType.Object ? GameObject.FromBorrowedHandle(value.Handle) : null;
+        }
+
+        internal void Cleanup()
+        {
+            if (_cleaned) return;
+            var frame = _nativeFrame;
+            Invalidate();
+            NativeFrameCleanup(frame);
+        }
+
+        internal void Invalidate()
+        {
+            _cleaned = true;
+            _nativeFrame = IntPtr.Zero;
+        }
+
+        private void EnsureLive()
+        {
+            if (_cleaned || _nativeFrame == IntPtr.Zero) throw new ObjectDisposedException(nameof(Il2CppHookContext));
+        }
+
+        public void Dispose() => Cleanup();
+    }
+
+    public delegate bool Il2CppTypedHookPrefixCallback(Il2CppHookContext context);
+    public delegate void Il2CppTypedHookPostfixCallback(Il2CppHookContext context);
 
     /// <summary>
     /// The fast-path patch callback. <paramref name="instance"/> is args[0] (an
@@ -129,6 +423,41 @@ public static unsafe class WaveIl2Cpp
         int argc, nint dispatch, nint dispatchPostfix, int returnKind, nint userHandle,
         out nint trampoline, out long hookId);
 
+    [DllImport(LoaderDll, EntryPoint = "nami_il2cpp_hook_typed", CallingConvention = CallingConvention.Cdecl)]
+    private static extern int NativeHookTyped(byte* assembly, byte* ns, byte* klass, byte* method,
+        int argc, int* expectedTypes, int expectedCount, int expectedReturn,
+        nint dispatchPrefix, nint dispatchPostfix, nint userHandle, out long hookId);
+
+    [DllImport(LoaderDll, EntryPoint = "nami_il2cpp_hook_frame_arg_count", CallingConvention = CallingConvention.Cdecl)]
+    private static extern int NativeFrameArgCount(nint frame);
+
+    [DllImport(LoaderDll, EntryPoint = "nami_il2cpp_hook_frame_get_type", CallingConvention = CallingConvention.Cdecl)]
+    private static extern int NativeFrameGetType(nint frame, int index);
+
+    [DllImport(LoaderDll, EntryPoint = "nami_il2cpp_hook_frame_is_instance", CallingConvention = CallingConvention.Cdecl)]
+    private static extern int NativeFrameIsInstance(nint frame);
+
+    [DllImport(LoaderDll, EntryPoint = "nami_il2cpp_hook_frame_get", CallingConvention = CallingConvention.Cdecl)]
+    private static extern int NativeFrameGet(nint frame, int index, TideValue* value);
+
+    [DllImport(LoaderDll, EntryPoint = "nami_il2cpp_hook_frame_set", CallingConvention = CallingConvention.Cdecl)]
+    private static extern int NativeFrameSet(nint frame, int index, TideValue* value);
+
+    [DllImport(LoaderDll, EntryPoint = "nami_il2cpp_hook_frame_get_this", CallingConvention = CallingConvention.Cdecl)]
+    private static extern int NativeFrameGetThis(nint frame, TideValue* value);
+
+    [DllImport(LoaderDll, EntryPoint = "nami_il2cpp_hook_frame_get_result_type", CallingConvention = CallingConvention.Cdecl)]
+    private static extern int NativeFrameGetResultType(nint frame);
+
+    [DllImport(LoaderDll, EntryPoint = "nami_il2cpp_hook_frame_get_result", CallingConvention = CallingConvention.Cdecl)]
+    private static extern int NativeFrameGetResult(nint frame, TideValue* value);
+
+    [DllImport(LoaderDll, EntryPoint = "nami_il2cpp_hook_frame_set_result", CallingConvention = CallingConvention.Cdecl)]
+    private static extern int NativeFrameSetResult(nint frame, TideValue* value);
+
+    [DllImport(LoaderDll, EntryPoint = "nami_il2cpp_hook_frame_cleanup", CallingConvention = CallingConvention.Cdecl)]
+    private static extern void NativeFrameCleanup(nint frame);
+
     [DllImport(LoaderDll, EntryPoint = "nami_il2cpp_unhook", CallingConvention = CallingConvention.Cdecl)]
     private static extern int NativeUnhook(long hookId);
 
@@ -158,6 +487,12 @@ public static unsafe class WaveIl2Cpp
         public string Owner = "";
         public GCHandle CallbackHandle = callbackHandle;
         public void Free() => CallbackHandle.Free();
+    }
+
+    private sealed class TypedCallbacks
+    {
+        public Il2CppTypedHookPrefixCallback? Prefix;
+        public Il2CppTypedHookPostfixCallback? Postfix;
     }
 
     private static readonly Lock RegistryLock = new();
@@ -257,6 +592,71 @@ public static unsafe class WaveIl2Cpp
         }
     }
 
+    [UnmanagedCallersOnly]
+    private static int DispatchTypedPrefix(nint userHandle, nint frame)
+    {
+        if (userHandle == IntPtr.Zero)
+        {
+            NativeFrameCleanup(frame);
+            return 0;
+        }
+
+        var site = (Site)GCHandle.FromIntPtr(userHandle).Target!;
+        var skip = false;
+        Il2CppHookContext? context = null;
+        try
+        {
+            if (site.CallbackHandle.Target is TypedCallbacks { Prefix: { } prefix })
+            {
+                context = new Il2CppHookContext(frame);
+                skip = prefix(context);
+            }
+        }
+        catch
+        {
+            // A typed callback is user code; a throw must leave the original call intact.
+            skip = false;
+        }
+        finally
+        {
+            context?.Invalidate();
+            if (skip)
+            {
+                NativeFrameCleanup(frame);
+            }
+        }
+
+        return skip ? 1 : 0;
+    }
+
+    [UnmanagedCallersOnly]
+    private static void DispatchTypedPostfix(nint userHandle, nint frame)
+    {
+        if (userHandle == IntPtr.Zero)
+        {
+            NativeFrameCleanup(frame);
+            return;
+        }
+
+        var site = (Site)GCHandle.FromIntPtr(userHandle).Target!;
+        try
+        {
+            if (site.CallbackHandle.Target is TypedCallbacks { Postfix: { } postfix })
+            {
+                using var context = new Il2CppHookContext(frame);
+                postfix(context);
+            }
+        }
+        catch
+        {
+            // A typed callback must not corrupt the native return path.
+        }
+        finally
+        {
+            NativeFrameCleanup(frame);
+        }
+    }
+
     private static readonly IntPtr DispatchAddress = ResolveDispatch();
     private static readonly IntPtr DispatchFullPrefixAddress = ResolveDispatchFullPrefix();
     private static readonly IntPtr DispatchFullPostfixAddress = ResolveDispatchFullPostfix();
@@ -283,6 +683,25 @@ public static unsafe class WaveIl2Cpp
                 System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!);
         return addr == IntPtr.Zero ? IntPtr.Zero : addr;
     }
+
+    private static IntPtr ResolveDispatchTypedPrefix()
+    {
+        var addr = NativeInterop.GetCodeAddress(
+            typeof(WaveIl2Cpp).GetMethod(nameof(DispatchTypedPrefix),
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!);
+        return addr == IntPtr.Zero ? IntPtr.Zero : addr;
+    }
+
+    private static IntPtr ResolveDispatchTypedPostfix()
+    {
+        var addr = NativeInterop.GetCodeAddress(
+            typeof(WaveIl2Cpp).GetMethod(nameof(DispatchTypedPostfix),
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!);
+        return addr == IntPtr.Zero ? IntPtr.Zero : addr;
+    }
+
+    private static readonly IntPtr DispatchTypedPrefixAddress = ResolveDispatchTypedPrefix();
+    private static readonly IntPtr DispatchTypedPostfixAddress = ResolveDispatchTypedPostfix();
 
     // ------------------------------------------------------------ public API
 
@@ -459,6 +878,87 @@ public static unsafe class WaveIl2Cpp
                 s.Free();
             }
 
+            siteHandle.Free();
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// Installs a typed IL2CPP full-path hook. Parameter and return metadata are resolved on
+    /// the game main thread; unsupported structs, ref/out values, hidden returns, and
+    /// ambiguous overloads are refused before the detour is installed. The
+    /// <paramref name="parameterTypes"/> array is the exact user-parameter TideType shape;
+    /// an empty array selects a zero-parameter method.
+    /// </summary>
+    public static Il2CppHook HookTyped(string assembly, string ns, string klass, string method,
+        IReadOnlyList<TideType> parameterTypes, TideType? returnType,
+        Il2CppTypedHookPrefixCallback? prefix, Il2CppTypedHookPostfixCallback? postfix, string owner)
+    {
+        ArgumentNullException.ThrowIfNull(assembly);
+        ArgumentNullException.ThrowIfNull(ns);
+        ArgumentNullException.ThrowIfNull(klass);
+        ArgumentNullException.ThrowIfNull(method);
+        ArgumentNullException.ThrowIfNull(parameterTypes);
+        ArgumentNullException.ThrowIfNull(owner);
+        if (prefix is null && postfix is null)
+        {
+            throw new ArgumentException("at least one of prefix/postfix must be supplied", nameof(prefix));
+        }
+        if (parameterTypes.Count > 12)
+        {
+            throw new ArgumentOutOfRangeException(nameof(parameterTypes), "typed hooks support at most 12 user arguments");
+        }
+        if (DispatchTypedPrefixAddress == IntPtr.Zero || DispatchTypedPostfixAddress == IntPtr.Zero)
+        {
+            throw new Il2CppHookException("cannot resolve the Wave IL2CPP typed dispatch entries");
+        }
+        if (!IsAvailable)
+        {
+            throw new Il2CppHookException(
+                "Wave IL2CPP patching requires the Nami loader in an IL2CPP game process " +
+                "(GameAssembly.dll present)");
+        }
+
+        var callbacks = new TypedCallbacks { Prefix = prefix, Postfix = postfix };
+        var siteHandle = GCHandle.Alloc(
+            new Site(GCHandle.Alloc(callbacks)) { Owner = owner }, GCHandleType.Normal);
+        var target = $"{ns}.{klass}::{method}({parameterTypes.Count}) [typed]";
+        var a = ZeroTerminated(assembly, 159);
+        var n = ZeroTerminated(ns, 159);
+        var k = ZeroTerminated(klass, 159);
+        var m = ZeroTerminated(method, 159);
+        var expected = parameterTypes.Select(type => (int)type).ToArray();
+        try
+        {
+            fixed (byte* pa = a)
+            fixed (byte* pn = n)
+            fixed (byte* pk = k)
+            fixed (byte* pm = m)
+            fixed (int* pe = expected)
+            {
+                var expectedReturn = returnType.HasValue ? (int)returnType.Value : -1;
+                var rc = NativeHookTyped(pa, pn, pk, pm, expected.Length, pe, expected.Length,
+                    expectedReturn, DispatchTypedPrefixAddress, DispatchTypedPostfixAddress,
+                    GCHandle.ToIntPtr(siteHandle), out var hookId);
+                if (rc != 0)
+                {
+                    throw new Il2CppHookException(rc == -3
+                        ? $"IL2CPP typed hook of {target} failed: main-thread executor unavailable"
+                        : $"IL2CPP typed hook of {target} failed (code {rc}); see nami/native/nami-tide.log");
+                }
+
+                var site = (Site)siteHandle.Target!;
+                site.HookId = hookId;
+                lock (RegistryLock)
+                {
+                    Sites[hookId] = site;
+                }
+                return new Il2CppHook(owner, target, hookId);
+            }
+        }
+        catch
+        {
+            if (siteHandle.Target is Site s) s.Free();
             siteHandle.Free();
             throw;
         }

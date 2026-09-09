@@ -17,6 +17,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\Nami.Wave\Nami.Wave.csproj" />
+    <ProjectReference Include="..\..\src\Nami.Tide\Nami.Tide.csproj" />
   </ItemGroup>
 
   <ItemGroup>

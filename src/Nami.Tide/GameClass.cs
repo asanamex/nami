@@ -173,7 +173,9 @@ public sealed unsafe class GameClass
             bool b => TideValue.FromBool(b),
             string s => TideValue.FromString(s),
             GameObject go => TideValue.FromHandle(go.HandleValue),
-            _ when typeof(T).IsEnum => TideValue.FromInt(System.Convert.ToInt32(value)),
+            _ when typeof(T).IsEnum => Type.GetTypeCode(Enum.GetUnderlyingType(typeof(T))) == TypeCode.Int64
+                ? TideValue.FromLong(System.Convert.ToInt64(value))
+                : TideValue.FromInt(System.Convert.ToInt32(value)),
             _ => throw new NotSupportedException($"type {typeof(T)} is not supported by Tide")
         };
     }
@@ -303,10 +305,22 @@ public sealed unsafe class GameObject : IDisposable
 
     internal long Handle { get; private set; }
 
-    internal GameObject(long handle) => Handle = handle;
+    /// <summary>True when this wrapper borrows its handle (hook-frame temporary scope).</summary>
+    internal bool IsBorrowed { get; }
+
+    internal GameObject(long handle) => (Handle, IsBorrowed) = (handle, false);
+
+    internal GameObject(long handle, bool borrowed) => (Handle, IsBorrowed) = (handle, borrowed);
 
     /// <summary>Wraps an existing raw handle (e.g. one obtained via <see cref="TideValue.Handle"/>).</summary>
     public static GameObject FromHandle(long handle) => handle == 0 ? null! : new GameObject(handle);
+
+    /// <summary>
+    /// Wraps a borrowed handle (IL2CPP hook-frame temporaries freed by
+    /// nami_il2cpp_hook_frame_cleanup after dispatch). The wrapper never frees it:
+    /// <see cref="Dispose"/> is a no-op. Valid only during the callback.
+    /// </summary>
+    internal static GameObject FromBorrowedHandle(long handle) => handle == 0 ? null! : new GameObject(handle, borrowed: true);
 
     /// <summary>True once <see cref="Dispose"/> has been called.</summary>
     public bool IsDisposed => Handle == 0;
@@ -487,6 +501,16 @@ public sealed unsafe class GameObject : IDisposable
     {
         if (Handle == 0)
         {
+            return;
+        }
+
+        if (IsBorrowed)
+        {
+            // Hook-frame temporaries are freed by nami_il2cpp_hook_frame_cleanup after
+            // dispatch; freeing here would double-free the IL2CPP GC handle. Swallow as
+            // a no-op (debug-log only - never throw on a mod's callback thread).
+            System.Diagnostics.Debug.WriteLine($"[tide] Dispose on borrowed GameObject handle {Handle} ignored");
+            Handle = 0;
             return;
         }
 

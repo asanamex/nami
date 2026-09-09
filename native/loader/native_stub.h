@@ -1,8 +1,34 @@
 #pragma once
 
+#include "tide_abi.h"
+
+#include <cstddef>
 #include <cstdint>
 
 namespace nami::stub {
+
+constexpr int kMaxTypedHookArgs = 12;
+constexpr int kMaxTypedHookMachineArgs = 13; // 12 user args + instance + hidden metadata
+constexpr int kMaxTypedHookTemps = 64;
+
+// Raw register/stack state captured by the typed IL2CPP stub. The signature pointer
+// refers to an immutable native signature owned by the patch registry. Accessors decode
+// these slots into TideValue instances while the callback is running.
+struct TypedHookFrame {
+    uint64_t signature;
+    uint64_t gp;
+    uint64_t xmm;
+    uint64_t stack;
+    uint64_t result;
+    uint32_t arg_count;
+    uint32_t instance_method;
+    uint32_t temporary_count;
+    uint32_t reserved;
+    uint64_t temporary_handles[64];
+};
+
+static_assert(offsetof(TypedHookFrame, temporary_handles) == 56);
+
 
 // ---------------------------------------------------------------------------
 // Native dispatch-stub detours for IL2CPP method patching.
@@ -45,6 +71,7 @@ struct HookRecord {
     unsigned char* trampoline;     // relocated prologue + jump back ("the original")
     unsigned char* stub;           // dispatch stub (executable)
     int stub_size;
+    void* typed_signature;          // owned by the IL2CPP patch registry when non-null
     bool installed;
 };
 
@@ -61,6 +88,13 @@ HookRecord* hook_native_at(void* target, void* dispatch, uint64_t user_handle, i
 /// Same prologue policy and safety guarantees as hook_native_at.
 HookRecord* hook_native_full(void* target, void* dispatch_prefix, void* dispatch_postfix,
                              int return_kind, uint64_t user_handle, int arg_count);
+
+// Installs a full-path stub that also preserves XMM argument registers and invokes the
+// typed dispatch callbacks with the raw frame. The caller supplies an immutable signature
+// decoder context; decoding is performed by the dispatch owner on the game main thread.
+HookRecord* hook_native_typed(void* target, void* dispatch_prefix, void* dispatch_postfix,
+                              int return_kind, uint64_t user_handle, int machine_arg_count,
+                              int user_arg_count, int instance_method, uint64_t signature);
 
 /// Restores the original bytes exactly and frees trampoline + stub. Idempotent.
 void unhook_native(HookRecord* rec);

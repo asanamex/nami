@@ -407,8 +407,6 @@ internal sealed unsafe class Detour : IDisposable
         // entry out from under the patch (or reclaim the page): restoring then would
         // corrupt foreign code or fault. Anything else present means there is nothing
         // of ours left to restore.
-        System.Console.Error.WriteLine(
-            $"[detour-diag] uninstall target={(nint)_target:X} pageoff={(nint)_target & 4095} len={_patchLength}");
         if (_installedBytes is null || !RawMemory.IsExecutableCode(_target) || !MatchesInstalled())
         {
             _installed = false;

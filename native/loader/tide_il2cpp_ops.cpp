@@ -11,6 +11,7 @@
 //   - Strings are UTF-16 internally: convert via il2cpp_string_chars/length.
 // ---------------------------------------------------------------------------
 
+#include "il2cpp_boxing.h"
 #include "tide_il2cpp.h"
 #include "tide_member_cache.h"
 
@@ -708,52 +709,29 @@ bool to_il2cpp_arg(const nami::tide::TideValue& v, void* box, void** out) {
 
 // Boxes a primitive into an object of the given class (for object-typed params and
 // SetValue/array writes). `klass` must be the boxed type (Int32/Boolean/...) or an enum.
+// Packing is owned by il2cpp_boxing.h (single copy shared with the hook-frame path).
 void* box_into_class(void* klass, const nami::tide::TideValue& v) {
     using namespace nami::tide;
     if (klass == nullptr || g_api.value_box == nullptr) {
         return nullptr;
     }
     alignas(8) unsigned char raw[8] = {};
-    switch (v.type) {
-        case TideType_I32:
-            *reinterpret_cast<int32_t*>(raw) = v.data.i32;
-            break;
-        case TideType_Bool:
-            *reinterpret_cast<int32_t*>(raw) = v.data.boolean ? 1 : 0;
-            break;
-        case TideType_I64:
-            *reinterpret_cast<int64_t*>(raw) = v.data.i64;
-            break;
-        case TideType_R4:
-            *reinterpret_cast<float*>(raw) = v.data.r4;
-            break;
-        case TideType_R8:
-            *reinterpret_cast<double*>(raw) = v.data.r8;
-            break;
-        default:
-            return nullptr;
+    if (!nami::il2cpp::box::PackBoxedRaw(v, raw)) {
+        return nullptr;
     }
     return g_api.value_box(klass, raw);
 }
 
 // Boxes a primitive into its System.* wrapper (for `object` params).
+// Class-name table and packing owned by il2cpp_boxing.h; image lookup stays local.
 void* box_primitive(const nami::tide::TideValue& v) {
     using namespace nami::tide;
     void* corlib = find_image("mscorlib");
     if (corlib == nullptr) {
         return nullptr;
     }
-    const char* boxed_class = nullptr;
-    switch (v.type) {
-        case TideType_I32: boxed_class = "Int32"; break;
-        case TideType_Bool: boxed_class = "Boolean"; break;
-        case TideType_I64: boxed_class = "Int64"; break;
-        case TideType_R4: boxed_class = "Single"; break;
-        case TideType_R8: boxed_class = "Double"; break;
-        default: return nullptr;
-    }
-    void* klass = g_api.class_from_name(corlib, "System", boxed_class);
-    return box_into_class(klass, v);
+    nami::il2cpp::box::BoxHost host{g_api.class_from_name, g_api.value_box};
+    return nami::il2cpp::box::BoxPrimitive(host, corlib, v);
 }
 
 // Resolves an exception's ToString into the request error_message (UTF-8, truncated).

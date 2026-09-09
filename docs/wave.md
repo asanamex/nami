@@ -18,10 +18,11 @@ src/Nami.Wave/           the engine
   Wave.Patch.cs          M2 public API: Wave.Patch / Unpatch / UnpatchAll / IsPatched /
                          UnpatchEverything / GetPatchEngine + ILCopy strategy build
   Wave.Transpile.cs      transpilers (see below)
-  Wave.Il2Cpp.cs         IL2CPP method patching: WaveIl2Cpp.Hook / HookFull / UnhookAll /
-                         Il2CppHook - native dispatch-stub detours on GameAssembly methods
-                         (fast observe/skip path; full path adds all-args + result
-                         observation/rewriting; see tide.md §9)
+  Wave.Il2Cpp.cs         IL2CPP method patching: WaveIl2Cpp.Hook / HookFull / HookTyped /
+                         UnhookAll / Il2CppHook - native dispatch-stub detours on GameAssembly
+                         methods (raw observe/skip path; full raw path adds all-args + result
+                         observation/rewriting; typed path exposes the safe TideValue subset;
+                         see tide.md §9)
   Internal/Detour.cs     one inline detour: prologue decode → trampoline → patch → restore
   Internal/X64Decoder.cs conservative x64 instruction-length decoder (relocation-safe)
   Internal/RawMemory.cs  W^X virtual-memory helpers (VirtualAlloc/VirtualProtect)

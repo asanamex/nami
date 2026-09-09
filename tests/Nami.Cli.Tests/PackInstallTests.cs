@@ -139,6 +139,22 @@ public sealed class PackInstallTests : IDisposable
     }
 
     [Fact]
+    public void InstallFromArtifact_RemovesObsoleteRootLoader_KeepsUserContent()
+    {
+        Stager.Pack(_repo, ArtifactPath, _artifacts);
+        var root = Path.Combine(_gameDir, "nami");
+        Directory.CreateDirectory(Path.Combine(root, "mods"));
+        File.WriteAllText(Path.Combine(root, "mods", "keep.dll"), "user mod");
+        File.WriteAllText(Path.Combine(root, "nami_loader.dll"), "STALE");
+
+        Stager.InstallFromArtifact(_gameDir, ArtifactPath);
+
+        Assert.False(File.Exists(Path.Combine(root, "nami_loader.dll")), "retired root loader must be removed on upgrade");
+        Assert.Equal("user mod", File.ReadAllText(Path.Combine(root, "mods", "keep.dll")));
+        Assert.True(File.Exists(Path.Combine(root, "native", "nami_loader.dll")));
+    }
+
+    [Fact]
     public void InstallFromArtifact_NotANamiArtifact_Throws()
     {
         var fake = Path.Combine(_baseDir, "not-nami.zip");

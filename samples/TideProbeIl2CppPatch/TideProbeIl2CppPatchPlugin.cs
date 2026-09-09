@@ -44,6 +44,26 @@ public sealed unsafe class TideProbeIl2CppPatchPlugin : NamiPlugin
     private int _maxPostfixFires;
     private bool _rewriteMax;
 
+    // Typed-path state (HookTyped on Math.Max + GetInstanceID; same thread rules).
+    private WaveIl2Cpp.Il2CppHook? _typedHook;
+    private int _typedPrefixA0;
+    private int _typedPrefixA1;
+    private int _typedPrefixFires;
+    private int _typedPostfixResult;
+    private int _typedPostfixFires;
+    private bool _rewriteTypedArg;
+    private bool _rewriteTypedResult;
+    private WaveIl2Cpp.Il2CppHook? _thisHook;
+    private int _thisSeen;
+    private int _thisDisposeNoThrow;
+    private int _thisPostfixResult;
+    private int _thisPostfixFires;
+    private GameClass? _goClass;
+    // Boxing proof (HookTyped on Debug.Log(object); dispatches on game main thread).
+    private WaveIl2Cpp.Il2CppHook? _logHook;
+    private int _logPrefixFires;
+    private int _logSawObject;
+
     public override void OnLoad()
     {
         var log = Context.Log;
@@ -66,7 +86,7 @@ public sealed unsafe class TideProbeIl2CppPatchPlugin : NamiPlugin
 
     public override void OnUpdate()
     {
-        if (_stage > 10)
+        if (_stage > 16)
         {
             return;
         }
@@ -306,8 +326,124 @@ public sealed unsafe class TideProbeIl2CppPatchPlugin : NamiPlugin
 
             case 10:
             {
-                log.Info("TideProbe-IL2CPP-Patch verification complete");
+                // H1. Typed install: HookTyped on Math.Max(int,int)->int with a prefix
+                // (generic arg reads) and a postfix (generic result read + rewrite).
+                _typedHook = WaveIl2Cpp.HookTyped("mscorlib", "System", "Math", "Max",
+                    new[] { TideType.I32, TideType.I32 }, TideType.I32,
+                    prefix: OnTypedMaxPrefix, postfix: OnTypedMaxPostfix,
+                    owner: "tideprobe-il2cpp-patch");
+                log.Info($"[H install] typed hook installed: {_typedHook}");
+                _typedPrefixFires = 0;
+                _typedPostfixFires = 0;
                 _stage = 11;
+                break;
+            }
+
+            case 11:
+            {
+                // H2a. Typed pass-through: prefix must see (3,7), postfix the real 7.
+                var math = GameClass.Resolve("mscorlib", "System", "Math");
+                var v1 = math.CallStaticValue("Max",
+                    new[] { TideValue.FromInt(3), TideValue.FromInt(7) }, TideType.I32).Int32;
+                log.Info($"[H passthrough] Max(3,7) = {v1}, prefix saw ({_typedPrefixA0},{_typedPrefixA1}) x{_typedPrefixFires}, postfix saw {_typedPostfixResult} x{_typedPostfixFires}");
+                var pass = v1 == 7 && _typedPrefixA0 == 3 && _typedPrefixA1 == 7
+                    && _typedPrefixFires == 1 && _typedPostfixResult == 7 && _typedPostfixFires == 1;
+                log.Info(pass ? "[H passthrough] PASS — generic arg/result reads match the raw path" : "[H passthrough] FAIL");
+
+                // H2b. Typed arg rewrite: prefix turns Max(3,7) into Max(3,10).
+                _rewriteTypedArg = true;
+                _typedPrefixFires = 0;
+                _typedPostfixFires = 0;
+                var v2 = math.CallStaticValue("Max",
+                    new[] { TideValue.FromInt(3), TideValue.FromInt(7) }, TideType.I32).Int32;
+                _rewriteTypedArg = false;
+                log.Info($"[H argrewrite] Max(3,7)->Max(3,10) = {v2}, postfix saw {_typedPostfixResult}");
+                log.Info(v2 == 10 && _typedPostfixResult == 10
+                    ? "[H argrewrite] PASS — SetArgument<int> changed the live call"
+                    : "[H argrewrite] FAIL");
+
+                // H2c. Typed result rewrite: same byte-visible caveat as [F] (the resolved
+                // overload returns a byte, so only the low byte reaches the caller).
+                _rewriteTypedResult = true;
+                var v3 = math.CallStaticValue("Max",
+                    new[] { TideValue.FromInt(3), TideValue.FromInt(7) }, TideType.I32).Int32;
+                _rewriteTypedResult = false;
+                const int sentinel = 0x1C0FFEE;
+                log.Info($"[H resultrewrite] Max(3,7) = {v3} (byte-visible {sentinel & 0xFF}), postfix saw {_typedPostfixResult}");
+                log.Info(v3 == (sentinel & 0xFF) && _typedPostfixResult == 7
+                    ? "[H resultrewrite] PASS — SetResult<int> rewrote the caller value"
+                    : "[H resultrewrite] FAIL");
+
+                _typedHook!.Dispose();
+                _typedHook = null;
+                _stage = 12;
+                break;
+            }
+
+            case 12:
+            {
+                // I1. Receiver install: HookTyped on GameObject.GetInstanceID (instance,
+                // 0 user args). Empty parameterTypes infers the unique supported overload.
+                _goClass = GameClass.Resolve("UnityEngine.CoreModule", "UnityEngine", "GameObject");
+                _thisHook = WaveIl2Cpp.HookTyped("UnityEngine.CoreModule", "UnityEngine", "GameObject", "GetInstanceID",
+                    Array.Empty<TideType>(), TideType.I32,
+                    prefix: OnThisPrefix, postfix: OnThisPostfix,
+                    owner: "tideprobe-il2cpp-patch");
+                log.Info($"[I install] typed receiver hook installed: {_thisHook}");
+                _stage = 13;
+                break;
+            }
+
+            case 13:
+            {
+                // I2. Receiver proof: a Tide-driven GetInstanceID must expose a borrowed
+                // This whose Dispose is a no-op, and the postfix must see the same id.
+                using var target = _goClass!.NewObject();
+                var id = target.CallIntMethod("GetInstanceID");
+                log.Info($"[I receiver] id = {id}, This seen {_thisSeen}x, dispose-no-throw {_thisDisposeNoThrow}x, postfix saw {_thisPostfixResult} x{_thisPostfixFires}");
+                log.Info(id != 0 && _thisSeen >= 1 && _thisDisposeNoThrow >= 1
+                    && _thisPostfixFires >= 1 && _thisPostfixResult == id
+                    ? "[I receiver] PASS — borrowed This + guard + result all observed"
+                    : "[I receiver] FAIL");
+                _thisHook!.Dispose();
+                _thisHook = null;
+                _stage = 14;
+                break;
+            }
+
+            case 14:
+            {
+                // J1. Boxing install: HookTyped on Debug.Log(object)->void. The single
+                // overload (name, argc 1) must resolve; the prefix replaces the string
+                // arg with a boxed int, proving primitive-to-Object writes end to end.
+                _logHook = WaveIl2Cpp.HookTyped("UnityEngine.CoreModule", "UnityEngine", "Debug", "Log",
+                    new[] { TideType.Object }, TideType.Void,
+                    prefix: OnLogPrefix, postfix: null,
+                    owner: "tideprobe-il2cpp-patch");
+                log.Info($"[J install] typed boxing hook installed: {_logHook}");
+                _stage = 15;
+                break;
+            }
+
+            case 15:
+            {
+                // J2. Boxing proof: a Tide-driven UnityLog (string arg) must fire the
+                // prefix with an Object-typed slot; the game stays alive to log again.
+                var ok = Tide.UnityLog("probe-boxing");
+                log.Info($"[J boxing] UnityLog returned {ok}, prefix fired {_logPrefixFires}x, saw Object {_logSawObject}x");
+                log.Info(ok && _logPrefixFires >= 1 && _logSawObject >= 1
+                    ? "[J boxing] PASS — SetArgument boxed int into the Object slot, game alive"
+                    : "[J boxing] FAIL");
+                _logHook!.Dispose();
+                _logHook = null;
+                _stage = 16;
+                break;
+            }
+
+            case 16:
+            {
+                log.Info("TideProbe-IL2CPP-Patch verification complete");
+                _stage = 17;
                 break;
             }
         }
@@ -336,5 +472,64 @@ public sealed unsafe class TideProbeIl2CppPatchPlugin : NamiPlugin
         {
             result[0] = 0x1C0FFEE;
         }
+    }
+
+    // Typed prefix for Math.Max: generic arg reads (+ optional arg rewrite).
+    private bool OnTypedMaxPrefix(WaveIl2Cpp.Il2CppHookContext context)
+    {
+        Interlocked.Increment(ref _typedPrefixFires);
+        _typedPrefixA0 = context.GetArgument<int>(0);
+        _typedPrefixA1 = context.GetArgument<int>(1);
+        if (_rewriteTypedArg)
+        {
+            context.SetArgument(1, 10);
+        }
+
+        return false;
+    }
+
+    // Boxing prefix for Debug.Log(object): the slot must read Object-typed, then a
+    // boxed int replaces the string arg (native BoxPrimitive path).
+    private bool OnLogPrefix(WaveIl2Cpp.Il2CppHookContext context)
+    {
+        Interlocked.Increment(ref _logPrefixFires);
+        if (context.GetArgumentType(0) == TideType.Object)
+        {
+            Interlocked.Increment(ref _logSawObject);
+        }
+
+        context.SetArgument(0, TideValue.FromInt(42));
+        return false;
+    }
+
+    // Typed postfix for Math.Max: generic result read (+ optional result rewrite).
+    private void OnTypedMaxPostfix(WaveIl2Cpp.Il2CppHookContext context)
+    {
+        Interlocked.Increment(ref _typedPostfixFires);
+        _typedPostfixResult = context.GetResult<int>();
+        if (_rewriteTypedResult)
+        {
+            context.SetResult(0x1C0FFEE);
+        }
+    }
+
+    // Receiver prefix: This must be a borrowed, non-disposable handle.
+    private bool OnThisPrefix(WaveIl2Cpp.Il2CppHookContext context)
+    {
+        var recv = context.This;
+        if (recv is not null && recv.HandleValue != 0)
+        {
+            Interlocked.Increment(ref _thisSeen);
+            recv.Dispose(); // must be a guarded no-op, never a double-free
+            Interlocked.Increment(ref _thisDisposeNoThrow);
+        }
+
+        return false;
+    }
+
+    private void OnThisPostfix(WaveIl2Cpp.Il2CppHookContext context)
+    {
+        Interlocked.Increment(ref _thisPostfixFires);
+        _thisPostfixResult = context.GetResult<int>();
     }
 }

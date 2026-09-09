@@ -1,3 +1,4 @@
+using Nami;
 using Nami.Wave;
 
 namespace Nami.Wave.Tests;
@@ -99,5 +100,38 @@ public unsafe class WaveIl2CppTests
                 (instance, args, count, result, kind) => false,
                 (instance, args, count, result, kind) => { }, "test.mod"));
         Assert.Contains("requires the Nami loader", ex.Message);
+    }
+
+    [Fact]
+    public void Il2Cpp_WithoutLoader_HookTypedThrowsClearError()
+    {
+        var ex = Assert.Throws<WaveIl2Cpp.Il2CppHookException>(() =>
+            WaveIl2Cpp.HookTyped("GameAssembly", "MyGame", "Player", "TakeDamage",
+                new[] { Nami.TideType.I32 }, Nami.TideType.Void,
+                context => false, null, "test.mod"));
+        Assert.Contains("requires the Nami loader", ex.Message);
+    }
+
+    [Fact]
+    public void Il2Cpp_HookTyped_RequiresPrefixOrPostfix()
+    {
+        var ex = Assert.Throws<ArgumentException>(() =>
+            WaveIl2Cpp.HookTyped("GameAssembly", "MyGame", "Player", "TakeDamage",
+                new[] { Nami.TideType.I32 }, Nami.TideType.Void,
+                null, null, "test.mod"));
+        Assert.Contains("prefix/postfix", ex.Message);
+    }
+
+    [Theory]
+    [InlineData(13)]
+    [InlineData(20)]
+    public void Il2Cpp_HookTyped_TooManyArgs_Throws(int count)
+    {
+        var types = new Nami.TideType[count];
+        Array.Fill(types, Nami.TideType.I32);
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            WaveIl2Cpp.HookTyped("GameAssembly", "MyGame", "Player", "Wide",
+                types, Nami.TideType.Void,
+                context => false, null, "test.mod"));
     }
 }

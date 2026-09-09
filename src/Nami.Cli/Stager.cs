@@ -60,6 +60,19 @@ public static class Stager
         "Nami.Core.dll", "Nami.Sdk.dll", "Nami.Tide.dll", "Nami.Wave.dll"
     };
 
+    /// <summary>
+    /// Root-level files from retired layouts that must not exist. A stale
+    /// <c>nami_loader.dll</c> next to the managed assemblies hijacks short-name
+    /// P/Invoke resolution (app-base wins over the injected <c>native/</c> copy),
+    /// surfacing as phantom missing-entry errors on new exports. Removed on every
+    /// Stage and artifact install; reported by <c>nami doctor</c>.
+    /// </summary>
+    public static readonly string[] ObsoleteRootFiles = ["nami_loader.dll"];
+
+    /// <summary>Returns the obsolete layout files currently present in <paramref name="root"/>.</summary>
+    public static IReadOnlyList<string> FindObsoleteRootFiles(string root) =>
+        ObsoleteRootFiles.Where(f => File.Exists(Path.Combine(root, f))).ToList();
+
     private sealed record ArtifactSources(string ManagedDir, string NativeDir, string DotnetDir);
 
     /// <summary>
@@ -73,6 +86,10 @@ public static class Stager
     {
         var sources = ResolveSources(repoRoot, artifactsRoot);
         ValidateSources(sources, "stage a Nami root");
+        if (artifactsRoot is null)
+        {
+            EnsureRepoSourcesFresh(repoRoot, sources);
+        }
 
         var root = Path.Combine(gameDir, "nami");
         var created = new List<string>();
@@ -98,6 +115,7 @@ public static class Stager
             File.Copy(Path.Combine(sources.NativeDir, f), dst, overwrite: true);
             created.Add(dst);
         }
+        RemoveObsoleteRootFiles(root);
 
         // Bundled runtime: prefer an artifacts/dotnet tree; otherwise copy the shared runtime
         // from the local .NET install so the staged root is self-contained.
@@ -135,6 +153,10 @@ public static class Stager
     {
         var sources = ResolveSources(repoRoot, artifactsRoot);
         ValidateSources(sources, "pack a Nami artifact");
+        if (artifactsRoot is null)
+        {
+            EnsureRepoSourcesFresh(repoRoot, sources);
+        }
 
         var runtimeSource = ResolveRuntime(sources.DotnetDir);
         if (runtimeSource is null)
@@ -278,6 +300,7 @@ public static class Stager
             }
         }
 
+        RemoveObsoleteRootFiles(root);
         WriteRootScaffold(root, created);
         return new StagedRoot { GameDir = gameDir, Root = root, Created = created, Version = manifest.Version, Source = artifact };
     }
@@ -338,6 +361,65 @@ public static class Stager
                 $"cannot {action}: missing build artifacts:\n  " + string.Join("\n  ", missing) +
                 "\nBuild the repo first (dotnet build Nami.slnx && cmake --build native/build) " +
                 "or pass --artifacts <root>.");
+        }
+    }
+
+    /// <summary>
+    /// Refuses repo-output staging when a fresher build exists elsewhere in the checkout.
+    /// The resolved managed dir is the Release tree, but a Debug build is newer after any
+    /// Debug session; staging the older Release outputs then boots stale code with no
+    /// error. Native binaries get the same treatment against the C++ sources. Explicit
+    /// <c>--artifacts</c> roots are trusted as-is and skip this check.
+    /// </summary>
+    private static void EnsureRepoSourcesFresh(string repoRoot, ArtifactSources sources)
+    {
+        var stale = new List<string>();
+        foreach (var f in ManagedFiles)
+        {
+            var staged = Path.Combine(sources.ManagedDir, f);
+            var project = Path.GetExtension(f) == ".dll" ? Path.GetFileNameWithoutExtension(f) : "Nami.Runtime";
+            var debug = Path.Combine(repoRoot, "src", project, "bin", "Debug", "net10.0", f);
+            if (File.Exists(debug) && File.GetLastWriteTimeUtc(debug) > File.GetLastWriteTimeUtc(staged))
+            {
+                stale.Add($"{f} (Release {File.GetLastWriteTimeUtc(staged):u} < Debug {File.GetLastWriteTimeUtc(debug):u})");
+            }
+        }
+
+        var nativeSources = new[] { "loader", "core", "injector" }
+            .Select(d => Path.Combine(repoRoot, "native", d));
+        foreach (var f in new[] { "nami_boot.exe", "nami_loader.dll" })
+        {
+            var binary = Path.Combine(sources.NativeDir, f);
+            var binaryTime = File.GetLastWriteTimeUtc(binary);
+            var newer = nativeSources
+                .Where(Directory.Exists)
+                .SelectMany(d => Directory.EnumerateFiles(d, "*", SearchOption.AllDirectories)
+                    .Where(s => s.EndsWith(".cpp", StringComparison.OrdinalIgnoreCase) ||
+                                s.EndsWith(".h", StringComparison.OrdinalIgnoreCase)))
+                .Where(s => File.GetLastWriteTimeUtc(s) > binaryTime)
+                .Select(s => Path.GetRelativePath(repoRoot, s))
+                .ToList();
+            if (newer.Count > 0)
+            {
+                stale.Add($"{f} older than: {string.Join(", ", newer)}");
+            }
+        }
+
+        if (stale.Count > 0)
+        {
+            throw new InvalidOperationException(
+                "refusing to stage stale build outputs:\n  " + string.Join("\n  ", stale) +
+                "\nRebuild Release outputs (dotnet build Nami.slnx -c Release && cmake --build native/build) " +
+                "or pass --artifacts <root> to stage an explicit tree.");
+        }
+    }
+
+    /// <summary>Deletes obsolete layout files from <paramref name="root"/> (see <see cref="ObsoleteRootFiles"/>).</summary>
+    private static void RemoveObsoleteRootFiles(string root)
+    {
+        foreach (var f in FindObsoleteRootFiles(root))
+        {
+            File.Delete(Path.Combine(root, f));
         }
     }
 

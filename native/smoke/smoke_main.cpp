@@ -1,6 +1,7 @@
 #include "core/bootguard.h"
 #include "core/nami_common.h"
 #include "core/runtime_host.h"
+#include "loader/il2cpp_boxing.h"
 #include "loader/native_stub.h"
 
 #include <cstdio>
@@ -813,6 +814,83 @@ int TestShortPrologue() {
 
     return rc;
 }
+
+// Shared IL2CPP boxing vocabulary (il2cpp_boxing.h): pure table/packing checks, no
+// game VM needed. Guards the single-copy rule - a type added to Tide's object-param
+// path but missing here (or vice versa) fails this test instead of drifting silently.
+int TestBoxingTable() {
+    using namespace nami::il2cpp::box;
+    using namespace nami::tide;
+    int rc = 0;
+
+    auto fail = [&](int code, const char* what) {
+        std::printf("  boxing table: FAIL (%s)\n", what);
+        rc = code;
+    };
+
+    // Class-name table: exactly the five boxable primitives.
+    if (BoxedClassName(TideType_I32) == nullptr ||
+        std::strcmp(BoxedClassName(TideType_I32), "Int32") != 0) {
+        fail(1, "I32->Int32");
+    } else if (BoxedClassName(TideType_Bool) == nullptr ||
+               std::strcmp(BoxedClassName(TideType_Bool), "Boolean") != 0) {
+        fail(2, "Bool->Boolean");
+    } else if (BoxedClassName(TideType_I64) == nullptr ||
+               std::strcmp(BoxedClassName(TideType_I64), "Int64") != 0) {
+        fail(3, "I64->Int64");
+    } else if (BoxedClassName(TideType_R4) == nullptr ||
+               std::strcmp(BoxedClassName(TideType_R4), "Single") != 0) {
+        fail(4, "R4->Single");
+    } else if (BoxedClassName(TideType_R8) == nullptr ||
+               std::strcmp(BoxedClassName(TideType_R8), "Double") != 0) {
+        fail(5, "R8->Double");
+    } else if (BoxedClassName(TideType_String) != nullptr ||
+               BoxedClassName(TideType_Object) != nullptr ||
+               BoxedClassName(TideType_Void) != nullptr) {
+        fail(6, "String/Object/Void must not box");
+    }
+
+    // Packing: values round-trip, Bool packs as int32 0/1, unknown types refuse.
+    if (rc == 0) {
+        TideValue vi{};
+        vi.type = TideType_I32;
+        vi.data.i32 = -7;
+        alignas(8) unsigned char raw[8];
+        if (!PackBoxedRaw(vi, raw) || *reinterpret_cast<int32_t*>(raw) != -7) {
+            fail(7, "I32 pack");
+        } else {
+            TideValue vb{};
+            vb.type = TideType_Bool;
+            vb.data.boolean = 2;  // nonzero is true, packs as 1
+            if (!PackBoxedRaw(vb, raw) || *reinterpret_cast<int32_t*>(raw) != 1) {
+                fail(8, "Bool pack");
+            } else {
+                TideValue vs{};
+                vs.type = TideType_String;
+                if (PackBoxedRaw(vs, raw)) {
+                    fail(9, "String must not pack");
+                }
+            }
+        }
+    }
+
+    // Guards: null host/image/value-shape refuse without touching the VM.
+    if (rc == 0) {
+        TideValue vi{};
+        vi.type = TideType_I32;
+        vi.data.i32 = 1;
+        BoxHost empty{};
+        if (BoxPrimitive(empty, nullptr, vi) != nullptr ||
+            BoxPrimitive(empty, reinterpret_cast<void*>(0x1), vi) != nullptr) {
+            fail(10, "null host must refuse");
+        }
+    }
+
+    if (rc == 0) {
+        std::printf("  boxing table: PASS (5 wrappers, packing, guards)\n");
+    }
+    return rc;
+}
 #endif  // _WIN32
 
 }  // namespace
@@ -830,6 +908,11 @@ int main() {
     }
 
     int rc = TestBootGuardFiles();
+    if (rc != 0) {
+        return rc;
+    }
+
+    rc = TestBoxingTable();
     if (rc != 0) {
         return rc;
     }

@@ -81,7 +81,68 @@ public sealed class StagerTests : IDisposable
         var staged = Stager.Stage(_gameDir, _repo, _artifacts);
         Assert.Equal(Path.Combine(_gameDir, "nami"), staged.Root);
     }
+    [Fact]
+    public void Stage_WithStaleReleaseOutputs_ThrowsActionable()
+    {
+        // A Debug session newer than the Release tree must refuse, not boot stale code.
+        var old = DateTime.UtcNow - TimeSpan.FromHours(1);
+        foreach (var f in Stager.ManagedFiles)
+        {
+            var rel = Path.Combine(_repo, "src", "Nami.Runtime", "bin", "Release", "net10.0", f);
+            Directory.CreateDirectory(Path.GetDirectoryName(rel)!);
+            File.WriteAllText(rel, "release");
+            File.SetLastWriteTimeUtc(rel, old);
+        }
+        var debugWave = Path.Combine(_repo, "src", "Nami.Wave", "bin", "Debug", "net10.0", "Nami.Wave.dll");
+        Directory.CreateDirectory(Path.GetDirectoryName(debugWave)!);
+        File.WriteAllText(debugWave, "debug");
+
+        var nativeBuild = Path.Combine(_repo, "native", "build");
+        Directory.CreateDirectory(nativeBuild);
+        foreach (var f in new[] { "nami_boot.exe", "nami_loader.dll" })
+        {
+            File.WriteAllText(Path.Combine(nativeBuild, f), "x");
+        }
+
+        var nativeSrc = Path.Combine(_repo, "native", "loader", "old.cpp");
+        Directory.CreateDirectory(Path.GetDirectoryName(nativeSrc)!);
+        File.WriteAllText(nativeSrc, "x");
+        File.SetLastWriteTimeUtc(nativeSrc, old);
+
+        var fxr = Path.Combine(_repo, "dotnet", "host", "fxr", "10.0.0");
+        Directory.CreateDirectory(fxr);
+        File.WriteAllText(Path.Combine(fxr, "hostfxr.dll"), "x");
+
+        var ex = Assert.Throws<InvalidOperationException>(() => Stager.Stage(_gameDir, _repo, null));
+        Assert.Contains("stale build outputs", ex.Message);
+        Assert.Contains("Nami.Wave.dll", ex.Message);
+    }
+
+    [Fact]
+    public void Stage_RemovesObsoleteRootLoader()
+    {
+        WriteArtifacts();
+        var root = Path.Combine(_gameDir, "nami");
+        Directory.CreateDirectory(root);
+        File.WriteAllText(Path.Combine(root, "nami_loader.dll"), "STALE");
+
+        Stager.Stage(_gameDir, _repo, _artifacts);
+
+        Assert.False(File.Exists(Path.Combine(root, "nami_loader.dll")), "retired root loader must be removed");
+        Assert.True(File.Exists(Path.Combine(root, "native", "nami_loader.dll")));
+    }
+
+    [Fact]
+    public void FindObsoleteRootFiles_ListsPresentEntries()
+    {
+        var root = Path.Combine(_gameDir, "nami");
+        Directory.CreateDirectory(root);
+        Assert.Empty(Stager.FindObsoleteRootFiles(root));
+        File.WriteAllText(Path.Combine(root, "nami_loader.dll"), "x");
+        Assert.Equal(["nami_loader.dll"], Stager.FindObsoleteRootFiles(root));
+    }
 }
+
 
 public sealed class RunCommandArgTests
 {

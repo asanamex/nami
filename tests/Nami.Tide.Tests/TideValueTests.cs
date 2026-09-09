@@ -125,6 +125,12 @@ public enum TestEnum
     Seven = 7
 }
 
+public enum TestLongEnum : long
+{
+    Zero = 0L,
+    Big = 0x1_0000_0001L
+}
+
 public sealed class TideTypesTests
 {
     [Theory]
@@ -222,5 +228,33 @@ public sealed class TideValueConversionTests
     public void Convert_Bool_RestoresValue()
     {
         Assert.True(GameClass.Convert<bool>(TideValue.FromBool(true)));
+    }
+
+    [Fact]
+    public void ToValue_LongEnum_ProducesI64WithoutTruncation()
+    {
+        var v = GameClass.ToValue(TestLongEnum.Big);
+        Assert.Equal(TideType.I64, v.Type);
+        Assert.Equal(0x1_0000_0001L, v.Int64);
+    }
+
+    [Fact]
+    public void Convert_LongEnum_RestoresValue()
+    {
+        var v = TideValue.FromLong(0x1_0000_0001L);
+        Assert.Equal(TestLongEnum.Big, GameClass.Convert<TestLongEnum>(v));
+    }
+
+    [Fact]
+    public void BorrowedHandle_Dispose_IsNoOpWithoutFree()
+    {
+        // Borrowed wrappers (hook-frame temporaries) must never issue a FreeHandle:
+        // Dispose only marks them disposed. No loader here, so this pins the guard
+        // branch, not the native free path (in-game sample proves the latter).
+        var go = GameObject.FromBorrowedHandle(1234)!;
+        Assert.False(go.IsDisposed);
+        go.Dispose();
+        Assert.True(go.IsDisposed);
+        go.Dispose(); // idempotent
     }
 }
