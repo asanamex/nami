@@ -8,6 +8,7 @@
 [![Windows x64](https://img.shields.io/badge/platform-Windows_x64-0078D4?style=flat-square&logo=windows)](https://github.com/asanamex/nami)
 [![Unity Mono + IL2CPP](https://img.shields.io/badge/Unity-Mono_%2B_IL2CPP-000000?style=flat-square&logo=unity)](docs/architecture.md)
 [![Status: Beta](https://img.shields.io/badge/status-beta-yellow?style=flat-square)](https://github.com/asanamex/nami)
+[![License: PolyForm-NC](https://img.shields.io/badge/license-PolyForm--NC-orange?style=flat-square)](LICENSE.md)
 
 *Nami core has no build dependency on BepInEx, HarmonyX, MonoMod, or Mono.Cecil.*
 
@@ -158,7 +159,10 @@ Not yet: BepInEx 6 / IL2CPP legacy lane, legacy-pack distribution, non-Windows p
 
 ## License
 
-Proprietary / to be decided. Not licensed for redistribution yet.
+Nami is source-available under [PolyForm-Noncommercial-1.0.0](LICENSE.md) (not open source).
+Free use, modification, and distribution for noncommercial purposes, with attribution.
+Selling a mod built on Nami or any other commercial use needs a separate license:
+see [COMMERCIAL.md](COMMERCIAL.md).
 
 <div align="center">
 
