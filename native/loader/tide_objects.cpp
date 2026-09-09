@@ -1,5 +1,6 @@
 #include "tide_abi.h"
 #include "tide_il2cpp.h"
+#include "tide_member_cache.h"
 #include "tide_pump.h"
 
 #include <windows.h>
@@ -224,22 +225,22 @@ void* find_assembly(const char* name) {
     return nullptr;
 }
 
-void* find_class(const CallRequest& req) {
-    void* asm_ = find_assembly(req.assembly);
+void* find_class_uncached(const char* assembly, const char* ns, const char* klass) {
+    void* asm_ = find_assembly(assembly);
     if (asm_ == nullptr) {
-        log_tide("tide: assembly '%s' not found", req.assembly);
+        log_tide("tide: assembly '%s' not found", assembly);
         return nullptr;
     }
     void* image = g_api.assembly_get_image(asm_);
-    void* klass = g_api.class_from_name(image, req.ns, req.klass);
-    if (klass == nullptr) {
-        log_tide("tide: class '%s.%s' not found", req.ns, req.klass);
+    void* klass_ = g_api.class_from_name(image, ns, klass);
+    if (klass_ == nullptr) {
+        log_tide("tide: class '%s.%s' not found", ns, klass);
     }
-    return klass;
+    return klass_;
 }
 
 // Searches a class AND its base classes for a method (mono only searches the class itself).
-void* find_method_in_hierarchy(void* klass, const char* name, int argc) {
+void* find_method_in_hierarchy_uncached(void* klass, const char* name, int argc) {
     for (void* k = klass; k != nullptr; k = g_api.class_get_parent(k)) {
         void* m = g_api.class_get_method_from_name(k, name, argc);
         if (m != nullptr) {
@@ -250,7 +251,7 @@ void* find_method_in_hierarchy(void* klass, const char* name, int argc) {
 }
 
 // Searches a class AND its base classes for a field.
-void* find_field_in_hierarchy(void* klass, const char* name) {
+void* find_field_in_hierarchy_uncached(void* klass, const char* name) {
     for (void* k = klass; k != nullptr; k = g_api.class_get_parent(k)) {
         void* f = g_api.class_get_field_from_name(k, name);
         if (f != nullptr) {
@@ -261,7 +262,7 @@ void* find_field_in_hierarchy(void* klass, const char* name) {
 }
 
 // Searches a class AND its base classes for a property.
-void* find_property_in_hierarchy(void* klass, const char* name) {
+void* find_property_in_hierarchy_uncached(void* klass, const char* name) {
     for (void* k = klass; k != nullptr; k = g_api.class_get_parent(k)) {
         void* p = g_api.class_get_property_from_name(k, name);
         if (p != nullptr) {
@@ -286,6 +287,21 @@ void* make_string(const TideValue& v) {
     return g_api.string_new(g_api.root_domain, v.data.str.utf8);
 }
 
+// ---------------------------------------------------------------------------
+// Cached name-based resolution (see tide_member_cache.h). All resolvers below
+// take class pointers and process-lifetime metadata; the cache lives for the
+// process, so results are stable. Mono kind_tags share the 64-bit tag space
+// with the IL2CPP backend via the kTagMonoBase namespace below.
+// ---------------------------------------------------------------------------
+
+constexpr uint64_t kTagMonoBase = 0x1000000000000000ULL;
+constexpr uint64_t kMonoClass = kTagMonoBase + 1;
+constexpr uint64_t kMonoMethod = kTagMonoBase + 2;
+constexpr uint64_t kMonoMethodTyped = kTagMonoBase + 3;
+constexpr uint64_t kMonoField = kTagMonoBase + 4;
+constexpr uint64_t kMonoProperty = kTagMonoBase + 5;
+
+// ---------------------------------------------------------------------------
 // MonoType constants (from mono/metadata/blob.h). We only need to distinguish
 // reference types (object/string/class/array) from value types (I4/I8/R4/R8/BOOLEAN/...).
 enum {
@@ -506,8 +522,8 @@ int tide_type_to_mono_type(TideValueType t) {
 // types best match the given TideValue argument types. Scores exact primitive matches and
 // reference-typed params (which accept boxed primitives). Falls back to the classic
 // name+argc lookup (which may pick an arbitrary overload) when signature info is missing.
-void* find_method_for_args(void* klass, const char* name, int argc,
-                           const TideValue* args, bool exact_only) {
+void* find_method_for_args_uncached(void* klass, const char* name, int argc,
+                                    const TideValue* args, bool exact_only) {
     for (void* k = klass; k != nullptr; k = g_api.class_get_parent(k)) {
         // Collect candidates with the right name + arity.
         void* best = nullptr;
@@ -593,6 +609,117 @@ void* find_method_for_args(void* klass, const char* name, int argc,
 
     // Fallback: classic name+argc lookup (no signature info / no match found).
     return nullptr;
+}
+
+// ---------------------------------------------------------------------------
+// Cached resolution wrappers — THE call path used by the ops. All resolvers
+// return process-lifetime metadata (classes/methods/fields/properties are
+// never unloaded), so results are cached for the loader's lifetime, including
+// negative results. kind_tags share the 64-bit space with the IL2CPP backend.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+struct ClassResolveCtx { const char* assembly; const char* ns; const char* klass; };
+struct MethodResolveCtx { void* klass; const char* name; int argc; };
+struct TypedMethodResolveCtx { void* klass; const char* name; int argc; const TideValue* args; bool exact_only; };
+struct MemberResolveCtx { void* klass; const char* name; };
+
+MemberCache::ResolveResult ResolveClassCb(void* user) {
+    auto* c = static_cast<ClassResolveCtx*>(user);
+    void* v = find_class_uncached(c->assembly, c->ns, c->klass);
+    return {v, v != nullptr};
+}
+
+MemberCache::ResolveResult ResolveMethodCb(void* user) {
+    auto* c = static_cast<MethodResolveCtx*>(user);
+    void* v = find_method_in_hierarchy_uncached(c->klass, c->name, c->argc);
+    return {v, v != nullptr};
+}
+
+MemberCache::ResolveResult ResolveTypedMethodCb(void* user) {
+    auto* c = static_cast<TypedMethodResolveCtx*>(user);
+    void* v = find_method_for_args_uncached(c->klass, c->name, c->argc, c->args, c->exact_only);
+    return {v, v != nullptr};
+}
+
+MemberCache::ResolveResult ResolveFieldCb(void* user) {
+    auto* c = static_cast<MemberResolveCtx*>(user);
+    void* v = find_field_in_hierarchy_uncached(c->klass, c->name);
+    return {v, v != nullptr};
+}
+
+MemberCache::ResolveResult ResolvePropertyCb(void* user) {
+    auto* c = static_cast<MemberResolveCtx*>(user);
+    void* v = find_property_in_hierarchy_uncached(c->klass, c->name);
+    return {v, v != nullptr};
+}
+
+}  // namespace
+
+void* find_class(const char* assembly, const char* ns, const char* klass);  // cached, below
+
+// Convenience overload: class for a request's (assembly, ns, klass).
+void* find_class(const CallRequest& req) {
+    return find_class(req.assembly, req.ns, req.klass);
+}
+
+// Cached: class by (assembly, ns, name).
+void* find_class(const char* assembly, const char* ns, const char* klass) {
+    ClassResolveCtx ctx{assembly, ns, klass};
+    bool found = false;
+    void* v = MemberCacheLookup(kMonoClass, 0, 0, assembly, ns, klass, nullptr,
+                                ResolveClassCb, &ctx, &found);
+    return found ? v : nullptr;
+}
+
+// Cached: method (any base class) by name + argc. NOT overload-aware; prefer
+// find_method_typed when argument values are available.
+void* find_method_in_hierarchy(void* klass, const char* name, int argc) {
+    MethodResolveCtx ctx{klass, name, argc};
+    bool found = false;
+    void* v = MemberCacheLookup(kMonoMethod, reinterpret_cast<uint64_t>(klass),
+                                static_cast<uint64_t>(argc), name, nullptr, nullptr, nullptr,
+                                ResolveMethodCb, &ctx, &found);
+    return found ? v : nullptr;
+}
+
+// Cached: overload-scored method for the given argument values. k2 hashes the
+// argument type masks so different overload shapes land on different entries.
+void* find_method_for_args(void* klass, const char* name, int argc,
+                           const TideValue* args, bool exact_only) {
+    uint64_t mask = 1469598103934665603ULL;
+    for (int i = 0; i < argc; i++) {
+        mask = (mask ^ static_cast<uint64_t>(args[i].type)) * 0x100000001b3ULL;
+        mask ^= mask >> 29;
+    }
+    TypedMethodResolveCtx ctx{klass, name, argc, args, exact_only};
+    bool found = false;
+    void* v = MemberCacheLookup(kMonoMethodTyped, reinterpret_cast<uint64_t>(klass),
+                                mask ^ (exact_only ? 0x8000000000000000ULL : 0),
+                                name, nullptr, nullptr, nullptr,
+                                ResolveTypedMethodCb, &ctx, &found);
+    return found ? v : nullptr;
+}
+
+// Cached: field (any base class) by name.
+void* find_field_in_hierarchy(void* klass, const char* name) {
+    MemberResolveCtx ctx{klass, name};
+    bool found = false;
+    void* v = MemberCacheLookup(kMonoField, reinterpret_cast<uint64_t>(klass), 0,
+                                name, nullptr, nullptr, nullptr,
+                                ResolveFieldCb, &ctx, &found);
+    return found ? v : nullptr;
+}
+
+// Cached: property (any base class) by name.
+void* find_property_in_hierarchy(void* klass, const char* name) {
+    MemberResolveCtx ctx{klass, name};
+    bool found = false;
+    void* v = MemberCacheLookup(kMonoProperty, reinterpret_cast<uint64_t>(klass), 0,
+                                name, nullptr, nullptr, nullptr,
+                                ResolvePropertyCb, &ctx, &found);
+    return found ? v : nullptr;
 }
 
 bool to_mono_arg(const TideValue& v, void* box, void** mono_out) {
@@ -1366,6 +1493,67 @@ extern "C" __declspec(dllexport) int nami_tide_object_op(void* request) {
     const bool ok = nami::tide::run_on_main_thread(Shim::run, &local);
     *req = local;  // write back (ret slot, result_code)
     return ok ? local.result_code : -3;
+}
+
+// Export: run a BATCH of CallRequests in ONE main-thread round trip. Every op
+// executes (a failing op does not stop the batch); per-op codes land in
+// batch.codes[i] and each request's result_code/ret. Returns 0 when the batch
+// ran (check per-op codes for outcomes), -1 on bad arguments, -3 when the pump
+// was unavailable (all codes set to -3).
+extern "C" __declspec(dllexport) int nami_tide_object_op_batch(void* batch) {
+    using nami::tide::BatchRequest;
+    using nami::tide::CallRequest;
+
+    auto* b = static_cast<BatchRequest*>(batch);
+    if (b == nullptr || b->count <= 0 || b->count > 256 || b->requests == nullptr ||
+        b->codes == nullptr) {
+        return -1;
+    }
+
+    // Copy every request so the export owns them during the wait (same rationale
+    // as the single-op path: caller memory must stay valid, but we normalize).
+    // 256 x 1192B ≈ 300KB worst case; use the heap, not the stack.
+    auto locals = static_cast<CallRequest*>(
+        HeapAlloc(GetProcessHeap(), 0, sizeof(CallRequest) * static_cast<size_t>(b->count)));
+    if (locals == nullptr) {
+        return -3;
+    }
+    for (int i = 0; i < b->count; i++) {
+        locals[i] = *b->requests[i];
+    }
+
+    struct BatchCtx {
+        CallRequest* locals;
+        int32_t* codes;
+        int count;
+    };
+    struct Shim {
+        static int run(void* arg) {
+            auto* c = static_cast<BatchCtx*>(arg);
+            for (int i = 0; i < c->count; i++) {
+                const int code = nami::tide::tide_object_op(&c->locals[i]);
+                c->locals[i].result_code = code;
+                c->codes[i] = code;
+            }
+            return 0;
+        }
+    };
+
+    BatchCtx ctx{locals, b->codes, b->count};
+    const bool ok = nami::tide::run_on_main_thread(Shim::run, &ctx);
+
+    for (int i = 0; i < b->count; i++) {
+        *b->requests[i] = locals[i];  // write back ret slot + result_code
+    }
+    HeapFree(GetProcessHeap(), 0, locals);
+
+    if (!ok) {
+        for (int i = 0; i < b->count; i++) {
+            b->codes[i] = -3;
+        }
+        return -3;
+    }
+    return 0;
 }
 
 // Export: run a CallRequest on the game main thread inside its window procedure

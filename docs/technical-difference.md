@@ -61,8 +61,10 @@ observed in the wild — no BepInEx source lives in this repo to check them agai
 Nami's IL2CPP story has two layers, both shipped. The **runtime bridge** lets mods call into the
 game through Tide's typed API on IL2CPP titles exactly as on Mono — no interop assemblies,
 no generator. The **typed-projection layer** is the dev-time `nami interop` source emitter
-(`GameInterop.g.cs` of `GameClass.Resolve` accessors + method-name constants); lazy
-on-demand in-process materialization remains design intent, not shipped behavior.
+(`GameInterop.g.cs` of lazy-cached `GameClass` accessors + method-name constants): each
+accessor materializes its `GameClass` on first use and caches it for the process, repeated
+member-name lookups are memoized in the native loader (`tide_member_cache`), and per-tick
+op groups can ride a single main-thread round trip (`TideBatch`).
 
 | Aspect | BepInEx | Nami |
 |---|---|---|

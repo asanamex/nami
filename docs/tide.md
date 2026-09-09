@@ -177,10 +177,10 @@ run since the fix.
 ## 5. API
 
 All Tide public types live in the **`Nami`** namespace (`Tide`, `GameClass`, `GameObject`,
-`TideValue`, `TideType`, `TideTypes`, `TideArrays`).
+`TideValue`, `TideType`, `TideTypes`, `TideArrays`, `TideBatch`).
 
 ```csharp
-using Nami;   // Tide, GameClass, GameObject, TideValue, TideTypes, TideArrays
+using Nami;   // Tide, GameClass, GameObject, TideValue, TideTypes, TideArrays, TideBatch
 ```
 
 | Member | Description |
@@ -199,9 +199,12 @@ using Nami;   // Tide, GameClass, GameObject, TideValue, TideTypes, TideArrays
 | `TideValue` | A typed value. Factories: `FromInt/FromLong/FromFloat/FromDouble/FromBool/FromString/FromHandle`. Readers: `Int32/Int64/Single/Double/Boolean/Handle/String`. Ownership: `FreeNativeReturn()` (frees a native string return after copying) and `FreeStringBuffer()` (only if you retain a `FromString` buffer manually — `Call`/`CallInstance` auto-free arg buffers in a `finally`). |
 | `TideTypes.Of<T>()` | Maps a CLR type to its `TideType` (primitives, string, `GameObject`, enums → underlying int, or `I64` for `long` enums). |
 | `TideArrays` | Read/write a game-side `System.Array` handle: `GetLength`, typed element reads (`GetInt/GetLong/GetFloat/GetDouble/GetBool/GetEnum/GetString/GetObject`) and writes (`SetInt/SetLong/SetFloat/SetDouble/SetBool/SetString/SetObject` — enum writes via `SetInt`). Works for value-type, enum, string and reference arrays. |
+| `TideBatch` | **Batched ops — N game operations in ONE main-thread round trip.** Enqueue up to 256 ops (`EnqueueGetStatic/SetStatic/CallStatic/GetInstance/SetInstance/CallInstance` — each returns an index), then `Flush()` once. Per-op outcomes via `WasOk(i)`/`CodeOf(i)`; typed result readers `GetInt(i)/GetLong(i)/GetFloat(i)/GetDouble(i)/GetBool(i)/GetHandle(i)/GetString(i)/GetObject(i)`. A failing op does not abort the batch. `Dispose()` frees all unmanaged memory (idempotent); **read string results before disposing**. Enqueue-after-flush, double-flush, and use-after-dispose throw. |
 
 **Blocking semantics**: every call blocks until the game's main thread has executed it (Mono:
 pumped through `mono_runtime_invoke`; IL2CPP: drained from the window procedure — see §9).
+The hop itself is the dominant per-call cost, so mods that touch several members per tick
+should use `TideBatch` (one round trip for the whole tick's worth of ops).
 String **arguments** travel in caller-allocated UTF-8 buffers that `Call`/`CallInstance`
 free automatically; string **returns** are native buffers you must copy and free with
 `TideValue.FreeNativeReturn()` (Mono: `mono_string_to_utf8` + `nami_tide_free`; IL2CPP:
@@ -329,6 +332,28 @@ copying `Nami.*` DLLs from a mod's output into `mods/`.
   passed to `Debug.Log(object)` is boxed, not passed as a raw value pointer.
 - **Property fallback**: when a "field" name is not a field, Tide resolves it as a property
   and uses its get/set method.
+- **Batch execution**: `nami_tide_object_op_batch` / `nami_il2cpp_object_op_batch` take a
+  `BatchRequest` (array of up to 256 `CallRequest` pointers + a caller-owned codes array) and
+  run every request inside ONE main-thread round trip (standard drain for Mono, the
+  window/IL2CPP executor for IL2CPP). A failing op never aborts the batch: per-op codes land
+  in `codes[i]` and each request's own result fields are filled exactly like the single-op
+  path.
+
+### Native: `tide_member_cache.cpp` (resolution memoization)
+
+- Name-based member resolution (class from assembly+namespace+name, method in hierarchy,
+  typed-overload selection, field, property) used to run on every op; per-tick mods paid the
+  same `mono_class_from_name` chains (or `il2cpp_*` equivalents) five times a tick.
+- `tide_member_cache` memoizes those lookups for the loader's lifetime: an SRWLOCK-guarded
+  open-addressing map (linear probing, power-of-two capacity starting at 256, grows at 3/4
+  load) keyed by kind tag + integer keys + the member-name strings. Both backends share the
+  instance — Mono uses tags `0x1000…`+1..5, IL2CPP `0x2000…`+1..4, so keys never collide;
+  typed-overload entries fold an FNV-1a hash of the argument-type mask into the key.
+- Results — including **not-found** — are cached: Mono/IL2CPP metadata never unloads, so a
+  negative result stays valid. On a miss the caller's resolver runs under the lock and must
+  call the `*_uncached` variants (no recursion). The op paths in `tide_objects.cpp` and
+  `tide_il2cpp_ops.cpp` funnel every lookup through cached `find_*` wrappers; first use
+  resolves, every repeat is a hash hit.
 
 ### Managed (`Nami.Tide` assembly, `Nami` namespace)
 
@@ -341,6 +366,10 @@ copying `Nami.*` DLLs from a mod's output into `mods/`.
   `FromHandle`, `IsDisposed`.
 - `TideValue` / `TideType` / `TideTypes` — the typed marshaling values + the CLR↔`TideType`
   mapper; `TideArrays` — game-side array access.
+- `TideBatch` — enqueue up to 256 ops, one `Flush()` = one main-thread round trip
+  (`nami_tide_object_op_batch` / `nami_il2cpp_object_op_batch`); per-op codes + typed result
+  readers; strict unmanaged-memory ownership (string args freed on dispose, string returns
+  must be read before dispose).
 - The typed object ops P/Invoke a `CallRequest` (fixed name buffers + pointers to pinned
   `TideValue` arrays); `UnityLog`/`InvokeStatic` P/Invoke plain buffers instead. No Mono
   knowledge lives in managed code — all of it is in the native ops.
@@ -373,6 +402,13 @@ Unity 6 / 6000.5.4f1):**
 - **Array values**: a game `System.Array` arrives as a handle; `TideArrays` provides
   length + typed element read/write (value/string/enum/reference arrays) via
   `System.Array.GetValue/SetValue`.
+- **Batched round trips**: `TideBatch` queues up to 256 field/property/method ops and drains
+  them in ONE main-thread round trip (both backends) — a mod reading five fields per tick
+  pays one hop instead of five (the thread-hop, not marshaling, dominates bridge cost).
+- **Cached resolution**: member-name lookups are memoized in the native loader
+  (`tide_member_cache`, process lifetime, incl. negative results), and the dev-time
+  `nami interop generate` projection materializes each `GameClass` lazily and caches it —
+  resolution runs once per member/type, not per call.
 - **Object creation** (`new GameObject()`), object-typed field/property reads of live
   UnityEngine objects (`Camera.main` etc.), GC-handle-backed handles, idempotent `Dispose`.
 - **Scene-object discovery**: live scene objects are reachable through static accessors and

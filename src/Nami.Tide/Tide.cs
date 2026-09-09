@@ -50,6 +50,14 @@ public static unsafe partial class Tide
     [DllImport(LoaderDll, EntryPoint = "nami_tide_object_op_window", CallingConvention = CallingConvention.Cdecl)]
     internal static extern int NativeObjectOpWindow(CallRequest* request);
 
+    // Batch execution: N requests, ONE main-thread round trip (Mono backend).
+    [DllImport(LoaderDll, EntryPoint = "nami_tide_object_op_batch", CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int NativeObjectOpBatch(BatchRequest* batch);
+
+    // Batch execution: N requests, ONE main-thread round trip (IL2CPP backend).
+    [DllImport(LoaderDll, EntryPoint = "nami_il2cpp_object_op_batch", CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int NativeIl2CppObjectOpBatch(BatchRequest* batch);
+
     [DllImport(LoaderDll, EntryPoint = "nami_tide_free", CallingConvention = CallingConvention.Cdecl)]
     internal static extern void NativeFree(void* ptr);
 

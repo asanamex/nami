@@ -55,6 +55,9 @@ native/                          C++17 (Windows x64 first)
   loader/tide_ops.cpp            Tide native ops (UnityLog, parameterless InvokeStatic)
   loader/tide_objects.cpp        Tide Mono typed game access (field/property/method/object/array
                                  ops, GCHandle *_v2 handles, exception surfacing)
+  loader/tide_member_cache.h/.cpp
+                                 shared member-resolution memoization (SRW-guarded open-addressing
+                                 map, process lifetime, incl. negative results; tagged per backend)
   loader/tide_il2cpp.cpp         Tide IL2CPP main-thread executor: window-proc drain (subclasses
                                  the game's main window; ops run inside its message pump)
   loader/tide_il2cpp_ops.cpp     Tide IL2CPP typed game access (mirrors tide_objects.cpp against
@@ -70,7 +73,7 @@ native/                          C++17 (Windows x64 first)
                                  incl. stack, prefix/postfix dispatch, result save/rewrite
                                  via a 2-slot rax/xmm0 pointer, all state above a reserved
                                  callee scratch zone); exact restore (shared with smoke tests)
-  loader/tide_abi.h              shared Tide value/request ABI (TideValue, CallRequest)
+  loader/tide_abi.h              shared Tide value/request ABI (TideValue, CallRequest, BatchRequest)
   core/runtime_host.cpp          hostfxr: initialize_for_runtime_config → get_runtime_delegate(
                                  hdt_load_assembly_and_get_function_pointer) →
                                  load_assembly_and_get_function_pointer(Nami.Runtime.dll,

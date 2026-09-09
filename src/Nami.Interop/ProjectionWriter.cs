@@ -6,6 +6,8 @@ namespace Nami.Interop;
 /// Emits a compile-time-typed C# projection of an IL2CPP game's metadata: one static class per
 /// game type exposing <see cref="GameClass"/>-style handles (Nami.Tide resolves members by name
 /// at runtime; the projection gives mods IDE discoverability and compile-time-checked names).
+/// Each <see cref="GameClass"/> is materialized lazily on first use and cached per type —
+/// resolution (and the underlying native member lookup) runs once, not per call.
 /// The generated file is plain source — mods include it and reference Nami.Tide.
 /// </summary>
 public static class ProjectionWriter
@@ -28,15 +30,17 @@ public static class ProjectionWriter
         var methodsClass = Unique($"{CSharpSafe(StripDll(imageName))}Methods", new HashSet<string>(StringComparer.Ordinal) { typesClass });
 
         var typeSafeNames = new HashSet<string>(StringComparer.Ordinal);
-        var typeLines = new List<string>(types.Count * 5);
+        var typeLines = new List<string>(types.Count * 6);
         foreach (var type in types)
         {
             // ponytail: collisions (A.B vs A_B) get a numeric suffix so output always compiles.
             var safe = Unique(CSharpSafe(type.FullName), typeSafeNames);
+            typeLines.Add($"    private static GameClass _{safe};");
+            typeLines.Add(string.Empty);
             typeLines.Add("    /// <summary>");
             typeLines.Add($"    /// {Escape(type.FullName)} ({CountSummary(type)}).");
             typeLines.Add("    /// </summary>");
-            typeLines.Add($"    public static GameClass {safe} => GameClass.Resolve(");
+            typeLines.Add($"    public static GameClass {safe} => _{safe} ??= GameClass.Resolve(");
             typeLines.Add($"        \"{Escape(StripDll(imageName))}\", \"{Escape(type.Namespace)}\", \"{Escape(type.Name)}\");");
             typeLines.Add(string.Empty);
         }
@@ -52,7 +56,7 @@ public static class ProjectionWriter
         sb.AppendLine();
         sb.AppendLine("using Nami;");
         sb.AppendLine();
-        sb.AppendLine("/// <summary>Static accessors for the game's public types (resolved through Nami.Tide at runtime).</summary>");
+        sb.AppendLine("/// <summary>Static accessors for the game's public types. Each GameClass is resolved through Nami.Tide on first use and cached for the process lifetime.</summary>");
         sb.AppendLine($"public static partial class {typesClass}");
         sb.AppendLine("{");
         foreach (var line in typeLines)

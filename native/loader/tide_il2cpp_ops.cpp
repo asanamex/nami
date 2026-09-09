@@ -12,6 +12,7 @@
 // ---------------------------------------------------------------------------
 
 #include "tide_il2cpp.h"
+#include "tide_member_cache.h"
 
 #include <windows.h>
 
@@ -211,21 +212,21 @@ void* find_image(const char* name) {
     return nullptr;
 }
 
-void* find_class(const nami::tide::CallRequest& req) {
-    void* image = find_image(req.assembly);
+void* find_class_uncached(const char* assembly, const char* ns, const char* klass) {
+    void* image = find_image(assembly);
     if (image == nullptr) {
-        log_tide("il2cpp: assembly '%s' not found", req.assembly);
+        log_tide("il2cpp: assembly '%s' not found", assembly);
         return nullptr;
     }
-    void* klass = g_api.class_from_name(image, req.ns, req.klass);
-    if (klass == nullptr) {
-        log_tide("il2cpp: class '%s.%s' not found", req.ns, req.klass);
+    void* klass_ = g_api.class_from_name(image, ns, klass);
+    if (klass_ == nullptr) {
+        log_tide("il2cpp: class '%s.%s' not found", ns, klass);
     }
-    return klass;
+    return klass_;
 }
 
 // Searches a class AND its base classes for a method.
-void* find_method_in_hierarchy(void* klass, const char* name, int argc) {
+void* find_method_in_hierarchy_uncached(void* klass, const char* name, int argc) {
     for (void* k = klass; k != nullptr; k = g_api.class_get_parent(k)) {
         void* m = g_api.class_get_method_from_name(k, name, argc);
         if (m != nullptr) {
@@ -304,11 +305,13 @@ bool param_is_reference(int type_enum) {
 // find_method_for_args): exact primitive matches win, System.Object params accept
 // anything (boxed), primitives never flow to string params. Falls back to the
 // classic first-match name+argc lookup when signature info is unavailable.
-void* find_method_for_args(void* klass, const char* name, int argc,
-                           const nami::tide::TideValue* args) {
+void* find_method_for_args_uncached(void* klass, const char* name, int argc,
+                                    const nami::tide::TideValue* args) {
     if (g_api.class_get_methods == nullptr || g_api.method_get_name == nullptr ||
         g_api.method_get_param_count == nullptr) {
-        return find_method_in_hierarchy(klass, name, argc);
+        // UNCACHED call: may run inside the typed-method cache resolver, which
+        // already holds the cache lock (SRW locks are not recursive).
+        return find_method_in_hierarchy_uncached(klass, name, argc);
     }
     for (void* k = klass; k != nullptr && g_api.class_get_parent != nullptr;
          k = g_api.class_get_parent(k)) {
@@ -367,11 +370,11 @@ void* find_method_for_args(void* klass, const char* name, int argc,
         }
     }
     // No scored match (or no signature info): classic first-match behavior.
-    return find_method_in_hierarchy(klass, name, argc);
+    return find_method_in_hierarchy_uncached(klass, name, argc);
 }
 
 // Searches a class AND its base classes for a field.
-void* find_field_in_hierarchy(void* klass, const char* name) {
+void* find_field_in_hierarchy_uncached(void* klass, const char* name) {
     for (void* k = klass; k != nullptr; k = g_api.class_get_parent(k)) {
         void* f = g_api.class_get_field_from_name(k, name);
         if (f != nullptr) {
@@ -379,6 +382,102 @@ void* find_field_in_hierarchy(void* klass, const char* name) {
         }
     }
     return nullptr;
+}
+
+// ---------------------------------------------------------------------------
+// Cached resolution wrappers — THE call path used by the ops (see the Mono twin
+// in tide_objects.cpp). IL2CPP metadata is process-lifetime, so results (incl.
+// negative) are cached for the loader's lifetime. kind_tags: kTagIl2CppBase —
+// distinct from the Mono backend's kTagMonoBase.
+// ---------------------------------------------------------------------------
+
+constexpr uint64_t kTagIl2CppBase = 0x2000000000000000ULL;
+constexpr uint64_t kIl2CppClass = kTagIl2CppBase + 1;
+constexpr uint64_t kIl2CppMethod = kTagIl2CppBase + 2;
+constexpr uint64_t kIl2CppMethodTyped = kTagIl2CppBase + 3;
+constexpr uint64_t kIl2CppField = kTagIl2CppBase + 4;
+
+namespace {
+
+struct IlClassResolveCtx { const char* assembly; const char* ns; const char* klass; };
+struct IlMethodResolveCtx { void* klass; const char* name; int argc; };
+struct IlTypedMethodResolveCtx { void* klass; const char* name; int argc; const nami::tide::TideValue* args; };
+struct IlMemberResolveCtx { void* klass; const char* name; };
+
+nami::tide::MemberCache::ResolveResult IlResolveClassCb(void* user) {
+    auto* c = static_cast<IlClassResolveCtx*>(user);
+    void* v = find_class_uncached(c->assembly, c->ns, c->klass);
+    return {v, v != nullptr};
+}
+
+nami::tide::MemberCache::ResolveResult IlResolveMethodCb(void* user) {
+    auto* c = static_cast<IlMethodResolveCtx*>(user);
+    void* v = find_method_in_hierarchy_uncached(c->klass, c->name, c->argc);
+    return {v, v != nullptr};
+}
+
+nami::tide::MemberCache::ResolveResult IlResolveTypedMethodCb(void* user) {
+    auto* c = static_cast<IlTypedMethodResolveCtx*>(user);
+    void* v = find_method_for_args_uncached(c->klass, c->name, c->argc, c->args);
+    return {v, v != nullptr};
+}
+
+nami::tide::MemberCache::ResolveResult IlResolveFieldCb(void* user) {
+    auto* c = static_cast<IlMemberResolveCtx*>(user);
+    void* v = find_field_in_hierarchy_uncached(c->klass, c->name);
+    return {v, v != nullptr};
+}
+
+}  // namespace
+
+// Cached: class by (assembly, ns, name).
+void* find_class(const char* assembly, const char* ns, const char* klass) {
+    IlClassResolveCtx ctx{assembly, ns, klass};
+    bool found = false;
+    void* v = nami::tide::MemberCacheLookup(kIl2CppClass, 0, 0, assembly, ns, klass, nullptr,
+                                            IlResolveClassCb, &ctx, &found);
+    return found ? v : nullptr;
+}
+
+void* find_class(const nami::tide::CallRequest& req) {
+    return find_class(req.assembly, req.ns, req.klass);
+}
+
+// Cached: method (any base class) by name + argc.
+void* find_method_in_hierarchy(void* klass, const char* name, int argc) {
+    IlMethodResolveCtx ctx{klass, name, argc};
+    bool found = false;
+    void* v = nami::tide::MemberCacheLookup(kIl2CppMethod, reinterpret_cast<uint64_t>(klass),
+                                            static_cast<uint64_t>(argc), name, nullptr, nullptr,
+                                            nullptr, IlResolveMethodCb, &ctx, &found);
+    return found ? v : nullptr;
+}
+
+// Cached: overload-scored method for the given argument values. k2 hashes the
+// argument type masks so different overload shapes land on different entries.
+void* find_method_for_args(void* klass, const char* name, int argc,
+                           const nami::tide::TideValue* args) {
+    uint64_t mask = 1469598103934665603ULL;
+    for (int i = 0; i < argc; i++) {
+        mask = (mask ^ static_cast<uint64_t>(args[i].type)) * 0x100000001b3ULL;
+        mask ^= mask >> 29;
+    }
+    IlTypedMethodResolveCtx ctx{klass, name, argc, args};
+    bool found = false;
+    void* v = nami::tide::MemberCacheLookup(kIl2CppMethodTyped, reinterpret_cast<uint64_t>(klass),
+                                            mask, name, nullptr, nullptr, nullptr,
+                                            IlResolveTypedMethodCb, &ctx, &found);
+    return found ? v : nullptr;
+}
+
+// Cached: field (any base class) by name.
+void* find_field_in_hierarchy(void* klass, const char* name) {
+    IlMemberResolveCtx ctx{klass, name};
+    bool found = false;
+    void* v = nami::tide::MemberCacheLookup(kIl2CppField, reinterpret_cast<uint64_t>(klass), 0,
+                                            name, nullptr, nullptr, nullptr,
+                                            IlResolveFieldCb, &ctx, &found);
+    return found ? v : nullptr;
 }
 
 void* resolve_instance(const nami::tide::TideValue& v) {
@@ -1323,5 +1422,61 @@ extern "C" __declspec(dllexport) int nami_il2cpp_object_op(void* request) {
     const bool ok = nami::il2cpp::run_il2cpp_op(Shim::run, &local);
     *req = local;
     return ok ? local.result_code : -3;
+}
+
+// Export: run a BATCH of CallRequests in ONE main-thread round trip (the IL2CPP
+// twin of nami_tide_object_op_batch — same contract: every op executes, per-op
+// codes land in batch.codes[i], returns 0 when the batch ran).
+extern "C" __declspec(dllexport) int nami_il2cpp_object_op_batch(void* batch) {
+    using nami::tide::BatchRequest;
+    using nami::tide::CallRequest;
+
+    auto* b = static_cast<BatchRequest*>(batch);
+    if (b == nullptr || b->count <= 0 || b->count > 256 || b->requests == nullptr ||
+        b->codes == nullptr) {
+        return -1;
+    }
+
+    auto locals = static_cast<CallRequest*>(
+        HeapAlloc(GetProcessHeap(), 0, sizeof(CallRequest) * static_cast<size_t>(b->count)));
+    if (locals == nullptr) {
+        return -3;
+    }
+    for (int i = 0; i < b->count; i++) {
+        locals[i] = *b->requests[i];
+    }
+
+    struct BatchCtx {
+        CallRequest* locals;
+        int32_t* codes;
+        int count;
+    };
+    struct Shim {
+        static int run(void* arg) {
+            auto* c = static_cast<BatchCtx*>(arg);
+            for (int i = 0; i < c->count; i++) {
+                const int code = nami::il2cpp::il2cpp_object_op_impl(&c->locals[i]);
+                c->locals[i].result_code = code;
+                c->codes[i] = code;
+            }
+            return 0;
+        }
+    };
+
+    BatchCtx ctx{locals, b->codes, b->count};
+    const bool ok = nami::il2cpp::run_il2cpp_op(Shim::run, &ctx);
+
+    for (int i = 0; i < b->count; i++) {
+        *b->requests[i] = locals[i];
+    }
+    HeapFree(GetProcessHeap(), 0, locals);
+
+    if (!ok) {
+        for (int i = 0; i < b->count; i++) {
+            b->codes[i] = -3;
+        }
+        return -3;
+    }
+    return 0;
 }
 

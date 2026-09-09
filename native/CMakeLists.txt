@@ -31,6 +31,7 @@ add_library(nami_loader SHARED
   loader/inex_bootstrap.cpp
   loader/tide_pump.cpp
   loader/tide_ops.cpp
+  loader/tide_member_cache.cpp
   loader/tide_objects.cpp
   loader/tide_il2cpp.cpp
   loader/tide_il2cpp_ops.cpp

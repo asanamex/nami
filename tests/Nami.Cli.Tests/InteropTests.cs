@@ -281,6 +281,27 @@ public sealed class InteropTests : IDisposable
     }
 
     [Fact]
+    public void ProjectionMaterializesGameClassOncePerType()
+    {
+        var types = new[]
+        {
+            ("Player", string.Empty, 1, -1, 0, 1, 0, 1),
+        };
+        var methods = new (string, bool, int)[] { ("Jump", true, 0) };
+        var path = TempPath();
+        File.WriteAllBytes(path, BuildMetadata(30, 88, 32, types, methods, new[] { "health" }));
+
+        var metadata = Il2CppMetadata.Load(path);
+        var source = ProjectionWriter.Generate(metadata, "Assembly-CSharp.dll");
+
+        // Lazy materialization: exactly one Resolve per type, cached after first access.
+        Assert.Single(System.Text.RegularExpressions.Regex.Matches(
+            source, System.Text.RegularExpressions.Regex.Escape("GameClass.Resolve(")));
+        Assert.Contains("private static GameClass _Player;", source, StringComparison.Ordinal);
+        Assert.Contains("public static GameClass Player => _Player ??= GameClass.Resolve(", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void LoadsV241LayoutWithByrefField()
     {
         var types = new[]

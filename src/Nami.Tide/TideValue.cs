@@ -186,3 +186,16 @@ internal unsafe struct CallRequest
     public int ResultCode;
     public fixed byte ErrorMessage[512];
 }
+
+/// <summary>
+/// Mirrors native BatchRequest: N requests executed in ONE main-thread round trip.
+/// Per-op result codes are mirrored into <see cref="Codes"/>; each request's own
+/// ResultCode/Ret/error_message are written back exactly like the single-op path.
+/// </summary>
+[StructLayout(LayoutKind.Sequential)]
+internal unsafe struct BatchRequest
+{
+    public CallRequest** Requests;
+    public int* Codes;
+    public int Count;
+}

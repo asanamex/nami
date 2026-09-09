@@ -103,4 +103,17 @@ int64_t handle_store_create(void* mono_object);  // returns an opaque handle
 void* handle_store_resolve(int64_t handle);
 void handle_store_release(int64_t handle);
 
+// Batch execution: N CallRequests submitted in ONE main-thread round trip.
+// `requests[i]` are caller-owned request buffers (filled as for the single-op
+// export); per-op results are written back into each request (result_code, ret
+// slot, error_message) exactly like the single-op path, AND mirrored into
+// `codes[i]` for quick scanning. An op that fails does not stop the batch:
+// every request runs, codes carry per-op outcomes. Executed on the game main
+// thread (standard drain for Mono; the window/IL2CPP executor for IL2CPP).
+struct BatchRequest {
+    CallRequest** requests;  // caller-owned array of `count` pointers
+    int32_t* codes;          // caller-owned, `count` slots, filled by the op
+    int32_t count;
+};
+
 }  // namespace nami::tide

@@ -66,7 +66,7 @@ public sealed unsafe class TideProbeIl2CppPatchPlugin : NamiPlugin
 
     public override void OnUpdate()
     {
-        if (_stage > 8)
+        if (_stage > 10)
         {
             return;
         }
@@ -256,8 +256,58 @@ public sealed unsafe class TideProbeIl2CppPatchPlugin : NamiPlugin
                 log.Info(v3 == 7 && _maxPostfixFires == 0
                     ? "[F unhook] PASS — exact restore after full-path hook"
                     : "[F unhook] FAIL");
-                log.Info("TideProbe-IL2CPP-Patch verification complete");
                 _stage = 9;
+                break;
+            }
+
+            case 9:
+            {
+                // G. TideBatch — N game ops in ONE main-thread round trip. Time 8
+                // sequential (one-hop-per-op) calls against one batched flush of 8 ops.
+                var env = _env!;
+
+                var sw = System.Diagnostics.Stopwatch.StartNew();
+                var seq = new int[8];
+                for (var i = 0; i < seq.Length; i++)
+                {
+                    seq[i] = env.CallStaticValue("get_TickCount", Array.Empty<TideValue>(), TideType.I32).Int32;
+                }
+                sw.Stop();
+                var seqMs = sw.Elapsed.TotalMilliseconds;
+
+                using var batch = new TideBatch();
+                var idx = new int[seq.Length];
+                for (var i = 0; i < idx.Length; i++)
+                {
+                    idx[i] = batch.EnqueueCallStatic(env, "get_TickCount", TideType.I32);
+                }
+                sw.Restart();
+                batch.Flush();
+                sw.Stop();
+                var batchMs = sw.Elapsed.TotalMilliseconds;
+
+                var got = new int[idx.Length];
+                var allOk = true;
+                for (var i = 0; i < idx.Length; i++)
+                {
+                    got[i] = batch.GetInt(idx[i]);
+                    allOk &= batch.WasOk(idx[i]) && got[i] != 0;
+                }
+
+                log.Info($"[G batch] sequential 8 ops = {seqMs:F1} ms ({seqMs / 8:F2} ms/op); " +
+                         $"one batched flush of 8 ops = {batchMs:F1} ms ({batchMs / 8:F2} ms/op)");
+                log.Info($"[G batch] values = {string.Join(", ", got)}");
+                log.Info(allOk
+                    ? "[G batch] PASS — 8 ops ran in one round trip and returned real values"
+                    : "[G batch] FAIL");
+                _stage = 10;
+                break;
+            }
+
+            case 10:
+            {
+                log.Info("TideProbe-IL2CPP-Patch verification complete");
+                _stage = 11;
                 break;
             }
         }

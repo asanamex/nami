@@ -42,10 +42,11 @@ nami-inex lane boots real BepInEx 5.x for legacy mods (see below).
 
 - **One modern .NET runtime** (net10.0 LTS) embedded on *both* Mono and IL2CPP games — plugins
   are never stuck on a game's ancient bundled runtime.
-- **Lazy type projection** (design intent) instead of eagerly preloading hundreds of interop
-  assemblies — today that means the dev-time `nami interop generate` source emitter plus
-  runtime name-based resolution through Tide (no 100–400 MB / multi-second interop preload
-  on the player's machine).
+- **Lazy type projection** instead of eagerly preloading hundreds of interop assemblies — the
+  dev-time `nami interop generate` source emitter gives mods IDE-checked names, each game class
+  materializes its typed accessor lazily (once per process), runtime member lookups are
+  memoized in the native loader, and repeated ops can ride one main-thread round trip
+  (`TideBatch`). No 100–400 MB / multi-second interop preload on the player's machine.
 - **No player-side generation.** Interop/reference dumping is an offline dev tool, never a
   first-launch cost.- **Per-mod isolation & crash quarantine.** A throwing mod disables itself; the game
   keeps running. A **boot-guard** contains native loader crashes so the game still boots
@@ -70,7 +71,7 @@ src/
   Nami.Core/       Chainloader: discovery, graph, ALCs, quarantine, hot reload (generations +
                    file watcher), per-mod profiler (Profiling/ModProfiler.cs)
   Nami.Runtime/    In-game managed bootstrap: Boot.Run
-  Nami.Tide/       Typed game access: Tide, GameClass, GameObject, TideValue
+  Nami.Tide/       Typed game access: Tide, GameClass, GameObject, TideValue, TideBatch
   Nami.Wave/       Patching engine: x64 detours + Harmony-style IL-copy prefix/postfix
   Nami.Cli/        nami command-line tool (install/pack/launch/create/run/doctor/list/interop/inex/nmod/version/help)
   Nami.Interop/    Offline IL2CPP interop: global-metadata.dat reader (v24-38, single-byte XOR transparent) +
@@ -82,7 +83,8 @@ artifacts/         local NuGet feed (packages/); a `dotnet/` runtime tree at the
                    if present, else the runtime is bundled from your local .NET 10 install
 samples/       HelloNami (log-only) + TideProbe (Mono game access proof) +
                TideProbeIl2Cpp (IL2CPP game access proof) + TideProbeIl2CppPatch (IL2CPP
-               method-patching proof, incl. full-path HookFull phases A–F)
+               method-patching proof, incl. full-path HookFull phases A–F and a
+               TideBatch sequential-vs-batched benchmark stage G)
 tests/         Unit/integration tests (Core, Wave, Cli, Tide) + plugin fixtures
 bench/         Loader (Nami.Bench — not in the solution; run via project path) + patching
                (Wave.Bench, incl. HarmonyX head-to-head) benchmarks with regression gates
