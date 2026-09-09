@@ -35,14 +35,14 @@ src/Nami.Wave/           the engine
   Internal/CalliSignature.cs  ECMA-335 calli StandaloneSig parser - managed/unmanaged fnptr
                          call sites re-emitted faithfully; vararg/nested-fnptr/generic sites
                          refused with a precise error
-tests/Nami.Wave.Tests/   104 tests in Release: M1 + M2
+tests/Nami.Wave.Tests/   108 tests in Release (100 [Fact] + 4 [Theory], 8 rows): M1 + M2
                          semantics, IL-copy fidelity, restore, the scope suite
                          (WavePatchScopeTests: closed generics, struct receivers, filter EH
                          clauses, tiny-method near detours, managed + unmanaged calli), and
                          the WaveIl2Cpp contract (no-loader behavior, arg validation,
-                         HookFull). The deep M2 suite (WavePatchDeepTests) compiles in
-                         Release only; in DEBUG only a placeholder runs instead - 57 [Fact]
-                         + 2 [Theory] (6 rows) there (63 tests)
+                         HookFull, HookTyped). The deep M2 suite (WavePatchDeepTests) compiles in
+                         Release only; in DEBUG only a placeholder runs instead - 6 [Fact]
+                         in Release (1 placeholder in DEBUG)
 bench/Wave.Bench/        hooked-call overhead benchmark (1M calls)
 ```
 
@@ -118,10 +118,10 @@ On every add/remove Wave recomputes the cheapest strategy that satisfies the uni
 
 - **Fast** (native stub): every entry is prefix-only (no postfix/transpiler) with
   by-value, name-matched hooks, and the target shape is GC-tracking-free - static,
-  ≤4 params, each param and the return a reference-free primitive/enum/pointer, no
-  byref. Blueprints by register-bank usage: **A** (no register args - the legacy M1
-  stub, void returns), **B** (all-int args, spill GP only), **D** (mixed, spill both
-  banks; XMM-only shapes also land here - a dedicated C blueprint waits on data).
+  ≤4 params, each param and the return a reference-free primitive/enum/IntPtr/UIntPtr, no
+  byref. Blueprints by register-bank usage: **A** (blind void all-int shapes via
+  BuildDispatcher - the legacy M1 stub path, void returns), **B** (all-int args, spill GP only),
+  **D** (mixed, spill both banks; XMM-only shapes also land here - a dedicated C blueprint waits on data).
 - **ILCopy**: everything else (postfix, transpiler, instance methods, references,
   `ref`/`__result`/`__state`/`__args`, >4 params).
 
@@ -256,7 +256,7 @@ across the stub's unmanaged frame is the known edge.
 ## Scope & honest limitations
 
 - **Fast targets**: prefix-only hooks on GC-tracking-free shapes (static, ≤4 primitive/
-  enum/pointer params, primitive/void return, by-value name-matched hooks). Skips return
+  enum/IntPtr/UIntPtr params, primitive/void return, by-value name-matched hooks). Skips return
   the type default. Anything richer (postfix, transpiler, instance, references, byref,
   `__`-conventions, >4 params) takes the IL-copy body automatically.
 - **M1 targets**: `Wave.Hook` stays parameterless-`void`-only (frozen legacy entry point).

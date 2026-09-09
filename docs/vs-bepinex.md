@@ -64,4 +64,4 @@ Mono, Mono titles only) instead of the native API.
 
 Whether that trade is worth it is the milestone-by-milestone question; the architecture is
 built so each milestone (IL2CPP, patching, hot reload, projection) lands on the same core -
-IL2CPP and hot reload have already landed.
+IL2CPP, patching, hot reload, and projection have already landed.

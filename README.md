@@ -155,6 +155,7 @@ commands:
                           legacy BepInEx lane (boots BepInEx 5.x in game Mono)
   nmod     info|install [args...] [gameDir]
                           .nmod package distribution (manifest info / install)
+  help                    show this help
 ```
 
 </details>

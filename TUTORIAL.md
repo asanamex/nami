@@ -41,7 +41,7 @@ Artifacts you need:
 | `nami_boot.exe` | `native/build/` | launches the game and injects Nami |
 | `nami_loader.dll` | `native/build/` | injected into the game; hosts .NET |
 | `Nami.Runtime.dll` (+ `.deps.json`, `.runtimeconfig.json`) | `src/Nami.Runtime/bin/Release/net10.0/` | managed in-game bootstrap |
-| `Nami.Core.dll`, `Nami.Sdk.dll`, `Nami.Tide.dll` | same output dir | loader core + plugin API + game bridge |
+| `Nami.Core.dll`, `Nami.Sdk.dll`, `Nami.Tide.dll`, `Nami.Wave.dll` | same output dir | loader core + plugin API + game bridge + patching engine |
 
 ## 3. Stage a Nami root next to the game
 
@@ -54,6 +54,10 @@ injector + a bundled .NET runtime copied from your local install):
 nami install "C:\path\to\YourGame"
 ```
 
+Stage and pack refuse stale build outputs (a Debug tree newer than Release, or native
+binaries older than their C++ sources): rebuild Release outputs or pass `--artifacts <root>`.
+Every stage also deletes retired root-level `nami_loader.dll` copies (shadow-load risk).
+
 Resulting layout:
 
 ```
@@ -63,6 +67,7 @@ Resulting layout:
     ├── Nami.Core.dll
     ├── Nami.Sdk.dll
     ├── Nami.Tide.dll
+    ├── Nami.Wave.dll
     ├── dotnet/host/fxr/<ver> + dotnet/shared/Microsoft.NETCore.App/<ver>   (bundled runtime)
     ├── native/nami_boot.exe + nami_loader.dll
     ├── native/nami-inex.log   ← legacy-lane log (only when armed)
@@ -415,6 +420,9 @@ and `LogOutput.log` presence/size. IL2CPP/BepInEx-6 titles are not covered yet
 `nami doctor` prints root, mods dir, quarantine display, `*.dll` count, the configured or
 auto-detected exe, any missing launcher files, and the inex payload/sentinel state -
 a smoke check, not a full environment report.
+It also reports the obsolete-layout line (`layout : current`, or `layout : OBSOLETE ...`
+when a retired root-level `nami_loader.dll` is present) and the boot-guard line
+(`bootguard: normal`, or `SAFE MODE` with the auto-clear rule after a boot crash).
 
 ## 9. Running the test suite
 
@@ -423,9 +431,9 @@ dotnet test Nami.slnx              :: runs all four test projects
 ```
 
 (Or individually: `dotnet test tests/Nami.Tests`, `tests/Nami.Wave.Tests`,
-`tests/Nami.Cli.Tests`, `tests/Nami.Tide.Tests`.) Current counts by project:
-(38 + 104 + 56 + 48 tests), and `dotnet test` exit code stays
-the source of truth.
+`tests/Nami.Tide.Tests`.) Current markers by project (`[Fact]` + `[Theory]`):
+(38 + 105 + 58 + 46; theories expand those to 38 + 109 + 60 + 51 runnable cases),
+and `dotnet test` exit code stays the source of truth.
 
 ## 10. Known limitations
 
@@ -449,6 +457,12 @@ the source of truth.
   `Wave.Patch(definition, typeArguments, ...)`; `ref` hook params and exotic `calli`
   shapes refused). Windows x64 only. `Wave.Hook` is the legacy entry point
   (parameterless void methods, gate/observer).
+- **Typed IL2CPP hooks**: `WaveIl2Cpp.HookTyped` needs the exact user-parameter `TideType`
+  shape (an empty array selects a zero-parameter method); the native resolver refuses to
+  guess hidden ABI slots. Callbacks read and write args and results through generic
+  `GetArgument<T>` / `SetArgument<T>` / `GetResult<T>` / `SetResult<T>`, see instance
+  receivers as a borrowed `This` (do not dispose), and may box primitives into `Object`
+  slots.
 - The game must be launched through the Nami injector; use `nami launch` or the
   `launchNami.exe` shortcut `nami create` writes (Steam launch options can point at that).
 - Do not drop Doorstop's proxy (`winhttp.dll`) or a loose `BepInEx/` tree in the game

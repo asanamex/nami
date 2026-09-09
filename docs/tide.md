@@ -5,7 +5,7 @@ Tide connects mods running on Nami's hosted .NET (CoreCLR) to the game's own man
 game state.
 
 ```
-src/Nami.Tide/              managed API: Tide, GameClass, GameObject, TideValue
+src/Nami.Tide/              managed API: Tide, GameClass, GameObject, TideValue, TideBatch, TideArrays, TideTypes
 native/loader/tide_pump.cpp native Mono main-thread executor: mono_runtime_invoke hook,
                             pre/post drain queues, trampoline; shared nami::tide detour
                             toolkit (measure_relocatable_prologue / build_trampoline /
@@ -19,6 +19,10 @@ native/loader/tide_objects.cpp  Mono typed game access: field/property/method/ob
 native/loader/tide_il2cpp.cpp   IL2CPP main-thread executor: window-proc drain (see §9)
 native/loader/tide_il2cpp_ops.cpp  IL2CPP typed game access (mirrors tide_objects.cpp)
 native/loader/tide_abi.h    shared value/handle ABI (TideValue, CallRequest, BatchRequest)
+native/loader/tide_il2cpp_patch.cpp/.h  typed hook installer: overload resolve, signature store, frame accessors
+native/loader/native_stub.cpp/.h  shared detour toolkit: dispatch stubs, near/far jumps, retire-on-unhook
+native/loader/il2cpp_boxing.h  shared primitive-boxing table for typed ops and typed hooks
+native/loader/tide_member_cache.cpp/.h  name-resolution memoization for both backends (see §6)
 ```
 
 ---
@@ -187,7 +191,7 @@ using Nami;   // Tide, GameClass, GameObject, TideValue, TideTypes, TideArrays, 
 | `bool Tide.IsAvailable` | True when `nami_loader.dll` is loaded (i.e. running in-game under Nami). False in plain unit tests / outside a game. `Tide.ActiveBackend` (`Mono`/`Il2Cpp`), `IsReady`, and `EnsureReady()` report/drive backend readiness. |
 | `bool Tide.UnityLog(string message)` | Calls `UnityEngine.Debug.Log(object)` on the game main thread (both backends; IL2CPP routes through the typed call op). |
 | `bool Tide.InvokeStatic(assembly, ns, klass, method)` | Calls a **parameterless** static game method on the main thread (both backends - IL2CPP routes through the typed call op); true if it ran without a game exception. |
-| `GameClass GameClass.Resolve(assembly, ns, name)` | Resolve a game class once by assembly (with or without `.dll`). |
+| `GameClass GameClass.Resolve(assembly, ns, name)` | Resolve a game class by assembly (with or without `.dll`). The wrapper is cheap; native lookups are memoized (see §6). |
 | `GetStaticInt/Long/Float/Double/Bool/String/Object` / `SetStatic...` | Typed static **field or property** read/write (primitives + string + live objects via `GetStaticObject`/`SetStaticObject`). |
 | `T? Get<T>(field)` / `Set<T>(field, value)` | **Generic typed access** (static): `T` may be int/long/float/double/bool/string/`GameObject`/any enum (`I32`, or `I64` for `long` enums). No hand-picking `TideType`. |
 | `TResult? Call<TResult>(method, params TideValue[])` | Generic typed static call: maps `TResult` to the right `TideType` and converts the result (incl. enums). |
@@ -198,7 +202,7 @@ using Nami;   // Tide, GameClass, GameObject, TideValue, TideTypes, TideArrays, 
 | `TideValue` | A typed value. Factories: `FromInt/FromLong/FromFloat/FromDouble/FromBool/FromString/FromHandle`. Readers: `Int32/Int64/Single/Double/Boolean/Handle/String`. Ownership: `FreeNativeReturn()` (frees a native string return after copying) and `FreeStringBuffer()` (only if you retain a `FromString` buffer manually - `Call`/`CallInstance` auto-free arg buffers in a `finally`). |
 | `TideTypes.Of<T>()` | Maps a CLR type to its `TideType` (primitives, string, `GameObject`, enums → underlying int, or `I64` for `long` enums). |
 | `TideArrays` | Read/write a game-side `System.Array` handle: `GetLength`, typed element reads (`GetInt/GetLong/GetFloat/GetDouble/GetBool/GetEnum/GetString/GetObject`) and writes (`SetInt/SetLong/SetFloat/SetDouble/SetBool/SetString/SetObject` - enum writes via `SetInt`). Works for value-type, enum, string and reference arrays. |
-| `TideBatch` | **Batched ops - N game operations in ONE main-thread round trip.** Enqueue up to 256 ops (`EnqueueGetStatic/SetStatic/CallStatic/GetInstance/SetInstance/CallInstance` - each returns an index), then `Flush()` once. Per-op outcomes via `WasOk(i)`/`CodeOf(i)`; typed result readers `GetInt(i)/GetLong(i)/GetFloat(i)/GetDouble(i)/GetBool(i)/GetHandle(i)/GetString(i)/GetObject(i)`. A failing op does not abort the batch. `Dispose()` frees all unmanaged memory (idempotent); **read string results before disposing**. Enqueue-after-flush, double-flush, and use-after-dispose throw. |
+| `TideBatch` | **Batched ops - N game operations in ONE main-thread round trip.** Enqueue up to 256 ops (`EnqueueGetStatic/EnqueueSetStatic/EnqueueCallStatic/EnqueueGetInstance/EnqueueSetInstance/EnqueueCallInstance` - each returns an index), then `Flush()` once. Per-op outcomes via `WasOk(i)`/`CodeOf(i)`; typed result readers `GetInt(i)/GetLong(i)/GetFloat(i)/GetDouble(i)/GetBool(i)/GetHandle(i)/GetString(i)/GetObject(i)`. A failing op does not abort the batch. `Dispose()` frees all unmanaged memory (idempotent); **read string results before disposing**. Enqueue-after-flush, double-flush, and use-after-dispose throw. |
 
 **Blocking semantics**: every call blocks until the game's main thread has executed it (Mono:
 pumped through `mono_runtime_invoke`; IL2CPP: drained from the window procedure - see §9).
@@ -347,7 +351,7 @@ copying `Nami.*` DLLs from a mod's output into `mods/`.
 - `tide_member_cache` memoizes those lookups for the loader's lifetime: an SRWLOCK-guarded
   open-addressing map (linear probing, power-of-two capacity starting at 256, grows at 3/4
   load) keyed by kind tag + integer keys + the member-name strings. Both backends share the
-  instance - Mono uses tags `0x1000…`+1..5, IL2CPP `0x2000…`+1..4, so keys never collide;
+  instance - Mono uses tags `0x1000000000000000`+1..5 (class, method, typed-method, field, property), IL2CPP `0x2000000000000000`+1..4 (class, method, typed-method, field), so keys never collide;
   typed-overload entries fold an FNV-1a hash of the argument-type mask into the key.
 - Results - including **not-found** - are cached: Mono/IL2CPP metadata never unloads, so a
   negative result stays valid. On a miss the caller's resolver runs under the lock and must
@@ -553,7 +557,7 @@ corrupt (uninstall restores the exact bytes).
   path is verified on `System.Math::Max` - the postfix observes the REAL result (7 for
   `Max(3,7)`), a rewrite changes what the caller receives (byte-visible sentinel - the
   resolved overload returns a byte, so the caller reads only `al`), and unhook restores
-  exactly. The machinery is also covered by the native smoke suite (raw-byte leaf
+  exactly. Later stages of the same sample cover the batch and typed paths: stage G batches 8 `get_TickCount` calls in one flush; stage H exercises `HookTyped` argument/result reads plus argument and result rewrites on `Math.Max`; stage I proves the borrowed `This` receiver on `GameObject.GetInstanceID` (empty `parameterTypes` as the exact zero-argument shape, `Dispose` as a no-op guard); stage J proves primitive-to-`Object` boxing writes on `Debug.Log(object)`. The machinery is also covered by the native smoke suite (raw-byte leaf
   functions in all supported shapes, full-path stack-arg/float/skip/rewrite cases, +
   a 4-byte refusal) and the managed contract tests.
 
@@ -588,15 +592,13 @@ The callback receives `Il2CppHookContext`: `ArgumentCount`, `IsInstanceMethod`, 
 `GetArgumentType`, `GetArgument`/`SetArgument`, generic typed argument helpers,
 `ResultType`, and `GetResult`/`SetResult`. Instance `this` is not included in the user
 argument indices; use `This` for the borrowed receiver.
-String and object values are converted to UTF-8 or temporary 64-bit IL2CPP GC handles;
-string buffers and callback-scoped native handles are released after dispatch. Use
-`GetString`/`GetResultString` to copy string values before the callback returns. Typed
+String reads arrive as native UTF-8 buffers the managed side copies and frees (`GetString`/`GetResultString`, via `FreeNativeReturn`) before the callback returns. Object values (`This`, `GetObject`/`GetResultObject`, `GetArgument<GameObject>`) are borrowed temporary 64-bit IL2CPP GC handles, valid only during the callback: do not `Dispose` them (the native frame frees its temporaries after dispatch via `nami_il2cpp_hook_frame_cleanup`; `Dispose` on a borrowed wrapper is a no-op guard, and the handle dangles after the callback returns). Typed
 native stubs are retired rather than freed on unhook, so an in-flight callback cannot
 race executable-code or signature reclamation; this is a bounded process-lifetime cost.
 
 The v2 safe set is bool, 8/16/32/64-bit integer values (normalized to `I32`/`I64`),
-float, double, string, object/reference values, and enums (normalized to their underlying
-integer). Writes to `Object` slots accept primitives and strings boxed through the shared
+float, double, string, object/reference values (class, array, generic-instance and `System.Object` slots), and enums (normalized to their underlying
+integer). Writes to `Object` slots accept strings (materialized via `string_new`) and primitives (`I32`/`Bool`/`I64`/`R4`/`R8`) boxed through the shared
 `il2cpp_boxing.h` table (the same rule as Tide object-param calls); all other type
 mismatches stay refused. `ref`/`out`, arbitrary structs, generic or inflated methods, hidden structure
 returns, virtual methods, and ambiguous or unsupported overloads are refused before patch

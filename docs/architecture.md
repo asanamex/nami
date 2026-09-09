@@ -99,7 +99,7 @@ src/Nami.Cli/                    `nami` console tool: version/doctor/list/help +
                                   runnable root from build outputs via Stager) + run <mod.csproj>
                                   (builds a mod, copies it into nami/mods, launches) + interop
                                   (offline IL2CPP projection: images/dump/generate/header) + inex
-                                  (legacy lane: install/enable/disable/status; Stager stages,
+                                  (legacy lane: install/enable/disable/status;
                                   InexCommand manages) +
                                   the launcher flow - launch set <game.exe> (stored in nami.json), launch
                                  [offline|steam] (spawns native/nami_boot.exe; Steam relay to
@@ -123,6 +123,8 @@ samples/TideProbe/               in-game proof of Tide typed access (generic API
                                  Camera.main scene access) - Mono titles
 samples/TideProbeIl2Cpp/         in-game proof of the Tide IL2CPP backend (same API on
                                  GameAssembly.dll titles)
+samples/TideProbeIl2CppPatch/    in-game proof of WaveIl2Cpp patching (stages A-J: raw Hook/HookFull
+                                 plus HookTyped generics, borrowed This, boxing)
 ```
 
 ## Boot sequence (verified in-game)
@@ -130,7 +132,8 @@ samples/TideProbeIl2Cpp/         in-game proof of the Tide IL2CPP backend (same 
 1. `nami_boot.exe` launches the game suspended, injects `nami_loader.dll` via the classic
    LoadLibraryW remote-thread pattern, holds the game main thread until the loader
    signals hook-ready (30s timeout), then resumes the game.
-2. Loader thread polls for the game's runtime - `mono-2.0-bdwgc.dll`/`mono.dll` on Mono
+2. Loader thread (after boot-guard install plus the non-blocking inex arm on Mono titles)
+   polls for the game's runtime (60s timeout) - `mono-2.0-bdwgc.dll`/`mono.dll` on Mono
    titles, `GameAssembly.dll` on IL2CPP titles (Unity initialized) - then hosts CoreCLR:
    - `hostfxr_initialize_for_runtime_config(<nami>/Nami.Runtime.runtimeconfig.json)`
    - `hostfxr_get_runtime_delegate(hdt_load_assembly_and_get_function_pointer)` - **note: the
@@ -152,11 +155,11 @@ samples/TideProbeIl2Cpp/         in-game proof of the Tide IL2CPP backend (same 
 dotnet/host/fxr/<ver>/hostfxr.dll
 dotnet/shared/Microsoft.NETCore.App/<ver>/   (bundled runtime)
 Nami.Runtime.dll  Nami.Runtime.deps.json  Nami.Runtime.runtimeconfig.json
-Nami.Core.dll     Nami.Sdk.dll           Nami.Tide.dll
+Nami.Core.dll     Nami.Sdk.dll           Nami.Tide.dll           Nami.Wave.dll
 native/nami_boot.exe  native/nami_loader.dll
 launchNami.exe  run-with-nami.bat        (written by `nami create`)
 mods/*.dll                               (loose plugin DLLs + mods/<id>/ from .nmod
-                                         extraction; the watcher covers top-level DLLs -
+                                         extraction; the watcher covers top-level DLLs only)
 inex/BepInEx/{core,plugins,patchers,config} (optional legacy payload; cache/ never
                                          copied by `nami inex install`)
 inex/enabled                             (sentinel file; absent = pure Nami boot)
@@ -173,7 +176,9 @@ The root is created by `nami install <game>` - either staged from the repo's bui
 in one zip (managed + native + bundled .NET runtime) with a SHA-256 `manifest.json`;
 install verifies every file against it, refuses tampered entries without clobbering a working
 install, and replaces only framework files on upgrade (mods/, inex/, logs and boot-guard
-markers survive). `nami run`/`nami launch`/`launchNami.exe` then invoke
+markers survive). Repo staging refuses stale Release outputs when a newer Debug build or newer
+native sources exist (rebuild Release or pass --artifacts); Stage and artifact install delete
+the obsolete root `nami_loader.dll` reported by `nami doctor`. `nami run`/`nami launch`/`launchNami.exe` then invoke
 `native/nami_boot.exe <game.exe> native/nami_loader.dll`; the loader derives the root as two
 levels up and the game executable comes from `nami.json` (`gameExe`).
 
@@ -247,8 +252,8 @@ Boot-guard fixes that (native/core/bootguard.cpp):
   decrements it and at 0 the marker is deleted and Nami is fully back. Delete
   `<root>/safe-mode` manually (or wait 3 boots) to restore Nami immediately.
 - **Only hard faults are contained.** The VEH classifies by exception code: access
-  violations, illegal instructions, stack overflow, division-by-zero, privileged
-  instructions, in-page errors, /GS and heap-corruption codes. Catchable software
+  violations, array-bounds-exceeded, illegal instructions, stack overflow, division-by-zero,
+  privileged instructions, in-page errors, /GS and heap-corruption codes. Catchable software
   exceptions pass through untouched - C++ throws (0xE06D7363) and .NET exceptions
   (0xE0434352, raised by CoreCLR for every managed `throw`) are normal control flow,
   not crashes. (Regression: the first version's high-bit catch-all killed Nami-owned
@@ -256,7 +261,7 @@ Boot-guard fixes that (native/core/bootguard.cpp):
 - **Boundary.** `Boot.Run` deletes `boot-pending` once the update loop is ticking - crashes
   after that point are runtime crashes (mods, Tide) and do not trigger safe mode; managed
   mod failures stay in the quarantine path.
-- `nami doctor` reports the boot-guard state.
+- `nami doctor` reports the boot-guard state and the layout line (current vs OBSOLETE obsolete files).
 
 ## Design notes
 
@@ -266,7 +271,7 @@ Boot-guard fixes that (native/core/bootguard.cpp):
   probe and the real load read assemblies from raw bytes, so mod files are never locked -
   a rebuilt DLL can overwrite itself in place while the game runs (hot reload prerequisite).
 - Each plugin loads into its own collectible `PluginLoadContext`. Quarantine disables a throwing
-  plugin after N consecutive failures (state `Quarantined`, `OnUnload` called best-effort, then
+  plugin after 5 consecutive failures by default (`quarantineThreshold`, state `Quarantined`, `OnUnload` called best-effort, then
   the ALC is unloaded). All structural changes (quarantine unload, watcher-driven reload) are
   queued and drained between update ticks, so reloads never race a running `OnUpdate`.
 - Hot reload unloads the target plus every transitive dependent (reverse load order), then
@@ -289,9 +294,12 @@ Boot-guard fixes that (native/core/bootguard.cpp):
   orchestration) and legacy-pack distribution remain.
 - IL2CPP patching: dispatch-stub hooks shipped and verified in-game (WaveIl2Cpp -
   fast path observe/skip with raw pointer args, full path with all-args +
-  result observation/rewriting via `HookFull`, short-prologue + RIP-relative support
-  incl. Unity 6 lazy-init thunks, see docs/tide.md §9). Remaining vs BepInEx 6:
-  argument marshaling to managed types (raw slots only today) and per-title coverage.
+  result observation/rewriting via `HookFull`, typed args/results via `HookTyped`
+  with an explicit TideType shape (empty means zero params), generic GetArgument/SetArgument,
+  borrowed `This`, boxing, short-prologue + RIP-relative support
+  incl. Unity 6 lazy-init thunks, see docs/tide.md §9). Hook `Site` records bind their
+  root handle and typed sites stay retained after unhook until forced. Remaining vs BepInEx 6:
+  per-title coverage.
 - Shipped: `Nami.Interop` - offline (dev-time) typed projection for IL2CPP modders
   (`nami interop images/dump/generate/header`; metadata v24-38, verified on a
   Unity 6000.0.61 title - see `src/Nami.Interop/Il2CppMetadata.cs`).
