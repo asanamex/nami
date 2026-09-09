@@ -8,21 +8,51 @@
 [![Windows x64](https://img.shields.io/badge/platform-Windows_x64-0078D4?style=flat-square&logo=windows)](https://github.com/asanamex/nami)
 [![Unity Mono + IL2CPP](https://img.shields.io/badge/Unity-Mono_%2B_IL2CPP-000000?style=flat-square&logo=unity)](docs/architecture.md)
 [![Status: Beta](https://img.shields.io/badge/status-beta-yellow?style=flat-square)](https://github.com/asanamex/nami)
-[![CLI tests 60/60](https://img.shields.io/badge/CLI_tests-60%2F60-brightgreen?style=flat-square)](tests/Nami.Cli.Tests)
-[![Tide tests 51/51](https://img.shields.io/badge/Tide_tests-51%2F51-brightgreen?style=flat-square)](tests/Nami.Tide.Tests)
 
-*Nami core has no build dependency on BepInEx, HarmonyX, MonoMod, or Mono.Cecil.
-An optional lane (`nami inex`) boots real BepInEx 5.x for legacy mods.*
-
-📖 [Tutorial](TUTORIAL.md) · 🌉 [Tide](docs/tide.md) · 🌊 [Wave](docs/wave.md) · 🏛️ [Architecture](docs/architecture.md) · ⚖️ [vs BepInEx](docs/vs-bepinex.md) · 🔬 [Technical deep-dive](docs/technical-difference.md)
+*Nami core has no build dependency on BepInEx, HarmonyX, MonoMod, or Mono.Cecil.*
 
 </div>
 
----
+## What is this
 
-## The idea in 30 seconds
+BepInEx plugins run inside the game's old embedded Mono. Nami instead injects a small native loader, waits for Unity to initialize, then **hosts a modern .NET 10 runtime inside the game process** and loads each mod into its own isolated context.
 
-BepInEx plugins run inside the game's old embedded Mono. Nami instead injects a native loader, waits for Unity to initialize, then **hosts a modern .NET 10 runtime inside the game process**. Mods run on .NET 10 with real `AssemblyLoadContext` isolation, crash quarantine, and live hot-reload. Never on the game's runtime.
+Why you might care:
+
+- Mods run on .NET 10 with real isolation: a throwing mod disables itself, the game keeps playing.
+- Rebuild a mod and it hot-swaps live. No game restart.
+- Typed access to game state (`GameClass`, `GameObject`) plus method patching, on Mono and IL2CPP.
+
+## 30 seconds
+
+```csharp
+using Nami;
+using Nami.Sdk;
+
+[NamiPlugin]
+[PluginInfo("dev.example.greeter", "Greeter", "0.1.0")]
+public sealed class GreeterPlugin : NamiPlugin
+{
+    public override void OnLoad()
+    {
+        if (!Tide.IsAvailable) return;
+        var time = GameClass.Resolve("UnityEngine.CoreModule", "UnityEngine", "Time");
+        time.SetStaticFloat("timeScale", 0.5f);   // slow motion
+    }
+}
+```
+
+```powershell
+dotnet new install tools/templates/nami-mod
+dotnet new nami-mod -n MyFirstMod
+nami install "<game>"
+nami launch set "<game>\Game.exe" "<game>"
+nami run "MyFirstMod\MyFirstMod.csproj" "<game>"
+```
+
+That is the whole loop. Details: [TUTORIAL.md](TUTORIAL.md).
+
+## How it fits together
 
 ```mermaid
 flowchart LR
@@ -34,35 +64,19 @@ flowchart LR
     Chain --> Mods[mods tick on .NET 10]
 ```
 
-```mermaid
-sequenceDiagram
-    participant Mod as mod (.NET 10)
-    participant Tide as Tide bridge
-    participant Game as game main thread
-    Mod->>Tide: typed call (field, method, batch)
-    Tide->>Tide: enqueue + block
-    Game->>Tide: drain inline (invoke hook / window proc)
-    Tide-->>Mod: typed result (or TideException)
-```
-
-## What Nami does
-
 | Piece | What it is |
 |---|---|
-| 🏠 **Bring-your-own runtime** | `net10.0` hosted in-process on Mono *and* IL2CPP titles |
-| 🌉 **Tide** | Typed game access (`GameClass`, `GameObject`, `TideValue`, 256-op `TideBatch`) drained on the game main thread |
-| 🌊 **Wave** | Patching engine: x64 inline detours, IL-copy prefix/postfix/transpilers, typed IL2CPP hooks |
-| 🧩 **Isolation** | One collectible ALC per mod, raw-byte loads (files never locked) |
-| 🛟 **Quarantine** | A throwing mod disables itself after 5 consecutive failures; the game keeps running |
-| 🛡️ **Boot-guard** | Native-loader crashes are contained; auto-recovering safe mode boots the game clean |
-| 🔥 **Hot reload** | Rebuild or drop a DLL into `nami/mods`; it swaps generations live |
-| 📊 **Profiler** | Per-mod tick timings (avg/p95/max) in the log and in-process via `Context.Profiler` |
-| 📦 **Tooling** | `dotnet new nami-mod`, `nami install/run/pack`, offline IL2CPP projection, `.nmod` packages |
+| 🏠 **BYO runtime** | `net10.0` hosted in-process on Mono *and* IL2CPP titles |
+| 🌉 **Tide** | Typed game access, drained on the game main thread ([docs](docs/tide.md)) |
+| 🌊 **Wave** | Patching: x64 detours, IL-copy patches, typed IL2CPP hooks ([docs](docs/wave.md)) |
+| 🛟 **Safety nets** | Per-mod quarantine, native boot-guard with auto-recovering safe mode |
+| 📦 **Tooling** | `nami install/run/pack/doctor`, offline IL2CPP projection, `.nmod` packages |
 | 🕰️ **Legacy lane** | Unmodified BepInEx 5.x mods on Mono (`nami inex`), no proxy files |
 
-## Verified in a real game
+📖 [Tutorial](TUTORIAL.md) · 🏛️ [Architecture](docs/architecture.md) · ⚖️ [vs BepInEx](docs/vs-bepinex.md) · 🔬 [Technical deep-dive](docs/technical-difference.md)
 
-The `TideProbeIl2CppPatch` sample drives hooks A through J against a live IL2CPP title and logs each verdict (timestamps trimmed):
+<details>
+<summary><b>Proven in a real game</b> (sample probe log, IL2CPP title, timestamps trimmed)</summary>
 
 ```
 [B install] hook installed: Il2CppHook(System.Environment::get_TickCount(0), owner=tideprobe-il2cpp-patch)
@@ -78,48 +92,9 @@ The `TideProbeIl2CppPatch` sample drives hooks A through J against a live IL2CPP
 TideProbe-IL2CPP-Patch verification complete
 ```
 
-And the Tide side on the same title:
+Gates that run without a game (green on this checkout): `Nami.Cli.Tests` 60/60, `Nami.Tide.Tests` 51/51, `WaveIl2CppTests` 15/15, `ctest smoke` PASS.
 
-```
-typed Debug.Log(string) call OK
-Application.runInBackground (typed Get<bool>) = True
-Screen.orientation (enum via Get<int>) = 1
-exception surfaced OK: code=-2 mono=True
-TideProbe-IL2CPP verification complete
-```
-
-Gates that run without a game (all green on this checkout):
-
-| Suite | Result |
-|---|---|
-| `Nami.Cli.Tests` | 60/60 |
-| `Nami.Tide.Tests` | 51/51 |
-| `Nami.Wave.Tests` `WaveIl2CppTests` | 15/15 |
-| `native` `ctest smoke` | PASS (incl. boxing-table + stub geometry) |
-| `Wave.Bench` | detour/IL-copy vs HarmonyX 2.16.1 with nonzero-exit budgets |
-
-> Status: beta. Loading, patching, the bridge, and typed access work in real games on Mono and IL2CPP, but the verified title matrix is still small. Untested games and Unity versions can surprise you. Run it against your titles and report breakage (engine version, what failed, lines from `nami/nami.log`).
-
-## Try it
-
-Prerequisites: .NET SDK 10.0+. For the `native/` tree: CMake 3.20+, Ninja, a C++17 compiler (MinGW-w64; MSVC/Clang are untested with these link flags).
-
-```powershell
-# 1. Build (managed + native)
-dotnet build Nami.slnx
-cmake -S native -B native/build -G Ninja -DCMAKE_BUILD_TYPE=Release
-cmake --build native/build
-
-# 2. Stage a nami root next to the game and remember its exe
-nami install "<game>"
-nami launch set "<game>\Game.exe" "<game>"
-
-# 3. Launch injected, watch the boot
-nami launch "<game>"
-type "<game>\nami\nami.log"
-```
-
-`nami launch set` matters: auto-detect picks the largest `.exe`, which can be a crash handler. Set it once per game.
+</details>
 
 <details>
 <summary><b>Full CLI reference</b> (real <code>nami help</code> output, v0.1.0)</summary>
@@ -155,73 +130,31 @@ commands:
                           legacy BepInEx lane (boots BepInEx 5.x in game Mono)
   nmod     info|install [args...] [gameDir]
                           .nmod package distribution (manifest info / install)
-  help                    show this help
 ```
 
 </details>
 
-<details>
-<summary><b>Write your first mod</b></summary>
+## Build from source
+
+Prerequisites: .NET SDK 10.0+. For `native/`: CMake 3.20+, Ninja, C++17 (MinGW-w64; MSVC/Clang untested with these link flags).
 
 ```powershell
-dotnet new install tools/templates/nami-mod
-dotnet new nami-mod -n MyFirstMod
-dotnet pack src/Nami.Sdk -o artifacts/packages
-dotnet pack src/Nami.Tide -o artifacts/packages
+dotnet build Nami.slnx
+cmake -S native -B native/build -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build native/build
 nami install "<game>"
 nami launch set "<game>\Game.exe" "<game>"
-nami run "MyFirstMod\MyFirstMod.csproj" "<game>"
+nami launch "<game>"
+type "<game>\nami\nami.log"
 ```
 
-```csharp
-using Nami;
-using Nami.Sdk;
+`nami launch set` matters: auto-detect picks the largest `.exe`, which can be a crash handler. Layout: `src/` (Sdk, Core, Runtime, Tide, Wave, Cli, Interop), `native/` (injector, loader, hostfxr core, smoke), `tools/` (launch-shim, mod template), `samples/`, `tests/`, `bench/`, `docs/`. `TideProbeIl2CppPatch` and `Nami.Bench` live outside the solution; build via project path.
 
-[NamiPlugin]
-[PluginInfo("dev.example.greeter", "Greeter", "0.1.0")]
-public sealed class GreeterPlugin : NamiPlugin
-{
-    public override void OnLoad()
-    {
-        if (!Tide.IsAvailable) return;
-        var time = GameClass.Resolve("UnityEngine.CoreModule", "UnityEngine", "Time");
-        time.SetStaticFloat("timeScale", 0.5f);   // slow motion
-    }
-}
-```
+## Status
 
-Full loop with a real game: [TUTORIAL.md](TUTORIAL.md).
+Beta. Loading, patching, the bridge, and typed access work in real games on Mono and IL2CPP, but the verified title matrix is small and untested games can surprise you. Run it against your titles and report breakage (engine version, what failed, lines from `nami/nami.log`).
 
-</details>
-
-## Repository layout
-
-```
-.github/     CI (managed + native jobs)
-native/      C++17: injector (nami_boot), in-game loader (nami_loader),
-             hostfxr hosting (core/), Tide drains + object ops,
-             legacy bootstrap (loader/inex_bootstrap.*), smoke/ self-test
-src/
-  Nami.Sdk/        Public plugin API (what mods reference)
-  Nami.Core/       Chainloader: discovery, graph, ALCs, quarantine,
-                   hot reload, per-mod profiler
-  Nami.Runtime/    In-game managed bootstrap: Boot.Run
-  Nami.Tide/       Typed game access: Tide, GameClass, GameObject, TideValue, TideBatch
-  Nami.Wave/       Patching engine: x64 detours, IL-copy patches, typed IL2CPP hooks
-  Nami.Cli/        nami tool (install/pack/launch/create/run/doctor/list/interop/inex/nmod)
-  Nami.Interop/    Offline IL2CPP interop: global-metadata.dat reader (v24-38) + projection
-tools/         launch-shim (launchNami.exe) + dotnet new nami-mod template
-samples/       HelloNami + TideProbe + TideProbeIl2Cpp + TideProbeIl2CppPatch (stages A-J)
-tests/         Core, Wave, Cli, Tide suites + plugin fixtures
-bench/         Loader + patching benchmarks with regression gates
-docs/          Architecture, Tide, Wave, BepInEx comparisons
-```
-
-`dotnet build Nami.slnx` builds src + tests + fixtures + the listed samples + Wave.Bench + launch-shim. `TideProbeIl2CppPatch` and `Nami.Bench` live outside the solution; build via project path.
-
-## What is missing
-
-Not yet: BepInEx 6 / IL2CPP legacy lane, legacy-pack distribution, non-Windows platforms. Typed IL2CPP hooks cover the safe `TideValue` subset (bool, integers, float, double, string, objects, enums); `ref`/`out`, arbitrary structs, generics, and virtuals are refused before installation. Full boundaries: [docs/tide.md](docs/tide.md), [docs/wave.md](docs/wave.md).
+Not yet: BepInEx 6 / IL2CPP legacy lane, legacy-pack distribution, non-Windows platforms. Typed IL2CPP hooks cover the safe `TideValue` subset; `ref`/`out`, arbitrary structs, generics, and virtuals are refused before installation.
 
 ## License
 
