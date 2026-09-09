@@ -582,6 +582,8 @@ using var hook = WaveIl2Cpp.HookTyped(
 
 The native installer resolves the unique overload on the game main thread, reads the
 exported IL2CPP signature APIs once, and stores an immutable signature beside the detour.
+The managed `parameterTypes` array is required to state the exact visible parameter shape;
+an empty array means a zero-parameter method, not general overload inference.
 The callback receives `Il2CppHookContext`: `ArgumentCount`, `IsInstanceMethod`, borrowed `This`,
 `GetArgumentType`, `GetArgument`/`SetArgument`, generic typed argument helpers,
 `ResultType`, and `GetResult`/`SetResult`. Instance `this` is not included in the user

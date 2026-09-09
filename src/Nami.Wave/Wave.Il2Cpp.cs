@@ -481,12 +481,33 @@ public static unsafe class WaveIl2Cpp
 
     // ------------------------------------------------------------ registry
 
-    private sealed class Site(GCHandle callbackHandle)
+    private sealed class Site(GCHandle callbackHandle, bool retainAfterUnhook = false)
     {
         public long HookId;  // native id, assigned after a successful install
         public string Owner = "";
         public GCHandle CallbackHandle = callbackHandle;
-        public void Free() => CallbackHandle.Free();
+        public GCHandle RootHandle;
+        public bool RetainAfterUnhook { get; } = retainAfterUnhook;
+
+        public void BindRoot(GCHandle root) => RootHandle = root;
+
+        public void Free(bool force = false, bool freeRoot = true)
+        {
+            if (RetainAfterUnhook && !force)
+            {
+                return;
+            }
+
+            if (CallbackHandle.IsAllocated)
+            {
+                CallbackHandle.Free();
+            }
+            if (freeRoot && RootHandle.IsAllocated)
+            {
+                RootHandle.Free();
+                RootHandle = default;
+            }
+        }
     }
 
     private sealed class TypedCallbacks
@@ -738,8 +759,9 @@ public static unsafe class WaveIl2Cpp
             throw new Il2CppHookException("cannot resolve the Wave IL2CPP dispatch entry");
         }
 
-        var siteHandle = GCHandle.Alloc(
-            new Site(GCHandle.Alloc(callback)) { Owner = owner }, GCHandleType.Normal);
+        var siteRecord = new Site(GCHandle.Alloc(callback)) { Owner = owner };
+        var siteHandle = GCHandle.Alloc(siteRecord, GCHandleType.Normal);
+        siteRecord.BindRoot(siteHandle);
         var target = $"{ns}.{klass}::{method}({argCount})";
 
         var a = ZeroTerminated(assembly, 159);
@@ -777,7 +799,7 @@ public static unsafe class WaveIl2Cpp
         {
             if (siteHandle.Target is Site s)
             {
-                s.Free();
+                s.Free(force: true, freeRoot: false);
             }
 
             siteHandle.Free();
@@ -835,8 +857,9 @@ public static unsafe class WaveIl2Cpp
         }
 
         var cb = new FullCallbacks { Prefix = prefix, Postfix = postfix };
-        var siteHandle = GCHandle.Alloc(
-            new Site(GCHandle.Alloc(cb)) { Owner = owner }, GCHandleType.Normal);
+        var siteRecord = new Site(GCHandle.Alloc(cb)) { Owner = owner };
+        var siteHandle = GCHandle.Alloc(siteRecord, GCHandleType.Normal);
+        siteRecord.BindRoot(siteHandle);
         var target = $"{ns}.{klass}::{method}({argCount})";
 
         var a = ZeroTerminated(assembly, 159);
@@ -875,7 +898,7 @@ public static unsafe class WaveIl2Cpp
         {
             if (siteHandle.Target is Site s)
             {
-                s.Free();
+                s.Free(force: true, freeRoot: false);
             }
 
             siteHandle.Free();
@@ -888,7 +911,8 @@ public static unsafe class WaveIl2Cpp
     /// the game main thread; unsupported structs, ref/out values, hidden returns, and
     /// ambiguous overloads are refused before the detour is installed. The
     /// <paramref name="parameterTypes"/> array is the exact user-parameter TideType shape;
-    /// an empty array selects a zero-parameter method.
+    /// an empty array selects a zero-parameter method. The native resolver requires the
+    /// explicit shape to avoid guessing hidden IL2CPP ABI slots.
     /// </summary>
     public static Il2CppHook HookTyped(string assembly, string ns, string klass, string method,
         IReadOnlyList<TideType> parameterTypes, TideType? returnType,
@@ -920,8 +944,9 @@ public static unsafe class WaveIl2Cpp
         }
 
         var callbacks = new TypedCallbacks { Prefix = prefix, Postfix = postfix };
-        var siteHandle = GCHandle.Alloc(
-            new Site(GCHandle.Alloc(callbacks)) { Owner = owner }, GCHandleType.Normal);
+        var siteRecord = new Site(GCHandle.Alloc(callbacks), retainAfterUnhook: true) { Owner = owner };
+        var siteHandle = GCHandle.Alloc(siteRecord, GCHandleType.Normal);
+        siteRecord.BindRoot(siteHandle);
         var target = $"{ns}.{klass}::{method}({parameterTypes.Count}) [typed]";
         var a = ZeroTerminated(assembly, 159);
         var n = ZeroTerminated(ns, 159);
@@ -958,7 +983,7 @@ public static unsafe class WaveIl2Cpp
         }
         catch
         {
-            if (siteHandle.Target is Site s) s.Free();
+            if (siteHandle.Target is Site s) s.Free(force: true, freeRoot: false);
             siteHandle.Free();
             throw;
         }

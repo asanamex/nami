@@ -710,7 +710,7 @@ bool to_il2cpp_arg(const nami::tide::TideValue& v, void* box, void** out) {
 // Boxes a primitive into an object of the given class (for object-typed params and
 // SetValue/array writes). `klass` must be the boxed type (Int32/Boolean/...) or an enum.
 // Packing is owned by il2cpp_boxing.h (single copy shared with the hook-frame path).
-void* box_into_class(void* klass, const nami::tide::TideValue& v) {
+[[maybe_unused]] void* box_into_class(void* klass, const nami::tide::TideValue& v) {
     using namespace nami::tide;
     if (klass == nullptr || g_api.value_box == nullptr) {
         return nullptr;
@@ -764,7 +764,7 @@ void capture_exception(nami::tide::CallRequest& req, void* exc) {
 }
 
 // True when the method's class (or a base) is UnityEngine.Object.
-bool is_unity_object_class(void* klass) {
+[[maybe_unused]] bool is_unity_object_class(void* klass) {
     void* umod = find_image("UnityEngine.CoreModule");
     if (umod == nullptr) {
         return false;

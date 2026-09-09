@@ -423,7 +423,6 @@ int TestNativeStubFull() {
             std::printf("  native stub full: FAIL (minimal hook refused)\n");
             rc = 20;
         } else {
-            const auto* tb = static_cast<const unsigned char*>(rec0->trampoline);
             const auto* ep = static_cast<const unsigned char*>(rec0->target);
             std::printf("  stub full minimal: stub=%p tramp=%p entry=%02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X\n",
                         (void*)rec0->stub, rec0->trampoline, ep[0], ep[1], ep[2], ep[3], ep[4],
@@ -736,10 +735,10 @@ int TestShortPrologue() {
         }
         InterlockedExchange(&g_dispatch_calls, 0);
         const int v1 = reinterpret_cast<int (*)()>(target)();
-        const bool ok1 = v1 == 0xBBCCDDEE && g_dispatch_calls == 1;
+        const bool ok1 = static_cast<unsigned int>(v1) == 0xBBCCDDEE && g_dispatch_calls == 1;
         unhook_native(rec);
         const int v2 = reinterpret_cast<int (*)()>(target)();
-        const bool ok2 = v2 == 0xBBCCDDEE;
+        const bool ok2 = static_cast<unsigned int>(v2) == 0xBBCCDDEE;
         if (!(ok1 && ok2)) {
             std::printf("  short prologue: FAIL (imm leaf v1=%x v2=%x calls=%ld)\n",
                         v1, v2, (long)g_dispatch_calls);
