@@ -8,7 +8,7 @@ namespace Nami.Wave;
 /// A Wave transpiler: rewrites the IL of a patch target through a cursor (MonoMod
 /// ILCursor-style) rather than a mutable instruction list. Labels and branch targets are
 /// first-class objects, so inserting or removing instructions can never silently move a
-/// jump somewhere else — the failure mode of list-index transpilers.
+/// jump somewhere else - the failure mode of list-index transpilers.
 ///
 /// Every instruction the transpiler touches is provenance-tagged with the owner string:
 /// when a second transpiler edits IL introduced (or already edited) by another owner, Wave
@@ -21,7 +21,7 @@ public delegate void WaveTranspiler(WaveIlCursor il);
 /// <summary>
 /// Detected overlap between two transpilers on the same method: <see cref="Modifier"/>
 /// mutated IL that <see cref="PriorOwner"/> introduced (or already edited). The edit is
-/// applied (deterministically — later transpilers win) but the collision is surfaced so
+/// applied (deterministically - later transpilers win) but the collision is surfaced so
 /// behavior is never silently wrong.
 /// </summary>
 public sealed class WaveTranspilerConflict
@@ -46,8 +46,8 @@ public sealed class WaveTranspilerConflict
 /// One IL instruction as exposed to transpilers. Original instructions carry their
 /// <see cref="OriginalOffset"/> and a null <see cref="CreatedBy"/>; instructions injected by
 /// a transpiler carry their owner and a null offset. Branch operands are
-/// <see cref="WaveIlLabel"/>s (single target) or <c>WaveIlLabel[]</c> (switch) — never raw
-/// offsets — so edits elsewhere cannot invalidate them.
+/// <see cref="WaveIlLabel"/>s (single target) or <c>WaveIlLabel[]</c> (switch) - never raw
+/// offsets - so edits elsewhere cannot invalidate them.
 /// </summary>
 public sealed class WaveIlInstruction
 {
@@ -94,7 +94,7 @@ public sealed class WaveIlInstruction
 }
 
 /// <summary>A first-class branch target. Anchored to an instruction (or the end position), never
-/// to an index — inserting instructions elsewhere cannot move it.</summary>
+/// to an index - inserting instructions elsewhere cannot move it.</summary>
 public sealed class WaveIlLabel
 {
     internal WaveIlInstruction? Anchor;
@@ -113,7 +113,7 @@ public sealed class WaveIlLabel
 /// between instructions (before <see cref="Current"/>, or at the end):
 ///
 ///   - <see cref="Emit"/> inserts AT the point (before <see cref="Current"/>) and the point
-///     stays — sequential emits keep their order. <see cref="Next"/> steps over Current.
+///     stays - sequential emits keep their order. <see cref="Next"/> steps over Current.
 ///   - <see cref="Goto(Func{WaveIlInstruction, bool}"/> positions the point immediately
 ///     before the first matching instruction (returns false without moving when absent).
 ///   - <see cref="Remove"/> / <see cref="Replace"/> mutate <see cref="Current"/>; labels
@@ -272,8 +272,8 @@ public sealed class WaveIlCursor
 
     /// <summary>Removes <see cref="Current"/>. Labels and EH boundaries anchored to it re-anchor
     /// to its successor, so surrounding control flow (branches into the region, exception
-    /// blocks) stays coherent. The point stays put — the successor becomes the new
-    /// <see cref="Current"/> — so sequential removes drop a contiguous range.</summary>
+    /// blocks) stays coherent. The point stays put - the successor becomes the new
+    /// <see cref="Current"/> - so sequential removes drop a contiguous range.</summary>
     public void Remove()
     {
         var node = Current ?? throw new InvalidOperationException("cursor is at the end — nothing to remove");
@@ -404,12 +404,12 @@ public static unsafe partial class Wave
 
     /// <summary>
     /// Raised whenever a transpiler edits IL introduced (or already edited) by another
-    /// transpiler owner on the same method. The edit is applied — later transpilers win
-    /// deterministically — but the collision is never silent. Wire this to the mod log.
+    /// transpiler owner on the same method. The edit is applied - later transpilers win
+    /// deterministically - but the collision is never silent. Wire this to the mod log.
     /// </summary>
     public static event Action<WaveTranspilerConflict>? TranspilerConflict;
 
-    /// <summary>Recent conflicts (bounded ring, newest last) — for diagnostics and tests.</summary>
+    /// <summary>Recent conflicts (bounded ring, newest last) - for diagnostics and tests.</summary>
     public static IReadOnlyList<WaveTranspilerConflict> RecentTranspilerConflicts
     {
         get
@@ -460,7 +460,7 @@ public static unsafe partial class Wave
     /// Adds a transpiler for <paramref name="owner"/> on <paramref name="target"/>: the
     /// target's IL is rewritten through a cursor BEFORE any prefix/postfix wrapping, so a
     /// transpiler shapes the "original" that prefixes and postfixes observe. Transpilers run
-    /// in registration order, each seeing the previous one's output — with provenance
+    /// in registration order, each seeing the previous one's output - with provenance
     /// tracking (see <see cref="TranspilerConflict"/>) when they overlap.
     /// </summary>
     public static void Transpile(MethodBase target, string owner, WaveTranspiler transpiler)

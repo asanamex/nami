@@ -13,7 +13,7 @@ namespace Nami.Runtime;
 ///
 /// This is the piece BepInEx does not have on Mono: plugins do NOT run on the game's
 /// ancient embedded Mono. The native core first hosts a modern .NET (CoreCLR) inside the
-/// game process, then calls <see cref="Boot.Run"/> here — and from here Tide reaches BACK
+/// game process, then calls <see cref="Boot.Run"/> here - and from here Tide reaches BACK
 /// into the game's Mono runtime (calls execute on the game's main thread), so mods can
 /// touch the game.
 /// </summary>
@@ -64,7 +64,7 @@ public static class Boot
         // Pre-load every Nami.* runtime assembly the loader ships so plugins resolve them as
         // shared (the plugin ALC's shared branch reuses an already-loaded copy from any
         // context). Tide is loaded implicitly by the self-test above; Wave is referenced by
-        // the runtime but never touched, so it must be loaded explicitly here — otherwise a
+        // the runtime but never touched, so it must be loaded explicitly here - otherwise a
         // plugin referencing Nami.Wave gets a FileNotFoundException at OnLoad.
         foreach (var sharedName in new[] { "Nami.Core", "Nami.Sdk", "Nami.Tide", "Nami.Wave" })
         {
@@ -91,7 +91,7 @@ public static class Boot
 
             // Boot-guard: the native boot phase ends here. The loader wrote <root>/boot-pending
             // at boot start; deleting it means a crash from this point on is a runtime crash,
-            // not a boot crash — only the latter marks the next boot safe (see native/core/
+            // not a boot crash - only the latter marks the next boot safe (see native/core/
             // bootguard.h). Any fault before this line (inex arm, CoreCLR hosting, chainloader
             // load, the Tide self-test) auto-enables safe mode for the next boot.
             try

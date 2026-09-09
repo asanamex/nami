@@ -335,7 +335,7 @@ public class WavePatchScopeTests : IDisposable
         Assert.NotEqual(IntPtr.Zero, addr);
         var detour = Detour.TryCreate(addr);
         Assert.NotNull(detour);
-        detour.Retarget(addr); // never called — Install only writes the jump
+        detour.Retarget(addr); // never called - Install only writes the jump
         detour.Install();
         try
         {

@@ -10,7 +10,7 @@ namespace Nami.Wave.Internal;
 /// the edited list back into IL. Two invariants carry the design:
 ///
 ///   1. Branch operands become <see cref="WaveIlLabel"/>s anchored to NODES during
-///      conversion — never raw offsets — so inserting or removing instructions anywhere
+///      conversion - never raw offsets - so inserting or removing instructions anywhere
 ///      cannot redirect a jump (the list-index failure mode of Harmony-style transpilers).
 ///   2. Exception-handling boundaries are attached to nodes as structural actions at the
 ///      same relative position <see cref="IlRewriter.EmitInto"/> derives them from offsets,
@@ -46,7 +46,7 @@ internal static class IlNodes
         WaveIlInstruction NodeAt(int offset) =>
             byOffset.TryGetValue(offset, out var n) ? n : tail; // body-end targets anchor at the tail
 
-        // Anchors a fresh label at the target node — the label MUST join the node's Anchored
+        // Anchors a fresh label at the target node - the label MUST join the node's Anchored
         // list, that list is what the emitter marks.
         WaveIlLabel AnchorAt(int targetOffset)
         {
@@ -79,7 +79,7 @@ internal static class IlNodes
             }
         }
 
-        // Pass 3: EH boundaries as structural actions, handler terminators marked SkipEmit —
+        // Pass 3: EH boundaries as structural actions, handler terminators marked SkipEmit -
         // mirroring IlRewriter.EmitInto's offset rules exactly.
         var clauses = b.Clauses;
         var handlerRegionEnds = new HashSet<int>();
@@ -167,7 +167,7 @@ internal static class IlNodes
     /// re-declared first (same contract as <see cref="IlRewriter.EmitInto"/>), labels are
     /// marked as their anchor node is reached, structural EH actions fire before their node,
     /// handler terminators are skipped, and every <c>ret</c> goes through the hooks (original
-    /// AND injected — a transpiler-injected early return still runs the postfix chain).
+    /// AND injected - a transpiler-injected early return still runs the postfix chain).
     /// </summary>
     public static void Emit(ILGenerator il, IlBody b, WaveIlInstruction head, WaveIlInstruction tail, IlEmitHooks? hooks)
     {
@@ -280,7 +280,7 @@ internal static class IlNodes
         Type[] genericArgs, Type[] genericMethodArgs, LocalBuilder[] locals,
         Func<WaveIlLabel, Label> labelOf)
     {
-        // Branch operands are labels on this path — emit them directly; everything else
+        // Branch operands are labels on this path - emit them directly; everything else
         // (raw metadata tokens from the original body, resolved operands from transpilers)
         // goes through the shared operand emitter.
         switch (n.OpCode.OperandType)

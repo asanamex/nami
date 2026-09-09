@@ -6,8 +6,8 @@ namespace Nami.Cli.Tests;
 /// <summary>Regression tests for offline global-metadata.dat parsing + projection.
 /// Covers the three Il2CppTypeDefinition layouts (v27+ 88B, v24.1 92B with byref, v35+
 /// 84B), v38 triplet headers, single-byte XOR de-obfuscation, IL-style names
-/// ("&lt;Module&gt;", ".ctor") that strict checks reject, malformed inputs, and — when
-/// present locally — the real Unity 6000 v31 file (fixtures-dev/, never committed).</summary>
+/// ("&lt;Module&gt;", ".ctor") that strict checks reject, malformed inputs, and - when
+/// present locally - the real Unity 6000 v31 file (fixtures-dev/, never committed).</summary>
 public sealed class InteropTests : IDisposable
 {
     private readonly List<string> _tempFiles = new();
@@ -41,7 +41,7 @@ public sealed class InteropTests : IDisposable
 
     // Builds a minimal metadata blob: 22 header pairs (no fieldMarshaledSizes), one
     // image, caller-supplied type/method/field rows. typeStride 88 omits byrefTypeIndex,
-    // 92 includes it, 84 additionally drops elementTypeIndex (v35+) — mirroring the real
+    // 92 includes it, 84 additionally drops elementTypeIndex (v35+) - mirroring the real
     // layouts. triplets=true writes v38 (offset,size,count) header entries.
     private static byte[] BuildMetadata(
         int version,

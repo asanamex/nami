@@ -43,7 +43,7 @@ set_target_properties(nami_loader PROPERTIES
   PREFIX ""
 )
 # Fully static link (libgcc/libstdc++/libwinpthread) so the injected DLL has NO
-# external DLL dependencies — the game process cannot resolve MinGW runtime DLLs.
+# external DLL dependencies - the game process cannot resolve MinGW runtime DLLs.
 target_link_options(nami_loader PRIVATE -static -static-libgcc -static-libstdc++)
 target_link_libraries(nami_loader PRIVATE nami_core)
 target_include_directories(nami_loader PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})

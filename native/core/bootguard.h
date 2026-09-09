@@ -12,7 +12,7 @@ namespace nami::bootguard {
 // Marker files (in the nami root):
 //   boot-pending   written at boot start (with the current stage), deleted once the
 //                  managed runtime is up and ticking. Its presence means "a Nami boot
-//                  is in progress" — a crash while it exists marks the NEXT boot safe.
+//                  is in progress" - a crash while it exists marks the NEXT boot safe.
 //   safe-mode      written by the crash handler: reason + boots_remaining. While it
 //                  exists, the loader skips every native stage (inex arm, runtime
 //                  wait, CoreCLR hosting) and the game boots unmodded. Each clean
@@ -39,7 +39,7 @@ bool MarkBootStart(const std::string& root_utf8, Stage stage);
 void MarkStage(const std::string& root_utf8, Stage stage);
 
 // Deletes <root>/boot-pending. Called by the managed runtime once the update loop is
-// ticking (see Nami.Runtime.Boot.Run) — the native boot phase is over from then on.
+// ticking (see Nami.Runtime.Boot.Run) - the native boot phase is over from then on.
 void MarkBootComplete(const std::string& root_utf8);
 
 // Consumes one safe-mode boot: reads boots_remaining, decrements it, deletes the
@@ -59,7 +59,7 @@ void InstallCrashHandler(const std::string& root_utf8, void (*on_contained)());
 
 // Thread ownership: faults on threads marked as Nami-owned are CONTAINED (the
 // loader thread dies, the game lives). Faults on other threads are logged (and mark
-// the next boot safe while boot-pending exists) but not contained — the process
+// the next boot safe while boot-pending exists) but not contained - the process
 // dies normally with diagnostics on disk.
 void MarkThreadOwned(bool owned);
 bool IsNamiThread();

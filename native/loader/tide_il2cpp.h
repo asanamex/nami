@@ -13,7 +13,7 @@ bool install_il2cpp_executor();
 
 /// Installs the window-proc main-thread executor (no backend gate): subclasses the
 /// game's main window so queued work runs on the main thread inside its window
-/// procedure (frame boundary — no runtime_invoke on the stack). Shared by the IL2CPP
+/// procedure (frame boundary - no runtime_invoke on the stack). Shared by the IL2CPP
 /// backend and Mono scene-iteration ops. Idempotent + thread-safe. Needs a visible
 /// game window (false before the window exists / on headless builds).
 bool install_window_executor();

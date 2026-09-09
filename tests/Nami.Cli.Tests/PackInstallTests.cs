@@ -6,7 +6,7 @@ using Nami.Cli;
 namespace Nami.Cli.Tests;
 
 /// <summary>
-/// Nami-Install: the self-contained installer artifact — `nami pack` (zip + SHA-256 manifest)
+/// Nami-Install: the self-contained installer artifact - `nami pack` (zip + SHA-256 manifest)
 /// and `nami install --from <artifact>` (hash-verified, upgrade-safe extraction).
 /// </summary>
 public sealed class PackInstallTests : IDisposable

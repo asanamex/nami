@@ -6,7 +6,7 @@ using Nami.Wave;
 
 namespace Nami.Wave.Tests;
 
-// Cursor-transpiler targets — realistic bodies with branches, switches and EH regions.
+// Cursor-transpiler targets - realistic bodies with branches, switches and EH regions.
 
 public static class TranspileTargets
 {
@@ -165,7 +165,7 @@ public class WaveTranspilerTests : IDisposable
         var sumTo = M(() => TranspileTargets.SumTo(0));
         Assert.Equal(55, TranspileTargets.SumTo(10));
 
-        // Insert a stack-neutral nop before the loop's add — inside the backward-branch
+        // Insert a stack-neutral nop before the loop's add - inside the backward-branch
         // region. A list-index transpiler risks moving the loop's back-edge; labels cannot.
         Wave.Transpile(sumTo, "test", il =>
         {
@@ -207,7 +207,7 @@ public class WaveTranspilerTests : IDisposable
         Wave.Patch(add, "test", postfix: (Action<int>)((int __result) => seen = __result),
             transpiler: il =>
             {
-                // Early return of 42 — an INJECTED ret must still run the postfix chain.
+                // Early return of 42 - an INJECTED ret must still run the postfix chain.
                 il.Emit(OpCodes.Ldc_I4, 42);
                 il.Emit(OpCodes.Ret);
             });
@@ -226,7 +226,7 @@ public class WaveTranspilerTests : IDisposable
         Wave.Transpile(noisy, "test", il =>
         {
             // Log.Add is an instance callvirt: drop the whole sequence (ldsfld, ldstr,
-            // callvirt) — removing only the call would leave two pushes behind.
+            // callvirt) - removing only the call would leave two pushes behind.
             Assert.True(il.Goto(OpCodes.Callvirt));
             il.Prev();
             il.Prev();
@@ -479,6 +479,6 @@ public class WaveTranspilerTests : IDisposable
             Assert.False(il.Goto(OpCodes.Xor)); // no such opcode in the body
             Assert.True(il.Goto(OpCodes.Add));  // cursor still finds from the start
         });
-        Assert.Equal(13, TranspileTargets.Add(10, 3)); // no edits — body copied unchanged
+        Assert.Equal(13, TranspileTargets.Add(10, 3)); // no edits - body copied unchanged
     }
 }

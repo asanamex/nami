@@ -5,7 +5,7 @@ namespace Nami.Samples.TideProbeIl2Cpp;
 /// <summary>
 /// Verifies Tide's IL2CPP backend end-to-end in a real IL2CPP Unity game.
 /// Exercises type resolution, static field/property access, method calls with typed
-/// returns, strings, enums, arrays and exceptions — all through the typed GameClass API
+/// returns, strings, enums, arrays and exceptions - all through the typed GameClass API
 /// routed to the IL2CPP main-thread executor (window-proc drain).
 /// </summary>
 [NamiPlugin]

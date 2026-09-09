@@ -1,7 +1,7 @@
 namespace Nami.Cli.Commands;
 
 /// <summary>
-/// `nami inex` — manages the legacy lane (nami-inex): a real BepInEx 5.x runtime booted
+/// `nami inex` - manages the legacy lane (nami-inex): a real BepInEx 5.x runtime booted
 /// inside the game's own Mono by Nami's injector (no Doorstop proxy).
 /// Layout: `nami/inex/BepInEx/{core,plugins,patchers,config}` + `nami/inex/enabled` sentinel.
 /// The sentinel is the switch the native loader reads: payload staged but no sentinel

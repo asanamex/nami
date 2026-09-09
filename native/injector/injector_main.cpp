@@ -70,8 +70,8 @@ Status inject_into_game(const wchar_t* game_exe, const wchar_t* loader_dll_path,
     // --- 3. Remote thread runs LoadLibraryW(remote_path); DllMain spawns the boot thread. ---
     // The game main thread stays suspended until the loader signals hook-ready:
     // Unity otherwise reaches mono_jit_init before our patch lands (3MB DLL load +
-    // thread scheduling vs an already-running main thread) and the jit detour —
-    // the whole early-boot path — never fires. The wait is bounded; the game
+    // thread scheduling vs an already-running main thread) and the jit detour -
+    // the whole early-boot path - never fires. The wait is bounded; the game
     // always resumes.
     wchar_t ready_name[64]{};
     swprintf_s(ready_name, L"Local\\NamiHookReady-%lu", pi.dwProcessId);

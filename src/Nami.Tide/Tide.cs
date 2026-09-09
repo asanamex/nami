@@ -4,7 +4,7 @@ using System.Text;
 namespace Nami;
 
 /// <summary>
-/// Tide — the Nami ↔ game bridge.
+/// Tide - the Nami ↔ game bridge.
 ///
 /// Tide connects the Nami-hosted .NET runtime (CoreCLR) to the game's own managed runtime
 /// (Unity Mono). CRITICAL ARCHITECTURE: no CoreCLR-managed thread may ever call into Mono
@@ -44,7 +44,7 @@ public static unsafe partial class Tide
     [DllImport(LoaderDll, EntryPoint = "nami_tide_object_op", CallingConvention = CallingConvention.Cdecl)]
     internal static extern int NativeObjectOp(CallRequest* request);
 
-    // Runs an op on the game main thread inside its window procedure (frame boundary —
+    // Runs an op on the game main thread inside its window procedure (frame boundary -
     // zero invoke frames on the stack). Required for Unity scene-iteration APIs
     // (Object.FindObjectOfType), which abort inside any nested invoke (0xe0000001).
     [DllImport(LoaderDll, EntryPoint = "nami_tide_object_op_window", CallingConvention = CallingConvention.Cdecl)]

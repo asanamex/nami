@@ -3,7 +3,7 @@ using Nami.Core.Configuration;
 namespace Nami.Cli.Commands;
 
 /// <summary>
-/// `nami launch` — remembers the game executable (`set`), then launches the game with Nami
+/// `nami launch` - remembers the game executable (`set`), then launches the game with Nami
 /// injected (`offline`, default) or relays through Steam after the game exits (`steam`).
 /// </summary>
 internal static class LaunchCommand

@@ -26,12 +26,12 @@ bool install_main_thread_drain();
 /// blocks until it completes. Returns true if the work ran (timeout_ms <= 0 waits forever).
 /// Re-entrant calls (already on the game main thread, inside a drain) run inline.
 /// When <paramref name="flags"/> has RequestFlag_PostInvoke, the work runs AFTER the current
-/// mono_runtime_invoke returns (outside the nested frame) — the safe context for Unity
+/// mono_runtime_invoke returns (outside the nested frame) - the safe context for Unity
 /// scene-iteration APIs.
 bool run_on_main_thread(TideWorkFn fn, void* arg, int timeout_ms = 0,
                         int flags = RequestFlag_None);
 
-/// True when the calling thread is currently inside the Tide drain — i.e. the game main
+/// True when the calling thread is currently inside the Tide drain - i.e. the game main
 /// thread is running queued work. Lets callers avoid queueing-and-waiting (deadlock).
 bool IsTideOnMainThread();
 
@@ -45,7 +45,7 @@ bool IsTideOnMainThread();
 /// With allow_rip_relative, RIP-relative memory operands (mod=0/rm=5 and the SIB
 /// base-5 form, including the common 0F-prefixed SIMD moves like movss/movsd/
 /// movaps and movzx/movsx families) are measured and their disp32 offsets
-/// recorded into rip_offsets (up to max_rips) for trampoline fixup — needed for
+/// recorded into rip_offsets (up to max_rips) for trampoline fixup - needed for
 /// IL2CPP leaf getters (`mov eax, [rip+x]; ret`). Without either flag, any such
 /// instruction refuses, exactly as before.
 int measure_relocatable_prologue(const unsigned char* target, int min_bytes,
@@ -74,7 +74,7 @@ void* install_native_detour(const wchar_t* module_name, const char* export_name,
 /// contended instead of waiting. For loader-lock contexts (LdrDllNotification
 /// callbacks) where blocking could deadlock against a thread that holds the
 /// toolkit lock while waiting on the loader lock. A nullptr here means
-/// "contended OR failed" — the caller retries from a normal thread later.
+/// "contended OR failed" - the caller retries from a normal thread later.
 void* try_install_native_detour(const wchar_t* module_name, const char* export_name,
                                 void* detour, bool allow_relative_call = false,
                                 bool prefer_near_jump = false);
@@ -83,7 +83,7 @@ void* try_install_native_detour(const wchar_t* module_name, const char* export_n
 /// the original address to the trampoline copy, in place. Slots are zero-filled:
 /// a recorded offset always points at a real slot (a disp32 cannot start at 0).
 /// Returns false when a rebased target would not fit in rel32 (caller fails the
-/// install — never corrupt).
+/// install - never corrupt).
 bool fixup_relocations(unsigned char* target, unsigned char* trampoline,
                        const int* call_offsets, const int* rip_offsets);
 

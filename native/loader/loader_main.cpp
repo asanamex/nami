@@ -58,7 +58,7 @@ void loader_main(const wchar_t* nami_root) {
     }
 
     // Boot-guard (crash containment + safe mode): install the crash handler FIRST so
-    // every stage below is covered. Faults on this (Nami-owned) thread are contained —
+    // every stage below is covered. Faults on this (Nami-owned) thread are contained -
     // hook-ready is signaled and the thread dies, so the game boots unmodded instead
     // of the whole process faulting. The handler also logs crashes to nami-crash.log
     // and marks the next boot safe while boot-pending exists.
@@ -94,7 +94,7 @@ void loader_main(const wchar_t* nami_root) {
     // are import-loaded on stock Unity builds, so presence is visible immediately;
     // a dynamically-loaded Mono (never observed) simply misses the detour and the
     // drain/watcher fallback covers it, exactly as before. IL2CPP titles skip this
-    // (BepInEx 6 needs its own CoreCLR lane — later). arm() signals hook-ready in
+    // (BepInEx 6 needs its own CoreCLR lane - later). arm() signals hook-ready in
     // every path; the skip branch below must too, or the injector stalls 30s.
     int inex = -1;
     if (!root.empty() && !il2cpp::detect_il2cpp()) {

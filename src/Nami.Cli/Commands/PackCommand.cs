@@ -1,7 +1,7 @@
 namespace Nami.Cli.Commands;
 
 /// <summary>
-/// `nami pack [out.zip] [--artifacts &lt;root&gt;]` — builds the self-contained installer artifact
+/// `nami pack [out.zip] [--artifacts &lt;root&gt;]` - builds the self-contained installer artifact
 /// (Nami-Install): managed runtime + native injector/loader + bundled .NET runtime in one zip,
 /// with a SHA-256 manifest. End users install it with `nami install &lt;game&gt; --from &lt;artifact.zip|url&gt;`.
 /// </summary>

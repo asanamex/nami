@@ -12,7 +12,7 @@ namespace nami::tide {
 // mod reading five fields per tick that is five identical lookups per tick,
 // on the game main thread. Metadata in Mono and IL2CPP lives for the whole
 // process (classes, methods, fields are never unloaded), so resolution results
-// are cacheable for the loader's lifetime — including NOT-FOUND results
+// are cacheable for the loader's lifetime - including NOT-FOUND results
 // (negative caching), so probing an optional member costs once, not per call.
 //
 // Key material per entry:
@@ -78,7 +78,7 @@ private:
 };
 
 // Free-function front end over a process-lifetime cache instance. `fn` runs ONLY
-// on a miss, under the cache lock — it must not call back into this cache
+// on a miss, under the cache lock - it must not call back into this cache
 // (resolvers use the *_uncached lookups), and must only touch process-lifetime
 // metadata. Mono and IL2CPP backends share the instance; kind_tag values are
 // namespaced per backend so keys can never collide.

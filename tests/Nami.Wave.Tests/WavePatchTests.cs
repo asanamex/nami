@@ -5,7 +5,7 @@ using Nami.Wave;
 
 namespace Nami.Wave.Tests;
 
-// M2 patch targets — realistic shapes with real bodies.
+// M2 patch targets - realistic shapes with real bodies.
 
 public static class M2Targets
 {
@@ -266,19 +266,33 @@ public class WavePatchTests : IDisposable
         Assert.False(Wave.IsPatched(m, "b"));
     }
 
-    // ===================================================== M1/M2 mutual exclusion
+    // ===================================================== Hook + Patch compose
 
     [Fact]
-    public void M1HookAndM2Patch_OnSameMethod_RefuseEachOther()
+    public void HookAndPatch_OnSameMethod_Compose()
     {
         var m = typeof(M2Targets).GetMethod(nameof(M2Targets.Ping))!;
+        var order = new List<string>();
 
-        Wave.Hook(m, "m1", observer: () => { });
-        Assert.Throws<Wave.HookException>(() => Wave.Patch(m, "m2", postfix: () => { }));
-        Wave.Unhook(m, "m1");
+        // Postfix forces the ILCopy strategy; the Hook observer joins the same chain
+        // as a void prefix (Hook keeps its contract: runs pre-original, LIFO).
+        Wave.Hook(m, "m1", observer: () => order.Add("hook"));
+        Wave.Patch(m, "m2", postfix: () => order.Add("patch"));
+        Assert.Equal(WavePatchEngine.ILCopy, Wave.GetPatchEngine(m));
 
-        Wave.Patch(m, "m2", postfix: () => { });
-        Assert.Throws<Wave.HookException>(() => Wave.Hook(m, "m1", observer: () => { }));
+        M2Targets.Ping();
+        Assert.Equal(new[] { "hook", "patch" }, order);
+        Assert.True(Wave.IsHooked(m, "m1"));
+        Assert.True(Wave.IsPatched(m, "m2"));
+
+        // Removing one owner rebuilds for the rest; removing both restores.
         Wave.Unpatch(m, "m2");
+        Assert.Equal(WavePatchEngine.Fast, Wave.GetPatchEngine(m));
+        order.Clear();
+        M2Targets.Ping();
+        Assert.Equal(new[] { "hook" }, order);
+
+        Wave.Unhook(m, "m1");
+        Assert.Equal(WavePatchEngine.None, Wave.GetPatchEngine(m));
     }
 }

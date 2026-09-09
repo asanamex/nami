@@ -4,17 +4,17 @@ using Nami.Wave.Internal;
 namespace Nami.Wave;
 
 /// <summary>
-/// IL2CPP method patching — Wave's game-side engine (the IL-copy engine, Wave.Patch,
+/// IL2CPP method patching - Wave's game-side engine (the IL-copy engine, Wave.Patch,
 /// works on CoreCLR methods only; IL2CPP methods are native x64 code in GameAssembly.dll).
 ///
 /// Two hook shapes:
 ///
-/// <see cref="Hook"/> — prefix observer + skip semantics on the raw x64 argument
+/// <see cref="Hook"/> - prefix observer + skip semantics on the raw x64 argument
 /// registers (rcx/rdx/r8/r9): for instance methods args[0] is <c>this</c> (an
 /// Il2CppObject*), for statics args[0] is the first parameter. Stack arguments (5+)
 /// are not exposed and the skip return value is 0 (fast path).
 ///
-/// <see cref="HookFull"/> — observes and rewrites RESULTS and exposes ALL arguments
+/// <see cref="HookFull"/> - observes and rewrites RESULTS and exposes ALL arguments
 /// (register + stack, up to 12): prefix (may skip, optionally supplying a replacement
 /// result) then the original, then postfix (may rewrite the result the caller sees).
 /// Value-typed and floating-point results are marshaled through a 2-slot result
@@ -23,7 +23,7 @@ namespace Nami.Wave;
 ///
 /// Both dispatch on the game's main thread (window-proc executor), so callbacks must
 /// not block. Install happens on the game main thread (il2cpp resolution is only safe
-/// there); the game window must exist — on IL2CPP titles call
+/// there); the game window must exist - on IL2CPP titles call
 /// <c>Tide.EnsureReady()</c> first.
 /// </summary>
 public static unsafe class WaveIl2Cpp
@@ -51,7 +51,7 @@ public static unsafe class WaveIl2Cpp
     /// Full-path prefix callback (see <see cref="HookFull"/>). Receives the instance
     /// (args[0]), every argument as contiguous raw slots (<paramref name="argCount"/>
     /// ≤ 12: registers first, then the caller's stack args), and the result slot
-    /// (2 entries: [0] = rax bits, [1] = xmm0 bits). Return true to SKIP the original —
+    /// (2 entries: [0] = rax bits, [1] = xmm0 bits). Return true to SKIP the original -
     /// to skip with a replacement value, write the slot first (rax slot for
     /// <see cref="Il2CppReturnKind.I32"/>/<see cref="Il2CppReturnKind.I64"/>, xmm0
     /// slot for F32/F64).
@@ -201,7 +201,7 @@ public static unsafe class WaveIl2Cpp
         public Il2CppHookPostfixCallback? Postfix;
     }
 
-    // Full-path native ABI: (user_handle, args, arg_count, result_slot, return_kind) —
+    // Full-path native ABI: (user_handle, args, arg_count, result_slot, return_kind) -
     // see native_stub.h. The fast-path Dispatch above has a 3-argument ABI, so these
     // are separate entries; both route through the same Site registry.
     [UnmanagedCallersOnly]
@@ -290,7 +290,7 @@ public static unsafe class WaveIl2Cpp
     /// Installs a dispatch-stub detour over an IL2CPP game method (resolved by
     /// assembly/namespace/class/method + arity). Every call of the method on the game
     /// main thread runs <paramref name="callback"/> first; return true to skip the
-    /// original. Throws <see cref="Il2CppHookException"/> on failure — never corrupts.
+    /// original. Throws <see cref="Il2CppHookException"/> on failure - never corrupts.
     /// </summary>
     public static Il2CppHook Hook(string assembly, string ns, string klass, string method,
         int argCount, Il2CppHookCallback callback, string owner)
@@ -368,15 +368,15 @@ public static unsafe class WaveIl2Cpp
 
     /// <summary>
     /// Installs a FULL-PATH dispatch-stub detour (results + stack args): the original
-    /// method runs between <paramref name="prefix"/> (return true to skip — optionally
+    /// method runs between <paramref name="prefix"/> (return true to skip - optionally
     /// after writing a replacement into the result slot) and <paramref name="postfix"/>
     /// (may rewrite the result the caller receives). All <paramref name="argCount"/>
     /// arguments are exposed as contiguous raw slots (up to 12: registers first, then
     /// the caller's stack args); <paramref name="result"/> in both callbacks is 2 slots
-    /// — [0] = rax bits, [1] = xmm0 bits — interpreted per <paramref name="returnKind"/>
+    /// - [0] = rax bits, [1] = xmm0 bits - interpreted per <paramref name="returnKind"/>
     /// (write/read the rax slot for I32/I64/Void, the xmm0 slot for F32/F64).
     /// At least one of <paramref name="prefix"/> / <paramref name="postfix"/> must be
-    /// supplied. Throws <see cref="Il2CppHookException"/> on failure — never corrupts.
+    /// supplied. Throws <see cref="Il2CppHookException"/> on failure - never corrupts.
     /// </summary>
     public static Il2CppHook HookFull(string assembly, string ns, string klass, string method,
         int argCount, Il2CppReturnKind returnKind, Il2CppHookPrefixCallback? prefix,

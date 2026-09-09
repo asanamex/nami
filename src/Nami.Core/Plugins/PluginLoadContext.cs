@@ -6,7 +6,7 @@ namespace Nami.Core.Plugins;
 /// <summary>
 /// Loads and owns a single plugin assembly in its own unloadable load context,
 /// and resolves shared references (the SDK and any Nami runtime assemblies) from the default context.
-/// Assemblies are loaded from raw bytes so the on-disk files are never locked — a mod can be
+/// Assemblies are loaded from raw bytes so the on-disk files are never locked - a mod can be
 /// rebuilt in place while the game runs, which is what makes hot reload possible.
 /// </summary>
 public sealed class PluginLoadContext : AssemblyLoadContext
@@ -41,7 +41,7 @@ public sealed class PluginLoadContext : AssemblyLoadContext
             // with the loader's. Fall back to the default context.
             try
             {
-                // NB: see ProbeLoadContext — AppDomain.GetAssemblies() omits other
+                // NB: see ProbeLoadContext - AppDomain.GetAssemblies() omits other
                 // load contexts, so enumerate per-context for type unification.
                 foreach (var alc in AssemblyLoadContext.All)
                 {
@@ -81,7 +81,7 @@ public sealed class PluginLoadContext : AssemblyLoadContext
 
     private Assembly LoadWithoutFileLock(string path)
     {
-        // NB: static Assembly.Load(byte[]) lands in the Default context — isolation and
+        // NB: static Assembly.Load(byte[]) lands in the Default context - isolation and
         // unloadability silently lost. LoadFromStream binds to THIS context.
         var bytes = File.ReadAllBytes(path);
         var pdbPath = Path.ChangeExtension(path, ".pdb");

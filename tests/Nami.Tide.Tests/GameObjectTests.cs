@@ -20,7 +20,7 @@ public sealed class GameObjectTests
     [Fact]
     public void Dispose_IsIdempotent()
     {
-        // Dispose sends FreeHandle to native, which is unavailable in a unit test — the
+        // Dispose sends FreeHandle to native, which is unavailable in a unit test - the
         // managed handle is zeroed FIRST, so the second dispose is a pure no-op regardless
         // of whether the first reached native.
         var go = GameObject.FromHandle(1);

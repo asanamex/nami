@@ -3,7 +3,7 @@ using Nami.Cli.Commands;
 namespace Nami.Cli.Tests;
 
 /// <summary>Roundtrips for `nami inex install/enable/disable/status` on temp dirs
-/// with a fake legacy payload (existence checks only — no real BepInEx needed).</summary>
+/// with a fake legacy payload (existence checks only - no real BepInEx needed).</summary>
 public sealed class InexCommandTests : IDisposable
 {
     private readonly string _dir;

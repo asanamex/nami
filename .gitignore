@@ -23,12 +23,15 @@ native/out/
 TestResults/
 coverage/
 
-# Local dev fixtures (real games copied in for testing — never committed)
+# Local dev fixtures (real games copied in for testing - never committed)
 fixtures-dev/
 
 # Scratch / agent logs (never committed)
 LATEST.html
 .freebuff/
+
+# Internal roadmap (milestones stay local, not product docs)
+docs/plan.md
 
 # Local CI only (PAT lacks workflow scope; do not push workflows)
 .github/

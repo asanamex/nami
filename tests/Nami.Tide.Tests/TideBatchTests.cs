@@ -1,7 +1,7 @@
 namespace Nami.Tests;
 
 /// <summary>
-/// TideBatch contract tests (no loader present — nami_loader.dll is not loaded in unit
+/// TideBatch contract tests (no loader present - nami_loader.dll is not loaded in unit
 /// tests, so Flush cannot reach a game; the native round trip is verified in-game).
 /// </summary>
 public sealed class TideBatchTests : IDisposable
@@ -124,7 +124,7 @@ public sealed class TideBatchTests : IDisposable
         // Enqueued void op has no ret slot: a result read is a programming error.
         // (Flush first so we test the type guard, not the not-flushed guard.)
         // Without a loader Flush throws, so guard via a flushed empty batch + range check
-        // and rely on the type guard being unreachable there — instead assert the
+        // and rely on the type guard being unreachable there - instead assert the
         // type-mismatch path through reflection-free API shape checks.
         var cls = GameClass.Resolve("A", "B", "C");
         var i = _batch.EnqueueCallStatic(cls, "M", TideType.Void);

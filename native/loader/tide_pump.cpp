@@ -14,7 +14,7 @@
 // Unity Mono games run all managed calls on the game's main thread. Foreign threads
 // (CreateThread) crash Mono's Boehm GC on their first allocating call (verified at a fixed
 // mono-2.0-bdwgc.dll offset regardless of attach method). The robust design: Tide work is
-// queued and executed INLINE on the game's main thread by hooking mono_runtime_invoke —
+// queued and executed INLINE on the game's main thread by hooking mono_runtime_invoke -
 // a function the game's main thread calls constantly. The caller (CoreCLR) blocks on a
 // per-request event until the main thread has run the op.
 // ---------------------------------------------------------------------------
@@ -64,7 +64,7 @@ unsigned char* g_trampoline = nullptr;  // holds the original prologue + jump ba
 // drain the post queue (scene-iteration work) outside the nested frame.
 void* __stdcall runtime_invoke_detour(void* method, void* obj, void** args, void** exc) {
     // Fast path: nothing queued → skip the lock entirely (this runs on the game's hottest
-    // path — every managed invocation).
+    // path - every managed invocation).
     if (InterlockedCompareExchange(&g_queue.work_pending, 0, 0) != 0) {
         drain_queue();
     }
@@ -160,7 +160,7 @@ int measure_relocatable_prologue(const unsigned char* p, int min_bytes, bool all
             // Tolerated near CALL (inex jit hooks only; Tide still refuses): fixed
             // 5-byte form, rel32 fixed up in the trampoline by the installer from the
             // recorded offset. The return address lands mid-trampoline and execution
-            // continues into the copied prologue — sound unless the callee inspects
+            // continues into the copied prologue - sound unless the callee inspects
             // its return address (true for init-style exports).
             if (calls >= max_calls) {
                 return 0;
@@ -230,7 +230,7 @@ int measure_relocatable_prologue(const unsigned char* p, int min_bytes, bool all
             }
             if (rip_rel) {
                 // disp32 at `len`; the instruction ends at len+4. Relocatable only
-                // with explicit disp32 fixup — record the slot for the installer.
+                // with explicit disp32 fixup - record the slot for the installer.
                 if (!allow_rip_relative || rips >= max_rips) {
                     return 0;
                 }
@@ -253,7 +253,7 @@ int measure_relocatable_prologue(const unsigned char* p, int min_bytes, bool all
         }
 
         // Group-1 ALU with imm (80-83) and mov r/m,imm (C6/C7): imm follows modrm.
-        // All eight /r sub-opcodes (ADD/OR/ADC/SBB/AND/SUB/XOR/CMP) take an immediate —
+        // All eight /r sub-opcodes (ADD/OR/ADC/SBB/AND/SUB/XOR/CMP) take an immediate -
         // earlier code only counted 0-4, mis-measuring e.g. SUB RSP,imm.
         if (!no_modrm && !two_byte) {
             unsigned char modrm = q[i + 1];
@@ -282,7 +282,7 @@ void* alloc_near(unsigned char* target, int size);  // defined below (used by bu
 // Builds a trampoline: copies the measured original prologue and appends a jump back to
 // target+prologue_len. Returns the trampoline entry (the "original" to call).
 // Allocated NEAR the target: relocated RIP-relative operands (disp32 fixup) must keep
-// their targets within int32 reach of the trampoline — a far VirtualAlloc(NULL) would
+// their targets within int32 reach of the trampoline - a far VirtualAlloc(NULL) would
 // make the fixup overflow and the install refuse. The appended jump back is absolute
 // (mov rax,imm64; jmp rax), so no range constraint applies to it.
 void* build_trampoline(unsigned char* target, int prologue_len) {
@@ -366,7 +366,7 @@ void drain_post_queue() {
     g_on_main_thread_drain = false;
 }
 
-// True when the calling thread is currently executing inside the Tide drain — i.e. the
+// True when the calling thread is currently executing inside the Tide drain - i.e. the
 // game main thread is running queued work right now. Used to detect re-entrant calls.
 bool IsTideOnMainThread() {
     return g_on_main_thread_drain;
@@ -442,7 +442,7 @@ bool install_main_thread_drain() {
 
 // Queue a request. Returns false on allocation/event failure (the request is not queued).
 // Must be called by a NON-main thread (callers that are already on the game main thread must
-// run the work inline instead — see run_on_main_thread).
+// run the work inline instead - see run_on_main_thread).
 bool enqueue_request(Request* req) {
     req->done = CreateEventW(nullptr, FALSE, FALSE, nullptr);
     if (req->done == nullptr) {
@@ -477,7 +477,7 @@ bool enqueue_request(Request* req) {
 // forever). The request is heap-allocated and freed by the drain after signaling.
 bool run_on_main_thread(TideWorkFn fn, void* arg, int timeout_ms, int flags) {
     // Reentrancy guard: if the CALLER is already the game main thread (i.e. we are inside a
-    // drain — a mod hook running on the game thread calls Tide), queueing + waiting would
+    // drain - a mod hook running on the game thread calls Tide), queueing + waiting would
     // deadlock (the drain can't run while we block it). Run the work inline instead.
     if (IsTideOnMainThread()) {
         return fn(arg) == 0;
@@ -522,7 +522,7 @@ SRWLOCK g_detour_lock = SRWLOCK_INIT;
 // the instruction): new_disp = (orig_next_rip + orig_disp) - tramp_next_rip.
 // Slots are zero-filled; a disp32 can never start at offset 0, so zero slots are
 // always "no entry". Returns false when a rebased target would not fit (caller
-// fails the install — never corrupt).
+// fails the install - never corrupt).
 bool fixup_relocations(unsigned char* target, unsigned char* trampoline,
                        const int* call_offsets, const int* rip_offsets) {
     for (int k = 0; k < 4; k++) {

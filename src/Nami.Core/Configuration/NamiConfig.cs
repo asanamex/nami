@@ -42,7 +42,7 @@ public sealed class NamiConfig
 
     /// <summary>
     /// When true, `nami launch steam` (with a SteamAppId set) launches the game directly WITHOUT
-    /// Nami injection, then relaunches through Steam after it exits — for online/anti-cheat games.
+    /// Nami injection, then relaunches through Steam after it exits - for online/anti-cheat games.
     /// </summary>
     public bool SteamRelaySkipInjection { get; set; }
 

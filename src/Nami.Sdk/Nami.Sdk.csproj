@@ -7,7 +7,7 @@
     <RootNamespace>Nami</RootNamespace>
     <IsPackable>true</IsPackable>
     <PackageId>Nami.Sdk</PackageId>
-    <Description>Nami plugin SDK — the public API for writing Nami mods for Unity games (NamiPlugin, attributes, logging).</Description>
+    <Description>Nami plugin SDK - the public API for writing Nami mods for Unity games (NamiPlugin, attributes, logging).</Description>
     <PackageTags>unity;mod;loader;nami</PackageTags>
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>

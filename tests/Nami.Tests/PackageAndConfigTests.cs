@@ -87,7 +87,7 @@ public class PackageAndConfigTests
             Assert.Equal(Path.Combine(mods, "com.example.pkg"), target);
             Assert.True(File.Exists(Path.Combine(target, "MyMod.dll")));
             Assert.True(File.Exists(Path.Combine(target, "native", "extra.dll")));
-            // Non-dll package files (mod.json) survive extraction — future hot-reload scans
+            // Non-dll package files (mod.json) survive extraction - future hot-reload scans
             // and re-installs work against a faithful directory copy.
             Assert.True(File.Exists(Path.Combine(target, "mod.json")));
 

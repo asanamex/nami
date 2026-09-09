@@ -46,7 +46,7 @@ internal static unsafe class NativeInterop
     /// <summary>
     /// Follows a bounded chain of leading unconditional jumps (E9 rel32, FF 25 disp32) from an
     /// entry point to the real code. Stops at the first non-jump byte. The landing spot must
-    /// itself be committed executable code — stub chains that resolve into unmapped memory
+    /// itself be committed executable code - stub chains that resolve into unmapped memory
     /// (stale tiered-JIT entries, unpopulated slots) yield Zero instead of a faulting address.
     /// </summary>
     private static IntPtr FollowJumpStubs(IntPtr entry)
@@ -60,7 +60,7 @@ internal static unsafe class NativeInterop
             byte b0 = p[0];
             if (b0 == 0xE9)
             {
-                // jmp rel32 — target = p + 5 + rel32
+                // jmp rel32 - target = p + 5 + rel32
                 int rel = *(int*)(p + 1);
                 p = p + 5 + rel;
                 if (!IsExecutable(p)) {

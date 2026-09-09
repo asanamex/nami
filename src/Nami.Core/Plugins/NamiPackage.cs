@@ -25,7 +25,7 @@ public sealed class NmodManifest
 /// <summary>
 /// Installs and reads <c>.nmod</c> packages: ZIP archives containing a root
 /// <c>mod.json</c> manifest plus one or more plugin DLLs (and their native/data files).
-/// Installation extracts to <c>mods/&lt;package-id&gt;/</c> — after that the package is a plain
+/// Installation extracts to <c>mods/&lt;package-id&gt;/</c> - after that the package is a plain
 /// on-disk plugin directory, so discovery, isolation, quarantine and hot reload work unchanged.
 /// Loose DLLs remain fully supported; <c>.nmod</c> is the distribution format on top.
 /// </summary>

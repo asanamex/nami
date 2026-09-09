@@ -102,10 +102,10 @@ int TestBootGuardFiles() {
 }
 
 // ---------------------------------------------------------------------------
-// 2. Boot-guard VEH: (a) catchable software exceptions — C++ throws (0xE06D7363)
-//    and .NET-style raises (0xE0434352) — must PASS THROUGH untouched so the
+// 2. Boot-guard VEH: (a) catchable software exceptions - C++ throws (0xE06D7363)
+//    and .NET-style raises (0xE0434352) - must PASS THROUGH untouched so the
 //    surrounding try/catch handles them, and (b) a genuine AV on a Nami-owned
-//    thread must NOT take the process down — the thread dies, hook-ready fires,
+//    thread must NOT take the process down - the thread dies, hook-ready fires,
 //    crash evidence is written. Regression: the first version treated every
 //    high-bit exception as a crash and killed owned threads on benign C++/.NET
 //    exceptions during managed boot.
@@ -217,7 +217,7 @@ int TestFaultContainment() {
 #ifdef _WIN32
 
 // Kept at -O0 so the prologue is a fat, relocatable frame (push rbp; mov rbp,rsp;
-// sub rsp,N) — Release-optimized leaf functions can be 4-5 bytes and would be
+// sub rsp,N) - Release-optimized leaf functions can be 4-5 bytes and would be
 // refused by the 14-byte absolute detour, which is the documented v1 policy.
 __declspec(noinline) __attribute__((optimize("O0"))) __declspec(dllexport)
 int smoke_add(int a, int b) {
@@ -614,7 +614,7 @@ int TestNativeStubFull() {
         // 2*3 + (2*3+4+5) = 6 + 15 = 21.0f. Wrong xmm arg, register-arg, or stack-arg
         // handling all show up here (prefix dispatch runs between the save and the
         // trampoline call). The args buffer holds the INTEGER regs (Win64: float args
-        // travel only in xmm0/xmm1, so rcx/rdx are unspecified for this signature) —
+        // travel only in xmm0/xmm1, so rcx/rdx are unspecified for this signature) -
         // args[2..3] = c/d from r8/r9, args[4..5] = e/f copied from the caller stack.
         const float f3 = smoke_fmix(2.0f, 3.0f, 2, 3, 4, 5);
         const bool args_ok = g_full_args[2] == 2 && g_full_args[3] == 3 &&
@@ -659,7 +659,7 @@ int TestShortPrologue() {
 
     // --- int leaf: mov eax, [rip+disp32]; ret (7 bytes, RIP-relative). ---
     // The disp32 must reach its field within int32, so the field lives INSIDE the
-    // executable buffer (a real IL2CPP getter reads a static in its own module —
+    // executable buffer (a real IL2CPP getter reads a static in its own module -
     // always within ±2GB; the fixup rebases the disp to the trampoline).
     {
         const unsigned char skeleton[7] = { 0x8B, 0x05, 0, 0, 0, 0, 0xC3 };
@@ -749,7 +749,7 @@ int TestShortPrologue() {
     }
 
     // --- lazy-init thunk shape (Unity 6): sub rsp,0x28; mov rax,[rip+holder];
-    //     test rax,rax; jne ... — the measurer must stop at the 11 clean bytes
+    //     test rax,rax; jne ... - the measurer must stop at the 11 clean bytes
     //     (sub + rip-relative mov) BEFORE the conditional jump. ---
     if (rc == 0) {
         // p+0:  48 83 EC 28            sub rsp, 0x28
@@ -818,7 +818,7 @@ int TestShortPrologue() {
 }  // namespace
 
 int main() {
-    // Unbuffered: this binary deliberately crashes (containment tests) — buffered
+    // Unbuffered: this binary deliberately crashes (containment tests) - buffered
     // stdout would silently discard every PASS line on a crash.
     setvbuf(stdout, nullptr, _IONBF, 0);
 

@@ -10,7 +10,7 @@ public sealed record ResolutionResult(
 /// <summary>
 /// Computes a deterministic load order from discovered plugins: prunes incompatibilities,
 /// checks dependencies, and topologically sorts so dependencies load first.
-/// The result is pure — no loading happens here — which makes it easy to unit test.
+/// The result is pure - no loading happens here - which makes it easy to unit test.
 /// </summary>
 public static class DependencyResolver
 {

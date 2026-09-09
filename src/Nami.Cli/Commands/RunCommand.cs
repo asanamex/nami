@@ -4,7 +4,7 @@ using Nami.Core.Configuration;
 namespace Nami.Cli.Commands;
 
 /// <summary>
-/// `nami run &lt;mod.csproj&gt; [gameDir]` — the modder's loop: build the mod, drop it into the
+/// `nami run &lt;mod.csproj&gt; [gameDir]` - the modder's loop: build the mod, drop it into the
 /// staged root's mods/ folder, and launch the game with Nami. Requires an existing Nami root
 /// (see `nami install`/`nami stage`), a configured game exe, and the mod to reference
 /// Nami.Sdk (optionally Nami.Tide).
@@ -85,7 +85,7 @@ internal static class RunCommand
 
     internal static string? FindOutputDir(string projectPath)
     {
-        // The output is <proj>/bin/Release/<tfm>/ — return the first TFM dir under bin/Release.
+        // The output is <proj>/bin/Release/<tfm>/ - return the first TFM dir under bin/Release.
         var bin = Path.Combine(Path.GetDirectoryName(projectPath)!, "bin", "Release");
         if (!Directory.Exists(bin))
         {

@@ -110,12 +110,12 @@ LONG WINAPI CrashHandler(EXCEPTION_POINTERS* ep) {
     const bool owned = IsNamiThread();
     const Stage stage = static_cast<Stage>(g_stage);
 
-    // Only HARD FAULTS interest us — genuine hardware/OS failure codes. Everything else
+    // Only HARD FAULTS interest us - genuine hardware/OS failure codes. Everything else
     // must pass through untouched: catchable software exceptions (0xE06D7363 C++ throws,
     // 0xE0434352 .NET exceptions raised by CoreCLR, 0x4000001F debugger breakpoints)
     // are NORMAL control flow that the surrounding try/catch handles. The old catch-all
     // `(code & 0x80000000) != 0` treated those as crashes and killed Nami-owned threads
-    // on a perfectly catchable exception — e.g. the first C++ throw during managed boot.
+    // on a perfectly catchable exception - e.g. the first C++ throw during managed boot.
     const bool hard_fault =
         code == EXCEPTION_ACCESS_VIOLATION ||        // 0xC0000005
         code == EXCEPTION_IN_PAGE_ERROR ||           // 0xC0000006 (MMIO/disk failure)
@@ -148,7 +148,7 @@ LONG WINAPI CrashHandler(EXCEPTION_POINTERS* ep) {
         if (owned) {
             // Contain: release the injector's hook-ready wait, then kill ONLY this
             // thread. The game main thread is still suspended by the injector until
-            // hook-ready — after this it resumes and the game boots unmodded.
+            // hook-ready - after this it resumes and the game boots unmodded.
             if (g_on_contained != nullptr) {
                 g_on_contained();
             }

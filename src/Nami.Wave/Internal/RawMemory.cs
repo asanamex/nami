@@ -15,7 +15,7 @@ internal static unsafe class RawMemory
     private const uint MemReserve = 0x2000;
     private const uint MemRelease = 0x8000;
 
-    /// <summary>PAGE_EXECUTE_READ (0x20) — used when restoring patch-site protection.</summary>
+    /// <summary>PAGE_EXECUTE_READ (0x20) - used when restoring patch-site protection.</summary>
     public const uint PageExecuteRead = 0x20;
 
     [DllImport("kernel32.dll", SetLastError = true)]
@@ -95,9 +95,9 @@ internal static unsafe class RawMemory
     /// <summary>
     /// Allocates a writable executable buffer within ±2GB of <paramref name="target"/> (for
     /// rel32 trampolines), walking down first then up in 64KB steps. Only commits pages
-    /// reported MEM_FREE — committing inside another allocator's reserved range corrupts
+    /// reported MEM_FREE - committing inside another allocator's reserved range corrupts
     /// its bookkeeping (e.g. the CLR code-heap reservations) and crashes later, elsewhere.
-    /// Returns null when none is found — the caller falls back to the absolute-jump form
+    /// Returns null when none is found - the caller falls back to the absolute-jump form
     /// or refuses.
     /// </summary>
     public static void* TryAllocExecutableNear(void* target, nuint size)
@@ -180,7 +180,7 @@ internal static unsafe class RawMemory
 
     /// <summary>Makes a code region writable (patch sites during install/uninstall).
     /// Uses EXECUTE_READWRITE, not READWRITE: the target page may share its 4K page with
-    /// live JIT code — including this very call stack (Install → Emit*) — and a
+    /// live JIT code - including this very call stack (Install → Emit*) - and a
     /// non-executable flip would DEP-fault on return. Transient RWX under the Wave lock.</summary>
     public static uint MakeWritable(void* p, nuint size)
     {

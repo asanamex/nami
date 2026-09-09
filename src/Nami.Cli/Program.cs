@@ -124,7 +124,7 @@ internal static class Program
     }
 
     /// <summary>
-    /// nami interop — offline IL2CPP typed-projection tooling (dev-time; v24-38 metadata,
+    /// nami interop - offline IL2CPP typed-projection tooling (dev-time; v24-38 metadata,
     /// single-byte XOR de-obfuscation transparent). Reads <c>global-metadata.dat</c>
     /// directly; never touches a running game.
     /// </summary>
@@ -268,7 +268,7 @@ internal static class Program
     }
 
     /// <summary>
-    /// nami inex — legacy lane (nami-inex): stage/enable/disable a real BepInEx 5.x runtime
+    /// nami inex - legacy lane (nami-inex): stage/enable/disable a real BepInEx 5.x runtime
     /// that Nami boots inside the game's own Mono (no Doorstop proxy).
     /// </summary>
     private static int Inex(string[] args)
@@ -286,7 +286,7 @@ internal static class Program
     }
 
     /// <summary>
-    /// nami nmod info|install — .nmod package distribution format on top of loose DLLs
+    /// nami nmod info|install - .nmod package distribution format on top of loose DLLs
     /// (see NamiPackage). Trailing [gameDir] must be an existing directory.
     /// </summary>
     private static int Nmod(string[] args)

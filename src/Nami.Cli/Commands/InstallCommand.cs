@@ -1,12 +1,12 @@
 namespace Nami.Cli.Commands;
 
 /// <summary>
-/// `nami install [gameDir] [--from &lt;artifact.zip|url&gt;]` — installs a Nami root next to a game.
+/// `nami install [gameDir] [--from &lt;artifact.zip|url&gt;]` - installs a Nami root next to a game.
 ///
 /// Without `--from`: stages from this repo's build outputs (managed runtime + native injector +
-/// bundled .NET runtime) — the developer-facing flow.
+/// bundled .NET runtime) - the developer-facing flow.
 ///
-/// With `--from`: installs the self-contained Nami-Install artifact (see `nami pack`) — the
+/// With `--from`: installs the self-contained Nami-Install artifact (see `nami pack`) - the
 /// end-user flow. The artifact is hash-verified against its manifest and extracts over an
 /// existing root without touching mods/, inex/, logs or boot-guard markers.
 /// </summary>

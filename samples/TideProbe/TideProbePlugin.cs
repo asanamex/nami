@@ -36,7 +36,7 @@ public sealed class TideProbePlugin : NamiPlugin
             log.Error($"Debug.Log(string) failed: {ex.Message}");
         }
 
-        // 2. Typed static method call with an INT arg — proves primitive marshaling AND the
+        // 2. Typed static method call with an INT arg - proves primitive marshaling AND the
         //    signature-aware boxing path (int is boxed for Debug.Log(object)).
         try
         {
@@ -53,7 +53,7 @@ public sealed class TideProbePlugin : NamiPlugin
         try
         {
             var goClass = GameClass.Resolve("UnityEngine.CoreModule", "UnityEngine", "GameObject");
-            var go = goClass.NewObject();  // new GameObject() — parameterless ctor
+            var go = goClass.NewObject();  // new GameObject() - parameterless ctor
             log.Info($"created GameObject instance (handle={go.HandleValue})");
 
             var id = go.CallIntMethod("GetInstanceID");
@@ -83,7 +83,7 @@ public sealed class TideProbePlugin : NamiPlugin
             log.Error($"typed generic API failed: {ex.Message}");
         }
 
-        // 5. Array access: read a static string[] — System.Environment.GetCommandLineArgs().
+        // 5. Array access: read a static string[] - System.Environment.GetCommandLineArgs().
         try
         {
             var env = GameClass.Resolve("mscorlib", "System", "Environment");
@@ -149,8 +149,8 @@ public sealed class TideProbePlugin : NamiPlugin
         }
 
         // 7. Scene-object discovery via Object.FindObjectOfType (post-invoke export).
-        //    Same target as step 6 — the two routes must agree.
-        // 7a. Name-based search (GameObject.Find needs no Type arg — kept as the
+        //    Same target as step 6 - the two routes must agree.
+        // 7a. Name-based search (GameObject.Find needs no Type arg - kept as the
         //     tripwire: if the Type-based step below ever regresses, this tells us
         //     whether scene iteration itself or only the Type path broke).
         try

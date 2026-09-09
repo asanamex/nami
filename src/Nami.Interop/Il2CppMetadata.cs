@@ -3,7 +3,7 @@ using System.Text;
 
 namespace Nami.Interop;
 
-/// <summary>Header sanity checks failed — the file is not a plaintext IL2CPP metadata we can parse.</summary>
+/// <summary>Header sanity checks failed - the file is not a plaintext IL2CPP metadata we can parse.</summary>
 public sealed class MetadataFormatException(string message) : Exception(message);
 
 /// <summary>A parsed il2cpp type definition (name, namespace, declaring type, member counts).</summary>
@@ -55,12 +55,12 @@ public sealed class Il2CppFieldInfo
 ///
 ///  The metadata format is versioned, so the reader is defensive by construction:
 ///  1. the header is read as (offset,size) pairs in the canonical order (stable from v24.1
-///     through v38; v38+ writes (offset,size,count) TRIPLETS — the count is skipped);
+///     through v38; v38+ writes (offset,size,count) TRIPLETS - the count is skipped);
 ///     later versions append pairs rather than reorder;
 ///  2. every region is bounds-checked before use;
 ///  3. the Il2CppTypeDefinition / Il2CppMethodDefinition struct strides are CALIBRATED in-file by
 ///     sampling candidate strides and accepting the first whose decoded name strings are mostly
-///     plausible (IL names like "&lt;Module&gt;" and ".ctor" count) — robust to Unity adding
+///     plausible (IL names like "&lt;Module&gt;" and ".ctor" count) - robust to Unity adding
 ///     fields, without hard-coded per-version tables;
 ///  4. the type-definition field shift is resolved per file too: v24.1 keeps byrefTypeIndex
 ///     (declaringType at +16) while v27+ drops it (declaringType at +12); v35 (Unity 6000.3)
@@ -118,7 +118,7 @@ public sealed class Il2CppMetadata
         // (offset, size) pairs follow {sanity, version}. The canonical order is stable, but v29+
         // REMOVED the (deprecated) fieldMarshaledSizes pair, shifting everything after it, and
         // v38 writes (offset, size, count) TRIPLETS. We parse every variant and keep the one
-        // that validates (sentinel string + stride calibration) — self-correcting against
+        // that validates (sentinel string + stride calibration) - self-correcting against
         // version drift without hard-coded tables.
         Exception? lastError = null;
         foreach (var variant in new (bool Triplets, bool Marshaled)[] { (false, false), (false, true), (true, false), (true, true) })
@@ -208,7 +208,7 @@ public sealed class Il2CppMetadata
     /// <summary>
     /// Resolves the Il2CppTypeDefinition field shift from the calibrated stride: v24.1 rows
     /// are 92 bytes (byrefTypeIndex present, declaringType at +16) while v27+ rows are 88
-    /// bytes (declaringType at +12); v35 drops elementTypeIndex (84-byte rows — declaring
+    /// bytes (declaringType at +12); v35 drops elementTypeIndex (84-byte rows - declaring
     /// stays at +12 since the removed field sits after it, everything after shifts by -4).
     /// The winning layout is validated by checking that declaring indices decode sanely
     /// (top-level types store -1); anything else fails loud instead of returning shifted
@@ -410,7 +410,7 @@ public sealed class Il2CppMetadata
                 continue;
             }
 
-            // Triplets at v38+, pairs below — matches the format's introduction version.
+            // Triplets at v38+, pairs below - matches the format's introduction version.
             if ((stride == 12) == (version >= 38))
             {
                 return pairs;
@@ -792,7 +792,7 @@ public sealed class Il2CppMetadata
     // ----------------------------------------------------------------- methods
 
     // Il2CppMethodDefinition, v24.1+: nameIndex +0; flags(u32) at stride-8; parameterCount(u16)
-    // is the struct's final uint16 (stride-2) — invariant across v24.1..v38 (v31 only
+    // is the struct's final uint16 (stride-2) - invariant across v24.1..v38 (v31 only
     // inserts returnParameterToken mid-struct, which the relative tail layout absorbs).
     private const MethodAttributes MethodStatic = MethodAttributes.Static;
 

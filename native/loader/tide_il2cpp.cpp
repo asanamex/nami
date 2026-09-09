@@ -1,10 +1,9 @@
 // ---------------------------------------------------------------------------
 // Tide IL2CPP executor: runs typed ops on the game's MAIN thread for IL2CPP titles.
 //
-// Empirical constraints (verified on D1AL-ogue / Unity 6000.0.61 and Arrow a Row /
-// 2020.3.18):
+// Empirical constraints (verified on Unity 6000.0 and 2020.3 IL2CPP titles):
 //   - NO il2cpp export fires per-frame (runtime_invoke/class_init/object_new/... are all
-//     quiet in a live game) — a Mono-style runtime_invoke drain starves.
+//     quiet in a live game) - a Mono-style runtime_invoke drain starves.
 //   - NO VM API is safe from a worker thread, even attached (domain_assembly_open
 //     derefs main-thread TLS and AVs).
 //   - NO VM API is safe inside a runtime_invoke DETOUR frame either (class_from_name
@@ -14,7 +13,7 @@
 //
 // Design: ops are queued; the game's main window is subclassed with a Nami window proc;
 // a posted message wakes the main thread's message pump, which drains the queue inside
-// the window proc — verified working (Debug.Log invoked from the drain, game stable).
+// the window proc - verified working (Debug.Log invoked from the drain, game stable).
 // ---------------------------------------------------------------------------
 
 #include "tide_il2cpp.h"
@@ -146,7 +145,7 @@ bool install_il2cpp_executor() {
 }
 
 // Subclasses the game's main window so queued work runs on the main thread inside
-// the window procedure (frame boundary — no runtime_invoke on the stack). Pure Win32;
+// the window procedure (frame boundary - no runtime_invoke on the stack). Pure Win32;
 // shared by the IL2CPP backend AND Mono scene-iteration ops (FindObject), which abort
 // inside any nested invoke frame. Idempotent + thread-safe.
 bool install_window_executor() {
@@ -188,7 +187,7 @@ bool il2cpp_on_main_thread() {
 }
 
 bool run_il2cpp_op(int (*fn)(void*), void* arg, int timeout_ms) {
-    // Re-entrant: the caller IS the main-thread drain — run inline.
+    // Re-entrant: the caller IS the main-thread drain - run inline.
     if (il2cpp_on_main_thread()) {
         return fn(arg) == 0;
     }

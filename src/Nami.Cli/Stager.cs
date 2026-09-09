@@ -33,7 +33,7 @@ public sealed record PackResult(string FilePath, string Version, string Runtime,
 /// <list type="bullet">
 /// <item>Repo staging (dev-facing): copies the managed runtime + the native injector and bundles
 /// the matching .NET runtime, then writes nami.json. Requires a repo checkout (or --artifacts).</item>
-/// <item>Artifact install (end-user-facing): <c>nami install --from &lt;artifact.zip|url&gt;</c> —
+/// <item>Artifact install (end-user-facing): <c>nami install --from &lt;artifact.zip|url&gt;</c> -
 /// a single self-contained zip produced by <c>nami pack</c> (managed + native + bundled runtime,
 /// SHA-256 manifest). Extracts with hash verification and never touches user content
 /// (mods/, inex/, logs, boot-guard markers).</item>
@@ -250,7 +250,7 @@ public static class Stager
                 var dst = SafeCombine(root, rel);
                 Directory.CreateDirectory(Path.GetDirectoryName(dst)!);
 
-                // Extract to a temp file, verify the hash, then move into place — a tampered
+                // Extract to a temp file, verify the hash, then move into place - a tampered
                 // entry never clobbers a working file.
                 var tmp = dst + ".tmp";
                 string actualHash;

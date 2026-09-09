@@ -17,7 +17,7 @@ public class GenMethodDirectTests
         };
         var patched = PatchedBodyBuilder.Build(m, entries, body);
 
-        // Invoke directly (no detour) — validates the generated IL.
+        // Invoke directly (no detour) - validates the generated IL.
         var result = (int)patched.Invoke(null, new object[] { 20, 22 })!;
         Assert.Equal(42, result);
     }

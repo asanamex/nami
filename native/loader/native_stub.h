@@ -14,7 +14,7 @@ namespace nami::stub {
 // Two stub shapes:
 //
 // 1. Prefix-only (fast path): saves the argument registers (rcx/rdx/r8/r9) into a
-//    stack array, calls a dispatch function with (user_handle, args, arg_count) —
+//    stack array, calls a dispatch function with (user_handle, args, arg_count) -
 //    nonzero return = SKIP (returns 0), otherwise restores the argument registers
 //    and tail-jumps to the trampoline (the original runs with its exact args; stack
 //    arguments beyond r9 are untouched on the caller's stack).
@@ -48,15 +48,15 @@ struct HookRecord {
     bool installed;
 };
 
-/// Installs a prefix-only dispatch-stub detour over `target` (fast path — see above).
+/// Installs a prefix-only dispatch-stub detour over `target` (fast path - see above).
 /// Preferred form: 14-byte absolute jump; falls back to a 5-byte relative jump when
 /// the prologue is >= 5 clean bytes but < 14 (IL2CPP leaf getters like
-/// `mov eax, [rip+x]; ret`) — RIP-relative operands are relocated with disp32 fixup.
-/// Refuses only below 5 clean bytes or on genuinely unsafe code — never corrupts.
+/// `mov eax, [rip+x]; ret`) - RIP-relative operands are relocated with disp32 fixup.
+/// Refuses only below 5 clean bytes or on genuinely unsafe code - never corrupts.
 /// Returns the record (owned by the caller, free with unhook_native) or nullptr.
 HookRecord* hook_native_at(void* target, void* dispatch, uint64_t user_handle, int arg_count);
 
-/// Installs a full-path dispatch-stub detour (results + stack args — see above).
+/// Installs a full-path dispatch-stub detour (results + stack args - see above).
 /// `arg_count` may exceed 4 (stack args are copied and exposed); capped at 12.
 /// Same prologue policy and safety guarantees as hook_native_at.
 HookRecord* hook_native_full(void* target, void* dispatch_prefix, void* dispatch_postfix,

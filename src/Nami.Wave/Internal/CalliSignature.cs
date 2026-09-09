@@ -21,7 +21,7 @@ internal sealed class CalliSignature
 /// skipped (they never change the managed stack representation), everything else is
 /// resolved exactly, generic VAR/MVAR substituted from the target's own arguments.
 /// Anything without a faithful managed spelling (vararg sentinels, nested function
-/// pointers, generic call sites) is refused with a precise error — never guessed.
+/// pointers, generic call sites) is refused with a precise error - never guessed.
 /// </summary>
 internal static class CalliSignatureParser
 {
@@ -57,7 +57,7 @@ internal static class CalliSignatureParser
         {
             0x00 or 0x05 => false, // DEFAULT, VARARG
             0x01 or 0x02 or 0x03 or 0x04 => true, // C, STDCALL, THISCALL, FASTCALL
-            // 0x09: what Roslyn emits for a bare `unmanaged` fnptr — the platform
+            // 0x09: what Roslyn emits for a bare `unmanaged` fnptr - the platform
             // default unmanaged convention. 64-bit ABIs have a single native
             // convention, so StdCall re-emits it faithfully (Wave is x64-only).
             0x09 => true,

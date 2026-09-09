@@ -15,7 +15,7 @@ public sealed class PatchEntry
 /// <summary>
 /// Builds the patched body for an IL-copy patch site: the target's own IL with prefix calls
 /// at the entry and every <c>ret</c> rewritten to run postfixes first. All calls are plain
-/// managed calls — no unmanaged stubs anywhere on the path.
+/// managed calls - no unmanaged stubs anywhere on the path.
 ///
 /// Injection model (single combined prefix and postfix chain):
 ///   [prologue: run prefixes; skip if any returned false]
@@ -39,7 +39,7 @@ internal static class PatchedBodyBuilder
 
     /// <summary>
     /// Holds the live hook delegates for every site. Emitted code loads a site's entries via
-    /// <c>ldsfld All</c> + index, then reads the prefix/postfix delegate and invokes it —
+    /// <c>ldsfld All</c> + index, then reads the prefix/postfix delegate and invokes it -
     /// supporting closures, lambdas and static methods uniformly.
     /// </summary>
     public sealed class HookBridge
@@ -295,8 +295,8 @@ internal static class PatchedBodyBuilder
 
     private static void EmitLdargForState(ILGenerator il, Type ptype, LocalBuilder lState, bool isPrefix, Delegate hook)
     {
-        // __state on prefix: out object (or ref object) — pass address of the state local.
-        // On postfix: ref object — same address.
+        // __state on prefix: out object (or ref object) - pass address of the state local.
+        // On postfix: ref object - same address.
         if (ptype != typeof(object).MakeByRefType())
         {
             throw new InvalidOperationException($"__state must be 'out object' (prefix) or 'ref object' (postfix): {hook}");
@@ -434,7 +434,7 @@ internal static class PatchedBodyBuilder
             // The skipped branch (prefix returned false) lands at lblSkipped, placed AFTER
             // the store so the empty stack is valid (lResult already holds the default).
 
-            // The value on the stack at the ret is the method result — capture it first.
+            // The value on the stack at the ret is the method result - capture it first.
             if (_lResult is not null)
             {
                 il.Emit(OpCodes.Stloc, _lResult);

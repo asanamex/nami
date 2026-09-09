@@ -6,7 +6,7 @@ using Nami.Sdk;
 namespace Nami.Cli.Commands;
 
 /// <summary>
-/// `nami nmod info|install` — .nmod package handling (the distribution format on top of
+/// `nami nmod info|install` - .nmod package handling (the distribution format on top of
 /// loose plugin DLLs; see NamiPackage). `info` reads a package's manifest without
 /// extracting; `install` verifies + extracts into the game root's mods/ directory with
 /// incompatibility refusal and dependency warnings.

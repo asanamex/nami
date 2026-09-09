@@ -3,7 +3,7 @@ using Nami.Core.Configuration;
 namespace Nami.Cli.Commands;
 
 /// <summary>
-/// `nami create [offline|steam] [gameDir]` — writes launchNami.exe + run-with-nami.bat into the
+/// `nami create [offline|steam] [gameDir]` - writes launchNami.exe + run-with-nami.bat into the
 /// nami root so the game can be launched with Nami by double-clicking, without the CLI open.
 /// </summary>
 internal static class CreateCommand

@@ -49,7 +49,7 @@ internal sealed class IlEmitContext
 /// preserving semantics: same locals, same exception-handler structure, same branch graph,
 /// tokens resolved from the original method's module. The generated type is a public static
 /// class in its own dynamic assembly, so the emitted method has a REAL MethodHandle and a
-/// stable native entry (unlike DynamicMethod, whose body address is not resolvable) — which
+/// stable native entry (unlike DynamicMethod, whose body address is not resolvable) - which
 /// makes it a safe detour target.
 /// </summary>
 internal static class IlRewriter
@@ -89,9 +89,9 @@ internal static class IlRewriter
     /// <summary>
     /// Starts a generated method: a public static method on a fresh type in a fresh dynamic
     /// assembly, whose parameters mirror the body's native layout (instance targets take the
-    /// declaring type as parameter 0 — arg0 = this, matching the target's entry; struct
+    /// declaring type as parameter 0 - arg0 = this, matching the target's entry; struct
     /// instance targets take it by reference, matching the managed-pointer this of value
-    /// types — mutations through it behave exactly like the original).
+    /// types - mutations through it behave exactly like the original).
     /// </summary>
     public static (TypeBuilder Type, MethodBuilder Method, ILGenerator Il) BeginGeneratedMethod(IlBody b, string name)
     {
@@ -99,7 +99,7 @@ internal static class IlRewriter
         if (b.IsInstance && b.DeclaringType is { } dt)
         {
             // Struct this is already a managed pointer in the original IL (ldarg.0), so a
-            // byref parameter carries the identical value — no copy, no writeback gap.
+            // byref parameter carries the identical value - no copy, no writeback gap.
             var thisParam = dt.IsValueType ? dt.MakeByRefType() : dt;
             fullParams = new[] { thisParam }.Concat(fullParams).ToArray();
         }
@@ -137,7 +137,7 @@ internal static class IlRewriter
 
     /// <summary>
     /// Defines the runtime's IgnoresAccessChecksToAttribute in the dynamic module (the
-    /// runtime recognizes it by full name even when defined dynamically — the standard
+    /// runtime recognizes it by full name even when defined dynamically - the standard
     /// technique used by Harmony and MonoMod).
     /// </summary>
     private static Type DefineIgnoresAccessChecksToAttribute(AssemblyBuilder ab, ModuleBuilder mb)
@@ -176,7 +176,7 @@ internal static class IlRewriter
 
     /// <summary>
     /// Emits <paramref name="b"/>'s body into <paramref name="il"/> applying the optional
-    /// hooks. The caller must have created the DynamicMethod and declared NO locals yet —
+    /// hooks. The caller must have created the DynamicMethod and declared NO locals yet -
     /// locals are declared here (needed for correct init flags) and exposed via the context.
     /// </summary>
     public static void EmitInto(ILGenerator il, IlBody b, IlEmitHooks? hooks)
@@ -226,7 +226,7 @@ internal static class IlRewriter
             {
                 // Filter block runs from FilterOffset to the handler; the filter body
                 // itself is copied verbatim (endfilter dropped like endfinally below).
-                // Note: CatchType throws on filter clauses, so catch object — the
+                // Note: CatchType throws on filter clauses, so catch object - the
                 // filter itself gates entry.
                 AddAction(tryStart, ilg => ilg.BeginExceptionBlock());
                 AddAction(c.FilterOffset, ilg => ilg.BeginExceptFilterBlock());
@@ -271,7 +271,7 @@ internal static class IlRewriter
 
         // Whether an offset lies inside a try region (ret rewriting must respect EH: a ret
         // inside a try cannot simply branch out; but valid C# never emits ret in a try, and
-        // a ret in a handler cannot branch to outside code — so rets inside handler regions
+        // a ret in a handler cannot branch to outside code - so rets inside handler regions
         // are rewritten in place by hooks that know this).
         var handlerStarts = new HashSet<int>();
         foreach (var c in clauses)
@@ -281,7 +281,7 @@ internal static class IlRewriter
 
         var module = b.Method.Module;
 
-        // Optional hook prelude (prefix chain) — outside any EH region.
+        // Optional hook prelude (prefix chain) - outside any EH region.
         hooks?.EmitPrologue(il, ctx);
 
         // Walk instructions in offset order, applying structural actions when their offset is
@@ -362,7 +362,7 @@ internal static class IlRewriter
     /// Emits one instruction. <paramref name="labelFor"/> resolves raw branch-target offsets
     /// (the offset-driven path); on the transpiler path branch operands are labels handled
     /// by the caller, and operands may already be RESOLVED (string/Type/MemberInfo injected
-    /// by a transpiler) — those are emitted directly without token resolution.
+    /// by a transpiler) - those are emitted directly without token resolution.
     /// </summary>
     internal static void Emit(ILGenerator il, IlInstruction ins, Module module, Type? declaringType,
         Type[] genericArgs, Type[] genericMethodArgs, LocalBuilder[] locals, Func<int, Label>? labelFor = null)
@@ -371,7 +371,7 @@ internal static class IlRewriter
         var operand = ins.Operand;
 
         // Short-form local loads/stores (ldloc.0-3/stloc.0-3) are InlineNone with the
-        // slot baked into the opcode — remap through the real builders (same verbatim
+        // slot baked into the opcode - remap through the real builders (same verbatim
         // trap as the .s forms below). Short ldarg.0-3 need nothing: the argument
         // layout is preserved (this stays arg 0).
         int v = op.Value;
@@ -426,7 +426,7 @@ internal static class IlRewriter
             case OperandType.InlineVar:
             {
                 // ponytail: ILGenerator.Emit bakes short-form local opcodes VERBATIM,
-                // ignoring the LocalBuilder's real index — and Wave's prologue locals
+                // ignoring the LocalBuilder's real index - and Wave's prologue locals
                 // shift every original index. Select every var form explicitly.
                 int slot = ToInt(operand!);
                 if (IsArgVarOp(op))
@@ -591,9 +591,9 @@ internal static class IlRewriter
 
     /// <summary>
     /// Maps an original local type to a declarable one. Two shapes have no nameable
-    /// runtime Type: function pointers (redeclared as IntPtr — identical native-int
+    /// runtime Type: function pointers (redeclared as IntPtr - identical native-int
     /// size and stack representation, all the copied IL observes) and generic
-    /// parameters (substituted from the closed context — the patched method is always
+    /// parameters (substituted from the closed context - the patched method is always
     /// closed by the time its body is copied).
     /// </summary>
     private static Type MapLocalType(Type? t, IlBody b, Type[] genericArgs, Type[] genericMethodArgs)
@@ -671,7 +671,7 @@ internal static class IlRewriter
 
     /// <summary>
     /// Re-emits a local load/store/address against the builder's REAL index (the
-    /// family — load/store/address — comes from the original opcode).
+    /// family - load/store/address - comes from the original opcode).
     /// </summary>
     private static void EmitLocalVar(ILGenerator il, OpCode op, LocalBuilder lb)
     {

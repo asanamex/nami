@@ -32,7 +32,7 @@ public static class Target
 
     public static int Counter;
 
-    // A method with a real stack frame (locals + calls) — exercises the skip trampoline.
+    // A method with a real stack frame (locals + calls) - exercises the skip trampoline.
     [MethodImpl(MethodImplOptions.NoInlining)]
     public static void Framed()
     {
@@ -228,7 +228,7 @@ public class WaveTests : IDisposable
 
     // Dedicated target for the re-hook test: kept separate so no other test perturbs the
     // JIT state of this method (tiered JIT may back-patch a repeatedly hooked/unhooked
-    // method to a fresh body, which would silently bypass a stale detour — a documented
+    // method to a fresh body, which would silently bypass a stale detour - a documented
     // Wave limit: hook methods that are already hot/stable).
     public static class RehookTarget
     {
@@ -250,7 +250,7 @@ public class WaveTests : IDisposable
 
         // Warm up past tier-0 FIRST so the JIT never creates a new code version while a
         // detour is installed (tiered JIT may back-patch a repeatedly hooked/unhooked
-        // method to a fresh body, which would silently bypass a stale detour — a documented
+        // method to a fresh body, which would silently bypass a stale detour - a documented
         // Wave limit: hook methods that are already hot/stable).
         for (int i = 0; i < 50_000; i++) RehookTarget.Ping();
         RehookTarget.Calls = 0;

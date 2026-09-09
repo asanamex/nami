@@ -8,7 +8,7 @@
 namespace nami {
 
 /// Manages the embedded .NET (CoreCLR) runtime loaded into the game process
-/// through hostfxr. Nami brings its OWN modern runtime — this is the core
+/// through hostfxr. Nami brings its OWN modern runtime - this is the core
 /// architectural difference from BepInEx-Mono, where plugins run on the game's
 /// ancient embedded Mono.
 ///

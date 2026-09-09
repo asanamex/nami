@@ -26,7 +26,7 @@ namespace {
 //   lea rdx, [rsp+0x20]
 //   mov r8d, <arg_count>          (imm32)
 //   mov rax, <dispatch>           (imm64)
-//   call rax                      ; shadow space [rsp+0x00..0x20) — BELOW the args
+//   call rax                      ; shadow space [rsp+0x00..0x20) - BELOW the args
 //   test eax, eax
 //   jnz skip
 //   mov rcx,[rsp+0x20]; mov rdx,[rsp+0x28]; mov r8,[rsp+0x30]; mov r9,[rsp+0x38]
@@ -41,7 +41,7 @@ namespace {
 //   ret
 //
 // The dispatch call happens with the ORIGINAL argument registers saved in
-// [rsp+0x20..0x40] — below the saved rbx ([rsp+0x50]) and above the dispatch call's
+// [rsp+0x20..0x40] - below the saved rbx ([rsp+0x50]) and above the dispatch call's
 // shadow space ([rsp+0x00..0x20)), so nothing the dispatch does can clobber them.
 // The tail-jump path restores them, so the original runs with its exact arguments and
 // any stack-passed args (5+) are never touched. rsp stays 16-aligned at the call
@@ -114,7 +114,7 @@ int EmitStub(unsigned char* s, uint64_t handle, void* dispatch, int arg_count, u
 // Full-path stub (results + stack args + float args). Layout for n = stack-arg slots
 // (n = max(0, arg_count - 4), capped at 8); all offsets relative to rsp after
 // `sub rsp, FRAME`; R = the entry rsp. The dispatch functions are JIT-compiled
-// managed code whose STACK FRAMES grow DOWN from their call site — a layout that
+// managed code whose STACK FRAMES grow DOWN from their call site - a layout that
 // places any stub data below the dispatch call site gets silently overwritten
 // (observed in-game: the args buffer and result slot were clobbered by the JIT
 // dispatcher's frame, producing garbage args/results while smoke tests with tiny
@@ -126,14 +126,14 @@ int EmitStub(unsigned char* s, uint64_t handle, void* dispatch, int arg_count, u
 //                                 [0x00..0x20), 5th arg (return_kind) at [0x20..0x28),
 //                                 return address at [-8], and up to ~0x138 bytes of
 //                                 callee stack frame below. Nothing of ours lives
-//                                 here — the JIT may spill/clobber at will. (The
+//                                 here - the JIT may spill/clobber at will. (The
 //                                 trampoline's ABI stack-arg slots [0x20+8k] are
 //                                 written here too, but only AFTER the prefix returns
 //                                 and right before the trampoline call.)
-//   [rsp+0x140 .. 0x180)          xmm0-3 save area (float/double arg regs — the
+//   [rsp+0x140 .. 0x180)          xmm0-3 save area (float/double arg regs - the
 //                                 dispatch calls would clobber them)
 //   [rsp+0x180 .. 0x1A0)          args buffer, register section: rcx/rdx/r8/r9
-//   [rsp+0x1A0 .. 0x1A0+0x08n)    args buffer, stack section (n slots) — contiguous
+//   [rsp+0x1A0 .. 0x1A0+0x08n)    args buffer, stack section (n slots) - contiguous
 //                                 with the register section, so args[i] = [rsp+buf_regs+8i]
 //   [rsp+0x1A0+0x08n .. +0x10)    result slot: rax bits (8) + xmm0 bits (8), zeroed
 //   FRAME = 0x1B8 + 0x08n         (≡ 8 mod 16: entry rsp ≡ 8, sub => ≡ 0, so the
@@ -142,14 +142,14 @@ int EmitStub(unsigned char* s, uint64_t handle, void* dispatch, int arg_count, u
 //                                 second qword sits at [FRAME-8 .. FRAME), i.e. just
 //                                 below the caller's return address at [R])
 //
-// Flow: sub → save regs + xmm0-3 (disp32 — offsets exceed disp8) → zero result →
+// Flow: sub → save regs + xmm0-3 (disp32 - offsets exceed disp8) → zero result →
 // copy the caller's stack args ([R+0x28+8k]) into the buffer's stack section (the
 // prefix must see the full arg list) → prefix dispatch (rsp = R-FRAME; the callee's
 // frame grows into the scratch zone, never reaching the buffer/result) → test/jnz →
 // [skip block at the end: return result slot] → restore xmm0-3 → reload the register
 // args the dispatch clobbered (rcx/rdx/r8/r9 from the buffer) → RE-COPY the caller's
 // stack args into the trampoline's ABI slots [rsp+0x20+8k] (the prefix callee's
-// frame clobbered the previous copy — this one runs after it returned) → call
+// frame clobbered the previous copy - this one runs after it returned) → call
 // trampoline (reads its stack args from [rsp+0x20+8k]) → save rax/xmm0 → postfix
 // dispatch (may rewrite the slot) → restore rax or xmm0 by return_kind → add rsp → ret.
 constexpr int kStubSizeFull = 640;
@@ -185,7 +185,7 @@ int EmitStubFull(unsigned char* s, uint64_t handle, void* dispatch_prefix,
     *reinterpret_cast<int*>(s + o) = buf_regs + 0x10; o += 4;
     s[o++] = 0x4C; s[o++] = 0x89; s[o++] = 0x8C; s[o++] = 0x24;
     *reinterpret_cast<int*>(s + o) = buf_regs + 0x18; o += 4;
-    // save xmm0-3: movdqu [rsp+xmm_off+16k], xmm k (disp32 form — offsets exceed
+    // save xmm0-3: movdqu [rsp+xmm_off+16k], xmm k (disp32 form - offsets exceed
     // disp8; modrm reg field = k)
     for (int k = 0; k < 4; k++) {
         s[o++] = 0xF3; s[o++] = 0x0F; s[o++] = 0x7F;
@@ -203,7 +203,7 @@ int EmitStubFull(unsigned char* s, uint64_t handle, void* dispatch_prefix,
     if (n > 0) {
         // Copy the caller's stack args (5th+ args sit at [R+0x28+8k] where R is the
         // entry rsp: the caller pushed them above its return address) into the
-        // buffer's stack section ONLY — the prefix must see the full arg list, but
+        // buffer's stack section ONLY - the prefix must see the full arg list, but
         // the trampoline's ABI slots [rsp+0x20+8k] would be clobbered by the prefix
         // callee's frame, so those are re-copied AFTER the prefix returns (see
         // below). Clobbers only r10/r11/rax, none live into the dispatch.
@@ -222,10 +222,10 @@ int EmitStubFull(unsigned char* s, uint64_t handle, void* dispatch_prefix,
     }
 
     // Emits one dispatch call; args already in rcx/rdx/r8/r9; `fn` is the callee.
-    // The call happens from rsp = R-FRAME (the frame base — no rsp switch): the
+    // The call happens from rsp = R-FRAME (the frame base - no rsp switch): the
     // callee's shadow is the scratch zone [0x00..0x20), the 5th arg (return_kind)
     // lands at [0x20..0x28), its return address at [-8], and its stack frame grows
-    // down through the rest of the scratch — never reaching xmm/buffer/result.
+    // down through the rest of the scratch - never reaching xmm/buffer/result.
     auto emit_dispatch_call = [&](uint64_t fn) {
         // mov dword [rsp+0x20], return_kind   (5th arg; callee reads [rsp+0x28])
         s[o++] = 0xC7; s[o++] = 0x44; s[o++] = 0x24; s[o++] = 0x20;
@@ -249,7 +249,7 @@ int EmitStubFull(unsigned char* s, uint64_t handle, void* dispatch_prefix,
     emit_dispatch_call(reinterpret_cast<uint64_t>(dispatch_prefix));
     // test eax, eax
     s[o++] = 0x85; s[o++] = 0xC0;
-    // jnz skip — rel32 (the main path between here and the skip block is long)
+    // jnz skip - rel32 (the main path between here and the skip block is long)
     const int jnz_off = o;
     s[o++] = 0x0F; s[o++] = 0x85;
     *reinterpret_cast<int*>(s + o) = 0; o += 4;
@@ -263,7 +263,7 @@ int EmitStubFull(unsigned char* s, uint64_t handle, void* dispatch_prefix,
     }
     if (n > 0) {
         // Re-copy the caller's stack args into the trampoline's ABI slots
-        // [rsp+0x20+8k] — the prefix callee's frame clobbered the earlier copy.
+        // [rsp+0x20+8k] - the prefix callee's frame clobbered the earlier copy.
         // The caller's args are still intact at [rsp+frame+0x28+8k].
         // lea r10, [rsp + frame + 0x28]
         s[o++] = 0x4C; s[o++] = 0x8D; s[o++] = 0x94; s[o++] = 0x24;
@@ -272,7 +272,7 @@ int EmitStubFull(unsigned char* s, uint64_t handle, void* dispatch_prefix,
             // mov rax, [r10+8k]
             s[o++] = 0x49; s[o++] = 0x8B; s[o++] = 0x42; s[o++] = static_cast<unsigned char>(8 * k);
             // mov [rsp+0x20+8k], rax  (the called trampoline reads its stack args
-            // from [rsp+0x20+8k] — inside the scratch zone, but nothing runs
+            // from [rsp+0x20+8k] - inside the scratch zone, but nothing runs
             // between this write and the call below)
             s[o++] = 0x48; s[o++] = 0x89; s[o++] = 0x44; s[o++] = 0x24;
             s[o++] = static_cast<unsigned char>(0x20 + 8 * k);
@@ -328,7 +328,7 @@ int EmitStubFull(unsigned char* s, uint64_t handle, void* dispatch_prefix,
     }
     s[o++] = 0xC3;
 
-    // ---- skip path (at the END — the not-taken jnz falls through to the main path)
+    // ---- skip path (at the END - the not-taken jnz falls through to the main path)
     const int skip_off = o;
     if (use_xmm) {
         // movq xmm0, [rsp+result_off+8]  (the xmm0 slot)
@@ -392,7 +392,7 @@ HookRecord* InstallDetour(void* target, int stub_capacity, EmitStubFn emit_stub,
         }
     } else {
         // Stage 2: the 5-byte relative jump (E9 rel32). IL2CPP leaf getters are
-        // tiny (`mov eax, [rip+x]; ret`) — far below 14 bytes but >= 5. Both the
+        // tiny (`mov eax, [rip+x]; ret`) - far below 14 bytes but >= 5. Both the
         // stub and the trampoline must sit within ±2GB of the patch site (rel32
         // entry + rel32 back-jump), and any RIP-relative operands in the copied
         // prologue get their disp32 rebased.

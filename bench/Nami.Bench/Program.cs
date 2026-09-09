@@ -11,7 +11,7 @@ namespace Nami.Bench;
 /// over N synthetic plugins and report per-1000-plugin cost. Doubles as a regression
 /// gate (env-overridable budgets, generous defaults): nonzero exit on breach.
 /// The in-game comparative harness against BepInEx/MelonLoader on real Unity fixtures
-/// is a documented manual protocol (see docs/plan.md M5) — neither loader runs in CI.
+/// is a documented manual protocol (see docs/plan.md M5) - neither loader runs in CI.
 /// </summary>
 internal static class Program
 {

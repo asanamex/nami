@@ -6,9 +6,9 @@ namespace Nami.Interop;
 /// Emits a compile-time-typed C# projection of an IL2CPP game's metadata: one static class per
 /// game type exposing <see cref="GameClass"/>-style handles (Nami.Tide resolves members by name
 /// at runtime; the projection gives mods IDE discoverability and compile-time-checked names).
-/// Each <see cref="GameClass"/> is materialized lazily on first use and cached per type —
+/// Each <see cref="GameClass"/> is materialized lazily on first use and cached per type -
 /// resolution (and the underlying native member lookup) runs once, not per call.
-/// The generated file is plain source — mods include it and reference Nami.Tide.
+/// The generated file is plain source - mods include it and reference Nami.Tide.
 /// </summary>
 public static class ProjectionWriter
 {

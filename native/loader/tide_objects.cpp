@@ -612,7 +612,7 @@ void* find_method_for_args_uncached(void* klass, const char* name, int argc,
 }
 
 // ---------------------------------------------------------------------------
-// Cached resolution wrappers — THE call path used by the ops. All resolvers
+// Cached resolution wrappers - THE call path used by the ops. All resolvers
 // return process-lifetime metadata (classes/methods/fields/properties are
 // never unloaded), so results are cached for the loader's lifetime, including
 // negative results. kind_tags share the 64-bit space with the IL2CPP backend.
@@ -782,7 +782,7 @@ void write_ret(TideValue* ret, void* mono_result) {
     // Enums box as their underlying value type; object_unbox yields the underlying data.
     // Most Unity enums are int-backed (4 bytes). For safety, an I64 read of an enum whose
     // underlying type is 4 bytes would read garbage high bytes, so refuse it loudly rather
-    // than return garbage — mods should read int-backed enums as TideType_I32.
+    // than return garbage - mods should read int-backed enums as TideType_I32.
     const bool is_enum = is_enum_object(mono_result);
     switch (ret->type) {
         case TideType_I32: {
@@ -1045,7 +1045,7 @@ int tide_object_op(void* arg) {
             // Type-aware overload selection: pick the method whose parameter types best match
             // the passed TideValue types. Only trust it when it finds an EXACT (score >= 3
             // per arg) match for every arg; otherwise fall back to the classic name+argc
-            // lookup (Unity's first declared overload — the documented behavior).
+            // lookup (Unity's first declared overload - the documented behavior).
             const TideValue* method_args = method_argc > 0 ? req->args + value_start : nullptr;
             void* method = nullptr;
             if (g_api.class_get_methods != nullptr && g_api.method_signature != nullptr) {
@@ -1143,7 +1143,7 @@ int tide_object_op(void* arg) {
 
         case TideCall_FindObject: {
             // Scene-object discovery: first loaded object of req's klass (Unity walks
-            // subclasses — same semantics as the managed call). Implemented as
+            // subclasses - same semantics as the managed call). Implemented as
             // FindObjectsOfType + element 0: the SINGULAR FindObjectOfType wrapper
             // aborts the process (0xe0000001) when invoked from outside managed game
             // code (verified on Unity 2022.3 Mono across drain pre/post and window
@@ -1225,7 +1225,7 @@ int tide_object_op(void* arg) {
                 return -2;
             }
             // Plural returns an (never-null) array: miss on empty, else element 0 via
-            // System.Array.GetValue(int) — same overload-exact path as ArrayGet.
+            // System.Array.GetValue(int) - same overload-exact path as ArrayGet.
             if (found == nullptr || g_api.array_length == nullptr) {
                 if (req->ret != nullptr) {
                     req->ret->type = TideType_Object;
@@ -1296,7 +1296,7 @@ int tide_object_op(void* arg) {
 
         case TideCall_ArrayGet: {
             // args[0] = array handle, args[1] = I32 index. Reads via System.Array.GetValue(int),
-            // which returns a BOXED element — no MonoArray-layout assumptions, safe for
+            // which returns a BOXED element - no MonoArray-layout assumptions, safe for
             // value-type, enum, string and reference arrays alike.
             if (req->arg_count < 2 || req->args[0].type != TideType_Object ||
                 req->args[1].type != TideType_I32 || g_api.array_length == nullptr) {
@@ -1405,7 +1405,7 @@ int tide_object_op(void* arg) {
         case TideCall_ArraySet: {
             // args[0] = array handle, args[1] = I32 index, args[2] = value. Writes via
             // System.Array.SetValue(object, int), which handles boxing/unboxing for every
-            // array kind — safe for value-type and reference arrays alike.
+            // array kind - safe for value-type and reference arrays alike.
             if (req->arg_count < 3 || req->args[0].type != TideType_Object ||
                 req->args[1].type != TideType_I32 || g_api.array_length == nullptr) {
                 return -1;
@@ -1557,7 +1557,7 @@ extern "C" __declspec(dllexport) int nami_tide_object_op_batch(void* batch) {
 }
 
 // Export: run a CallRequest on the game main thread inside its window procedure
-// (frame boundary — no runtime_invoke on the stack). Use for Unity scene-iteration
+// (frame boundary - no runtime_invoke on the stack). Use for Unity scene-iteration
 // APIs (Object.FindObjectOfType etc.): the invoke drain (pre- AND post-queue) still
 // nests inside the game's in-flight invoke, which Unity aborts with 0xe0000001.
 // Must be called from a NON-main thread (the window message is pumped at frame

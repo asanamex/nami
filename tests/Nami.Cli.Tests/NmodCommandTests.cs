@@ -6,7 +6,7 @@ using Nami.Cli.Commands;
 namespace Nami.Cli.Tests;
 
 /// <summary>
-/// `nami nmod info|install` — .nmod package distribution (manifest info; verified install
+/// `nami nmod info|install` - .nmod package distribution (manifest info; verified install
 /// into a game root's mods/ with incompatibility refusal and dependency warnings).
 /// </summary>
 public sealed class NmodCommandTests : IDisposable

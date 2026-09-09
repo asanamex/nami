@@ -5,23 +5,23 @@ using Nami.Wave.Internal;
 namespace Nami.Wave;
 
 /// <summary>
-/// Wave — Nami's runtime patching engine.
+/// Wave - Nami's runtime patching engine.
 ///
-/// Two engines share one detour core (<see cref="Internal.Detour"/>):
+/// One chain per target method, two serving strategies sharing one detour core
+/// (<see cref="Internal.Detour"/>):
 ///
-/// M1 — native-stub dispatch (this file):
-///   - x64 inline detours on managed methods (safe prologue relocation, exact restore).
-///   - Multiple owners per target; callbacks run in chain (LIFO, newest first).
-///     - Shapes: a "gate" (<c>Func&lt;bool&gt;</c> — return true to skip the original) and an
-///     "observer" (<c>Action</c> — runs before the original or before a skip).
-///   - The original method runs through the detour trampoline with the ORIGINAL arguments
-///     intact — no marshaling, no allocation on the hot path.
-///   - Scope: parameterless void methods (the IL-copy engine below covers the rest).
+/// Fast - native stub (blueprints A/B/D, see <see cref="WaveFast"/>): prefix-only
+///   hooks run in one managed dispatch, then the original runs via tail-jump (or a
+///   type-default returns on skip). No IL copy, no extra assembly, the original code
+///   keeps its JIT state. Serves prefix-only hooks on GC-tracking-free shapes.
+/// ILCopy - Harmony-style IL-copy patching (Wave.Patch.cs): the target's IL is copied
+///   into a generated method with prefix/postfix calls injected, so ANY signature and
+///   any hook shape (postfix, ref result, transpilers, instance) works.
 ///
-/// M2 — Harmony-style IL-copy patching (Wave.Patch.cs):
-///   - Copies the target's IL into a generated method and injects prefix/postfix calls, so
-///     ANY signature is patchable: value returns, arguments, instance methods, ref
-///     rewriting, skip semantics. See <see cref="Patch(MethodBase, string, Delegate, Delegate)"/>.
+/// <see cref="Patch"/> picks the cheapest strategy that satisfies what was requested
+/// and upgrades/downgrades the site transparently as owners come and go.
+/// <see cref="Hook"/> is the legacy entry point: parameterless void targets only, kept
+/// bit-identical (LIFO chain order) and deprecated in favor of Patch.
 ///
 /// No Harmony/MonoMod/Cecil anywhere.
 /// </summary>
@@ -31,42 +31,86 @@ public static unsafe partial class Wave
     public sealed class HookException : Exception
     {
         public HookException(string message) : base(message) { }
+        public HookException(string message, Exception inner) : base(message, inner) { }
+    }
+
+    /// <summary>Which entry point registered a chain entry (drives default ordering).</summary>
+    internal enum ApiSource : byte { Hook, Patch }
+
+    /// <summary>One prefix-chain item on the fast path: hook + prebuilt invoker.</summary>
+    internal sealed class FastPreItem
+    {
+        public required object Hook;
+        public required WaveFast.FastPreInvoker Invoker;
+        /// <summary>True when the invoker never reads the spill block.</summary>
+        public required bool Blind;
+    }
+
+    internal sealed class WaveChainEntry
+    {
+        public required string Owner;
+        public required ApiSource Source;
+        public required int Seq;
+        public Func<bool>? Gate;          // Hook-source
+        public Action? Observer;          // Hook-source
+        public Delegate? Prefix;          // Patch-source
+        public Delegate? Postfix;         // Patch-source (forces ILCopy)
+        public bool PrefixBlind;          // Prefix observes no arguments
+        public WaveFast.FastPreInvoker? GateInvoker;
+        public WaveFast.FastPreInvoker? ObserverInvoker;
+        public WaveFast.FastPreInvoker? PrefixInvoker; // null when not fast-bindable
+        public List<WaveTranspiler> Transpilers { get; } = new(); // forces ILCopy
+
+        /// <summary>True when this entry can be served by the fast stub.</summary>
+        public bool FastOk =>
+            Transpilers.Count == 0 && Postfix is null &&
+            (Source == ApiSource.Hook || Prefix is null || PrefixInvoker is not null);
+    }
+
+    internal sealed class WaveSite
+    {
+        public required MethodBase Method;
+        public required IntPtr Code;
+        public required WaveFast.FastShape? Shape; // null = never fast-eligible
+        public Detour? Detour;
+        public readonly List<WaveChainEntry> Entries = new();
+        public int NextSeq;
+        public bool IsFast; // current strategy
+        public FastPreItem[] Chain = [];
+        public IntPtr Stub;      // fast stub (A/B/D), built once
+        public nuint StubSize;
+        public bool StubBuilt;
+        public GCHandle SelfHandle;
+        public IlBody? Body;     // analyzed lazily for ILCopy builds
+        public MethodInfo? Patched;
+        public IntPtr PatchedEntry;
+        // A-blueprint fields (today's M1 stub shape, kept byte-identical).
+        public IntPtr Trampoline;
+        public IntPtr SkipTrampoline;
+        public bool FrameSafe;
+        public bool DispatcherReady;
     }
 
     private static readonly Lock RegistryLock = new();
-    private static readonly Dictionary<MethodBase, HookSite> Sites = new();
+    private static readonly Dictionary<MethodBase, WaveSite> UnifiedSites = new();
 
-    private sealed class HookSite(MethodBase method, IntPtr code)
-    {
-        public readonly MethodBase Method = method;
-        public readonly IntPtr Code = code;
-        public Detour? Detour;
-        public readonly List<HookEntry> Entries = new();
-        public IntPtr Dispatcher;      // native per-site stub
-        public nuint StubSize;
-        public bool DispatcherReady;
-        public GCHandle SelfHandle;    // GC-safe handle to this site, passed through the stub
-        public IntPtr Trampoline;      // set once the detour exists
-        public IntPtr SkipTrampoline;  // set once the detour exists (zero for leaf prologues)
-        public bool FrameSafe;         // true when the prologue is a leaf (gate skip allowed)
-    }
-
-    private sealed class HookEntry
-    {
-        public required string Owner;
-        public Func<bool>? Gate;
-        public Action? Observer;
-    }
-
-    // The managed dispatch entry invoked by every site stub: takes the site's GC handle
-    // (as an IntPtr — never a raw object ref across native), runs the chain, returns
-    // "skip original?". Kept as a delegate so we can resolve its native address.
-    private delegate bool DispatchSiteNative(IntPtr siteHandle);
-    private static readonly DispatchSiteNative DispatchEntry = DispatchSite;
+    // The managed dispatch entry invoked by every fast stub: takes the site's GC handle
+    // (as an IntPtr - never a raw object ref across native) plus the spill block (null
+    // for blueprint A, whose items are blind by construction), runs the sorted prefix
+    // chain, returns "skip original?". Resolved once for its native address.
+    private delegate int FastPreNative(IntPtr siteHandle, IntPtr block);
+    private static readonly FastPreNative FastPreEntry = FastPre;
+    private static IntPtr s_fastPrePtr;
+    private static bool s_fastPreReady;
 
     // ------------------------------------------------------------ public API
 
-    /// <summary>Hooks a parameterless void method for <paramref name="owner"/>.</summary>
+    /// <summary>
+    /// Hooks a parameterless void method for <paramref name="owner"/>.
+    /// Legacy entry point (deprecated in favor of <see cref="Patch"/>): scope and LIFO
+    /// chain order are frozen. Shares the unified chain, so Hook and Patch entries on
+    /// the same method compose instead of refusing each other.
+    /// </summary>
     public static void Hook(MethodBase target, string owner, Func<bool>? gate = null, Action? observer = null)
     {
         ArgumentNullException.ThrowIfNull(target);
@@ -78,41 +122,59 @@ public static unsafe partial class Wave
 
         lock (RegistryLock)
         {
-            var site = GetOrCreateSite(target);
-            if (site.Entries.Any(e => e.Owner == owner))
+            // Frozen scope: parameterless void only (anything else is Patch's job).
+            if (target is MethodInfo mi && mi.ReturnType != typeof(void))
+            {
+                throw new HookException($"Wave M1 supports void-returning methods only; {target} returns {mi.ReturnType}");
+            }
+
+            if (target.GetParameters().Length != 0)
+            {
+                throw new HookException($"Wave M1 supports parameterless methods only; {target} has parameters");
+            }
+
+            var site = GetOrCreateUnifiedSite(target);
+            if (site.Entries.Any(e => e.Owner == owner && e.Source == ApiSource.Hook))
             {
                 throw new InvalidOperationException($"owner '{owner}' already hooked {target}");
             }
 
-            // Newest first (LIFO).
-            site.Entries.Insert(0, new HookEntry { Owner = owner, Gate = gate, Observer = observer });
-
-            if (site.Detour is null)
+            var entry = new WaveChainEntry { Owner = owner, Source = ApiSource.Hook, Seq = site.NextSeq++ };
+            if (gate is not null)
             {
-                var detour = Detour.TryCreate(site.Code);
-                if (detour is null)
-                {
-                    site.Entries.RemoveAt(0);
-                    if (site.Entries.Count == 0)
-                    {
-                        Sites.Remove(target);
-                    }
-
-                    throw new HookException($"cannot hook {target}: prologue not relocatable at {site.Code.ToInt64():X}");
-                }
-
-                site.Detour = detour;
-                site.Trampoline = detour.Trampoline;
-                site.SkipTrampoline = detour.SkipTrampoline;
-                site.FrameSafe = detour.FrameSafe;
-
-                // The dispatcher stub needs the trampoline addresses; build it, then point
-                // the detour at the dispatcher and install.
-                var dispatcher = BuildDispatcher(site);
-                detour.Retarget(dispatcher);
-                detour.Install();
+                entry.Gate = gate;
+                entry.GateInvoker = MakeBlindInvoker(gate, site);
+                System.Runtime.CompilerServices.RuntimeHelpers.PrepareDelegate(gate);
+                WaveFast.WarmInvoker(entry.GateInvoker, gate);
+            }
+            if (observer is not null)
+            {
+                entry.Observer = observer;
+                entry.ObserverInvoker = MakeBlindInvoker(observer, site);
+                System.Runtime.CompilerServices.RuntimeHelpers.PrepareDelegate(observer);
+                WaveFast.WarmInvoker(entry.ObserverInvoker, observer);
+            }
+            site.Entries.Add(entry);
+            try
+            {
+                RebuildSite(site);
+            }
+            catch
+            {
+                RollbackSite(site, entry);
+                throw;
             }
         }
+    }
+
+    /// <summary>Builds a fast invoker for a parameterless hook (gate or observer).</summary>
+    private static WaveFast.FastPreInvoker MakeBlindInvoker(Delegate hook, WaveSite site)
+    {
+        // Hook scope guarantees the A shape (void(), no params): the binding is empty.
+        var shape = site.Shape ?? throw new HookException($"cannot hook {site.Method}: unsupported shape");
+        bool vote = hook is Func<bool>;
+        return WaveFast.MakeInvoker(hook, shape,
+            new WaveFast.FastHookBinding { Slots = [], ReturnsVote = vote, VoteIfTrue = vote });
     }
 
     public static void Unhook(MethodBase target, string owner)
@@ -121,33 +183,23 @@ public static unsafe partial class Wave
 
         lock (RegistryLock)
         {
-            if (!Sites.TryGetValue(target, out var site))
+            if (!UnifiedSites.TryGetValue(target, out var site))
             {
                 return;
             }
 
-            var removed = site.Entries.RemoveAll(e => e.Owner == owner);
-            if (removed == 0)
+            if (site.Entries.RemoveAll(e => e.Owner == owner) == 0)
             {
                 return;
             }
 
             if (site.Entries.Count == 0)
             {
-                site.Detour?.Uninstall();
-                site.Detour?.Dispose();
-                site.Detour = null;
-                if (site.Dispatcher != IntPtr.Zero)
-                {
-                    RawMemory.FreeExecutable((byte*)site.Dispatcher, site.StubSize);
-                }
-
-                if (site.SelfHandle.IsAllocated)
-                {
-                    site.SelfHandle.Free();
-                }
-
-                Sites.Remove(target);
+                TeardownSite(site);
+            }
+            else
+            {
+                RebuildSite(site);
             }
         }
     }
@@ -157,7 +209,7 @@ public static unsafe partial class Wave
         List<MethodBase> keys;
         lock (RegistryLock)
         {
-            keys = Sites.Where(kv => kv.Value.Entries.Any(e => e.Owner == owner))
+            keys = UnifiedSites.Where(kv => kv.Value.Entries.Any(e => e.Owner == owner))
                 .Select(kv => kv.Key).ToList();
         }
 
@@ -171,104 +223,240 @@ public static unsafe partial class Wave
     {
         lock (RegistryLock)
         {
-            return Sites.TryGetValue(target, out var site) && site.Entries.Any(e => e.Owner == owner);
+            return UnifiedSites.TryGetValue(target, out var site) && site.Entries.Any(e => e.Owner == owner);
         }
     }
 
     public static void UnhookEverything()
     {
-        List<MethodBase> keys;
+        List<WaveSite> sites;
         lock (RegistryLock)
         {
-            keys = Sites.Keys.ToList();
+            sites = UnifiedSites.Values.ToList();
         }
 
-        foreach (var k in keys)
+        foreach (var site in sites)
         {
-            // Remove every hook on this target, whatever the owner.
             lock (RegistryLock)
             {
-                if (!Sites.TryGetValue(k, out var site))
+                if (!UnifiedSites.ContainsValue(site))
                 {
                     continue;
                 }
-
-                site.Entries.Clear();
-                site.Detour?.Uninstall();
-                site.Detour?.Dispose();
-                site.Detour = null;
-                if (site.Dispatcher != IntPtr.Zero)
-                {
-                    RawMemory.FreeExecutable((byte*)site.Dispatcher, site.StubSize);
-                }
-
-                if (site.SelfHandle.IsAllocated)
-                {
-                    site.SelfHandle.Free();
-                }
-
-                Sites.Remove(k);
+                TeardownSite(site);
             }
         }
     }
 
-    // ------------------------------------------------------------ internals
+    // ------------------------------------------------------------ unified sites
 
-    private static HookSite GetOrCreateSite(MethodBase target)
+    private static WaveSite GetOrCreateUnifiedSite(MethodBase target, string verb = "hook")
     {
-        if (Sites.TryGetValue(target, out var existing))
+        if (UnifiedSites.TryGetValue(target, out var existing))
         {
             return existing;
-        }
-
-        // A method can be M1-hooked or M2-patched, never both (each installs its own detour
-        // on the same prologue). M1 covers parameterless void; M2 covers everything else.
-        if (M2Sites.ContainsKey(target))
-        {
-            throw new HookException($"cannot hook {target}: an M2 patch is already installed on it");
-        }
-
-        // Scope check (M1): parameterless void only.
-        if (target is MethodInfo mi && mi.ReturnType != typeof(void))
-        {
-            throw new HookException($"Wave M1 supports void-returning methods only; {target} returns {mi.ReturnType}");
-        }
-
-        if (target.GetParameters().Length != 0)
-        {
-            throw new HookException($"Wave M1 supports parameterless methods only; {target} has parameters");
         }
 
         var addr = NativeInterop.GetCodeAddress(target);
         if (addr == IntPtr.Zero)
         {
-            ThrowForOpenGeneric(target, "hook");
+            ThrowForOpenGeneric(target, verb);
         }
 
-        var site = new HookSite(target, addr);
-        Sites[target] = site;
+        var site = new WaveSite
+        {
+            Method = target,
+            Code = addr,
+            Shape = WaveFast.AnalyzeShape(target),
+        };
+        UnifiedSites[target] = site;
         return site;
     }
 
+    /// <summary>
+    /// Prefix-chain order: Hook entries sort by decreasing sequence (LIFO, bit-identical
+    /// to the legacy M1 chain); Patch entries sort oldest-first (M2 order). Hook's
+    /// negative priorities always sort before Patch's zero, so mixed chains are
+    /// deterministic too.
+    /// </summary>
+    private static List<FastPreItem> BuildPreChain(WaveSite site)
+    {
+        var items = new List<(int Priority, int Seq, int Bias, FastPreItem Item)>();
+        foreach (var e in site.Entries)
+        {
+            int priority = e.Source == ApiSource.Hook ? -(e.Seq + 1) : 0;
+            if (e.GateInvoker is not null)
+            {
+                items.Add((priority, e.Seq, 0, new FastPreItem { Hook = e.Gate!, Invoker = e.GateInvoker, Blind = true }));
+            }
+            if (e.ObserverInvoker is not null)
+            {
+                items.Add((priority, e.Seq, 1, new FastPreItem { Hook = e.Observer!, Invoker = e.ObserverInvoker, Blind = true }));
+            }
+            if (e.PrefixInvoker is not null)
+            {
+                items.Add((priority, e.Seq, 0, new FastPreItem { Hook = e.Prefix!, Invoker = e.PrefixInvoker, Blind = e.PrefixBlind }));
+            }
+        }
+        // Stable sort: same-key items keep materialization order (gate before observer).
+        return items.OrderBy(t => t.Priority).ThenBy(t => t.Seq).ThenBy(t => t.Bias)
+            .Select(t => t.Item).ToList();
+    }
+
+    private static void RebuildSite(WaveSite site)
+    {
+        lock (RegistryLock)
+        {
+            site.Detour ??= Detour.TryCreate(site.Code)
+                ?? throw new HookException($"cannot hook {site.Method}: prologue not relocatable at {site.Code.ToInt64():X}");
+            site.Trampoline = site.Detour.Trampoline;
+            site.SkipTrampoline = site.Detour.SkipTrampoline;
+            site.FrameSafe = site.Detour.FrameSafe;
+
+            bool fastOk = site.Shape is not null
+                && site.Detour.TrampolinesSound
+                && site.Entries.All(e => e.FastOk);
+            if (fastOk)
+            {
+                site.Chain = BuildPreChain(site).ToArray();
+                EnsureFastStub(site);
+                site.IsFast = true;
+                site.Detour.Uninstall();
+                site.Detour.Retarget(site.Stub);
+                site.Detour.Install();
+            }
+            else
+            {
+                RebuildIlCopy(site);
+                site.IsFast = false;
+            }
+        }
+    }
+
+    /// <summary>Rolls back a failed rebuild so a site never claims a patch its body doesn't carry.</summary>
+    private static void RollbackSite(WaveSite site, WaveChainEntry entry)
+    {
+        site.Entries.Remove(entry);
+        if (site.Entries.Count == 0)
+        {
+            TeardownSite(site);
+        }
+    }
+
+    private static void TeardownSite(WaveSite site)
+    {
+        lock (RegistryLock)
+        {
+            site.Detour?.Uninstall();
+            site.Detour?.Dispose();
+            site.Detour = null;
+            if (site.Stub != IntPtr.Zero)
+            {
+                RawMemory.FreeExecutable((byte*)site.Stub, site.StubSize);
+                site.Stub = IntPtr.Zero;
+                site.StubBuilt = false;
+            }
+            site.DispatcherReady = false;
+
+            if (site.SelfHandle.IsAllocated)
+            {
+                site.SelfHandle.Free();
+            }
+
+            UnifiedSites.Remove(site.Method);
+        }
+    }
+
+    private static void EnsureFastStub(WaveSite site)
+    {
+        if (site.StubBuilt)
+        {
+            return;
+        }
+        if (!site.SelfHandle.IsAllocated)
+        {
+            site.SelfHandle = GCHandle.Alloc(site, GCHandleType.Normal);
+        }
+        if (site.Shape!.Blueprint == 'A' || UseBlueprintA(site))
+        {
+            site.Stub = BuildDispatcher(site);
+        }
+        else
+        {
+            EnsureFastPreAddress();
+            // Near-jump sites can only reach ±2GB: the stub must be allocated near.
+            var near = site.Detour!.IsNearJump ? site.Code : IntPtr.Zero;
+            var (stub, size) = WaveFast.BuildStub(
+                site.Shape, GCHandle.ToIntPtr(site.SelfHandle), s_fastPrePtr, site.Detour!.Trampoline, near);
+            site.Stub = stub;
+            site.StubSize = size;
+        }
+        site.StubBuilt = true;
+    }
+
+    /// <summary>
+    /// True when the legacy A-form stub can serve the site: every chain item is
+    /// slotless (blind hooks, so no spill block is needed), every param is int-kind
+    /// (the managed dispatch clobbers xmm0-3), and the return is void (A's skip path
+    /// runs the relocated prologue and returns whatever it leaves - only sound when
+    /// nothing is returned). Anything else takes the B/D stub with typed skip defaults.
+    /// </summary>
+    private static bool UseBlueprintA(WaveSite site)
+    {
+        if (site.Shape!.Return != WaveFast.ReturnKind.Void)
+        {
+            return false;
+        }
+        if (site.Shape!.ParamKinds.Any(k => k != WaveFast.SlotKind.Int))
+        {
+            return false;
+        }
+        return site.Chain.All(i => i.Blind);
+    }
+
+    private static void EnsureFastPreAddress()
+    {
+        if (s_fastPreReady)
+        {
+            return;
+        }
+        var ptr = (byte*)NativeInterop.GetCodeAddress(FastPreEntry.Method);
+        if (ptr == null)
+        {
+            throw new HookException("cannot resolve Wave fast dispatch entry");
+        }
+        s_fastPrePtr = (IntPtr)ptr;
+        s_fastPreReady = true;
+    }
+
     /// <summary>Builds the per-site native stub (once).</summary>
-    private static IntPtr BuildDispatcher(HookSite site)
+    private static IntPtr BuildDispatcher(WaveSite site)
     {
         if (site.DispatcherReady)
         {
-            return site.Dispatcher;
+            return site.Stub;
         }
 
-        site.SelfHandle = GCHandle.Alloc(site, GCHandleType.Normal);
+        if (!site.SelfHandle.IsAllocated)
+        {
+            site.SelfHandle = GCHandle.Alloc(site, GCHandleType.Normal);
+        }
 
         // Managed dispatch entry address.
-        var dispatchPtr = (byte*)NativeInterop.GetCodeAddress(DispatchEntry.Method);
-        if (dispatchPtr == null)
-        {
-            throw new HookException("cannot resolve Wave dispatch entry");
-        }
+        EnsureFastPreAddress();
+        var dispatchPtr = (byte*)s_fastPrePtr;
 
         // Stub layout: preserve arg regs, call dispatch, branch on skip.
-        var stub = (byte*)RawMemory.AllocExecutable(160);
+        // Near-jump sites can only reach ±2GB (same rule as the B/D emitter).
+        void* mem = site.Detour!.IsNearJump
+            ? RawMemory.TryAllocExecutableNear((void*)site.Code, 160)
+            : RawMemory.AllocExecutable(160);
+        if (mem == null)
+        {
+            throw new HookException(
+                $"cannot allocate dispatch stub within reach of {site.Code.ToInt64():X} (near-jump site)");
+        }
+        var stub = (byte*)mem;
         int o = 0;
 
         // push rcx; push rdx; push r8; push r9  (preserve original argument registers)
@@ -315,7 +503,7 @@ public static unsafe partial class Wave
         }
 
         // -- runOriginal: restore registers, tail-jump to the trampoline (original runs with
-        //    its original arguments on the caller's stack — exceptions unwind naturally).
+        //    its original arguments on the caller's stack - exceptions unwind naturally).
         int runOff = o;
         // add rsp, 40
         stub[o++] = 0x48; stub[o++] = 0x83; stub[o++] = 0xC4; stub[o++] = 40;
@@ -336,42 +524,43 @@ public static unsafe partial class Wave
 
         RawMemory.FlushCode(stub, (nuint)o);
         RawMemory.MakeExecutable(stub, (nuint)o);
-        site.Dispatcher = (IntPtr)stub;
+        site.Stub = (IntPtr)stub;
         site.StubSize = (nuint)o;
         site.DispatcherReady = true;
-        return site.Dispatcher;
+        return site.Stub;
     }
 
-    /// <summary>Managed dispatch: runs the chain; returns true if the original must be skipped.</summary>
-    private static bool DispatchSite(IntPtr siteHandle)
+    /// <summary>
+    /// Managed dispatch for every fast stub: runs the sorted prefix chain; returns 1 if
+    /// the original must be skipped. A throwing callback is swallowed (best-effort): we
+    /// are mid-native-stub on the hook path, and an exception crossing that boundary
+    /// would corrupt the process. The game must not die because a mod callback threw.
+    ///
+    /// Hot-path contract: everything reachable from here must already be JIT-compiled
+    /// (hooks and invokers are pre-JITted with PrepareDelegate at registration) and must
+    /// not allocate on first call - compilation or GC stack activity while a GC-info-less
+    /// stub frame is live is fatal. Keep this body allocation-free.
+    /// </summary>
+    private static int FastPre(IntPtr siteHandle, IntPtr block)
     {
         if (siteHandle == IntPtr.Zero)
         {
-            return false;
+            return 0;
         }
 
-        var site = (HookSite)GCHandle.FromIntPtr(siteHandle).Target!;
-        bool skip = false;
-        // Chain, LIFO (entries[0] is the most recent hook).
-        foreach (var entry in site.Entries)
+        var site = (WaveSite)GCHandle.FromIntPtr(siteHandle).Target!;
+        int skip = 0;
+        var chain = site.Chain;
+        for (int i = 0; i < chain.Length; i++)
         {
             try
             {
-                if (entry.Gate is not null && entry.Gate())
-                {
-                    skip = true;
-                }
-
-                entry.Observer?.Invoke();
+                skip |= chain[i].Invoker(chain[i].Hook, block);
             }
             catch
             {
-                // A throwing user callback must not corrupt the dispatch; the exception is
-                // swallowed here because we are mid-native-stub on the hook path. The game
-                // must not die because a mod callback threw. (Observers run best-effort.)
             }
         }
-
         return skip;
     }
 }

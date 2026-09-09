@@ -178,7 +178,7 @@ int execute_op(void* arg) {
     }
 
     // This op runs on the game's MAIN thread (via the mono_runtime_invoke drain hook),
-    // where Mono's GC is fully set up — no incremental-GC toggling needed.
+    // where Mono's GC is fully set up - no incremental-GC toggling needed.
 
     switch (ctx->op) {
         case TideOp_UnityLog: {

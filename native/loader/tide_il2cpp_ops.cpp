@@ -4,7 +4,7 @@
 // IL2CPP runtime so the managed Nami.Tide API behaves identically on IL2CPP titles.
 //
 // IL2CPP API notes (empirically verified):
-//   - il2cpp_domain_assembly_open returns an Il2CppAssembly* — the IMAGE comes from
+//   - il2cpp_domain_assembly_open returns an Il2CppAssembly* - the IMAGE comes from
 //     il2cpp_assembly_get_image(assembly).
 //   - class/method/field lookups are safe on the main thread inside the window proc.
 //   - Objects are kept alive with il2cpp_gchandle_new (the IL2CPP GC).
@@ -97,7 +97,7 @@ struct Il2CppApi {
     void* (*class_get_element_class)(void*) = nullptr;
     int (*class_is_valuetype)(void*) = nullptr;
     // IL2CPP GC handles are FULL 64-bit page-table indices (get_target masks the low 21
-    // bits: `and rdi, ~0x1FFFFF`). Truncating to 32 bits AVs on lookup — same class of bug
+    // bits: `and rdi, ~0x1FFFFF`). Truncating to 32 bits AVs on lookup - same class of bug
     // as Unity 6 Mono's gchandle truncation. Keep them pointer-sized end to end.
     uint64_t (*gchandle_new)(void*, int32_t) = nullptr;
     void* (*gchandle_get_target)(uint64_t) = nullptr;
@@ -385,9 +385,9 @@ void* find_field_in_hierarchy_uncached(void* klass, const char* name) {
 }
 
 // ---------------------------------------------------------------------------
-// Cached resolution wrappers — THE call path used by the ops (see the Mono twin
+// Cached resolution wrappers - THE call path used by the ops (see the Mono twin
 // in tide_objects.cpp). IL2CPP metadata is process-lifetime, so results (incl.
-// negative) are cached for the loader's lifetime. kind_tags: kTagIl2CppBase —
+// negative) are cached for the loader's lifetime. kind_tags: kTagIl2CppBase -
 // distinct from the Mono backend's kTagMonoBase.
 // ---------------------------------------------------------------------------
 
@@ -606,7 +606,7 @@ void write_ret(nami::tide::TideValue* ret, void* result) {
     // Is the result a string? (Il2CppString is an object whose class is System.String.)
     if (g_api.string_length != nullptr && ret->type == TideType_String) {
         // runtime_invoke returns boxed values for value types; strings come back as
-        // Il2CppString*. Check if it LOOKS like a string: try string_length — safe via
+        // Il2CppString*. Check if it LOOKS like a string: try string_length - safe via
         // class check instead.
         void* cls = g_api.object_get_class(result);
         void* str_cls = nullptr;
@@ -757,7 +757,7 @@ void* box_primitive(const nami::tide::TideValue& v) {
 }
 
 // Resolves an exception's ToString into the request error_message (UTF-8, truncated).
-// NOTE: il2cpp_format_exception crashes in the window-proc context (verified) — instead
+// NOTE: il2cpp_format_exception crashes in the window-proc context (verified) - instead
 // invoke System.Exception.ToString() on the exception object, a normal runtime_invoke.
 void capture_exception(nami::tide::CallRequest& req, void* exc) {
     if (exc == nullptr) {
@@ -1182,7 +1182,7 @@ int il2cpp_object_op_impl(nami::tide::CallRequest* req) {
                 return -2;
             }
             // Plural returns an (never-null) array: miss on empty, else element 0
-            // (reference array — direct slot read, same as ArrayGet).
+            // (reference array - direct slot read, same as ArrayGet).
             void* element = nullptr;
             if (found != nullptr && g_api.array_length != nullptr &&
                 g_api.array_length(found) > 0 && array_element_is_reference(found)) {
@@ -1425,7 +1425,7 @@ extern "C" __declspec(dllexport) int nami_il2cpp_object_op(void* request) {
 }
 
 // Export: run a BATCH of CallRequests in ONE main-thread round trip (the IL2CPP
-// twin of nami_tide_object_op_batch — same contract: every op executes, per-op
+// twin of nami_tide_object_op_batch - same contract: every op executes, per-op
 // codes land in batch.codes[i], returns 0 when the batch ran).
 extern "C" __declspec(dllexport) int nami_il2cpp_object_op_batch(void* batch) {
     using nami::tide::BatchRequest;

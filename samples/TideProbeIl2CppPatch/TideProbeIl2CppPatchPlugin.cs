@@ -8,7 +8,7 @@ namespace Nami.Samples.TideProbeIl2CppPatch;
 /// install + pass-through (trampoline preserves the original result), skip semantics,
 /// exact restore on unhook, and an organic per-frame hook the game itself drives.
 ///
-/// All assertions are driven by the probe itself via Tide — deterministic, no game
+/// All assertions are driven by the probe itself via Tide - deterministic, no game
 /// behavior is assumed:
 ///   A. baseline: System.Environment.get_TickCount returns real values (no hook)
 ///   B. hook + pass-through: 5 calls return real values AND fire the callback
@@ -16,7 +16,7 @@ namespace Nami.Samples.TideProbeIl2CppPatch;
 ///   D. unhook: exact restore, real values again
 ///   E. organic: UnityEngine.Time.get_deltaTime hooked pass-through; count fires the
 ///      game's own per-frame reads over ~3 seconds (honest report if the game reads 0)
-///   F. full path: System.Math.Max(int,int) hooked with HookFull — the postfix observes
+///   F. full path: System.Math.Max(int,int) hooked with HookFull - the postfix observes
 ///      the REAL result (2-arg call, kind I32), then a rewrite phase makes the caller
 ///      receive a different value while the postfix still saw the original
 /// </summary>
@@ -29,7 +29,7 @@ public sealed unsafe class TideProbeIl2CppPatchPlugin : NamiPlugin
     private int _stage;
     private bool _skip;
 
-    // Hook-fired counters (callback runs on the game's main thread — Interlocked only).
+    // Hook-fired counters (callback runs on the game's main thread - Interlocked only).
     private int _passThroughFires;
     private int _organicFires;
     private long _organicStartMs;
@@ -100,7 +100,7 @@ public sealed unsafe class TideProbeIl2CppPatchPlugin : NamiPlugin
         {
             case 0:
             {
-                // A. Baseline — the un-hooked get_TickCount returns real millisecond values.
+                // A. Baseline - the un-hooked get_TickCount returns real millisecond values.
                 _env = GameClass.Resolve("mscorlib", "System", "Environment");
                 var values = new List<int>();
                 for (var i = 0; i < 5; i++)
@@ -128,7 +128,7 @@ public sealed unsafe class TideProbeIl2CppPatchPlugin : NamiPlugin
 
             case 2:
             {
-                // B2. Pass-through — every call must both fire the callback AND return a real value.
+                // B2. Pass-through - every call must both fire the callback AND return a real value.
                 _passThroughFires = 0;
                 var values = new List<int>();
                 for (var i = 0; i < 5; i++)
@@ -147,7 +147,7 @@ public sealed unsafe class TideProbeIl2CppPatchPlugin : NamiPlugin
 
             case 3:
             {
-                // C. Skip — the callback returns true; the original is never called and 0 is returned.
+                // C. Skip - the callback returns true; the original is never called and 0 is returned.
                 _skip = true;
                 var skipped = _env!.CallStaticValue("get_TickCount", Array.Empty<TideValue>(), TideType.I32).Int32;
                 _skip = false;
@@ -159,7 +159,7 @@ public sealed unsafe class TideProbeIl2CppPatchPlugin : NamiPlugin
 
             case 4:
             {
-                // D. Unhook — exact byte restore: real values again without the callback firing.
+                // D. Unhook - exact byte restore: real values again without the callback firing.
                 _passThroughFires = 0;
                 _tickHook!.Dispose();
                 _tickHook = null;
@@ -174,7 +174,7 @@ public sealed unsafe class TideProbeIl2CppPatchPlugin : NamiPlugin
 
             case 5:
             {
-                // E. Organic — hook a per-frame method the GAME calls; count fires over ~3 s.
+                // E. Organic - hook a per-frame method the GAME calls; count fires over ~3 s.
                 if (_deltaHook is null)
                 {
                     _deltaHook = WaveIl2Cpp.Hook("UnityEngine.CoreModule", "UnityEngine", "Time",
@@ -201,7 +201,7 @@ public sealed unsafe class TideProbeIl2CppPatchPlugin : NamiPlugin
             {
                 // F1. Full-path install + pass-through: HookFull with a postfix only.
                 // Math.Max(3,7) must return 7 AND the postfix must observe 7 (2 register
-                // args, i32 result — the result slot/rax path).
+                // args, i32 result - the result slot/rax path).
                 _maxHook = WaveIl2Cpp.HookFull("mscorlib", "System", "Math", "Max", 2,
                     WaveIl2Cpp.Il2CppReturnKind.I32, prefix: null, postfix: OnMaxPostfix,
                     "tideprobe-il2cpp-patch");
@@ -236,7 +236,7 @@ public sealed unsafe class TideProbeIl2CppPatchPlugin : NamiPlugin
                     new[] { TideValue.FromInt(3), TideValue.FromInt(7) }, TideType.I32).Int32;
                 _rewriteMax = false;
                 // NOTE: the resolved Max overload is byte-returning, so the caller
-                // reads only al — a rewritten slot value is observable only through
+                // reads only al - a rewritten slot value is observable only through
                 // its low byte (0x1C0FFEE -> 0xEE = 238). The postfix saw the REAL
                 // 7 before the rewrite, which is the actual proof of the mechanism.
                 const int sentinel = 0x1C0FFEE;
@@ -246,7 +246,7 @@ public sealed unsafe class TideProbeIl2CppPatchPlugin : NamiPlugin
                     ? "[F rewrite] PASS — postfix rewrote the result after the original ran"
                     : "[F rewrite] FAIL");
 
-                // F3. Unhook — exact restore, postfix no longer fires.
+                // F3. Unhook - exact restore, postfix no longer fires.
                 _maxHook!.Dispose();
                 _maxHook = null;
                 _maxPostfixFires = 0;
@@ -262,7 +262,7 @@ public sealed unsafe class TideProbeIl2CppPatchPlugin : NamiPlugin
 
             case 9:
             {
-                // G. TideBatch — N game ops in ONE main-thread round trip. Time 8
+                // G. TideBatch - N game ops in ONE main-thread round trip. Time 8
                 // sequential (one-hop-per-op) calls against one batched flush of 8 ops.
                 var env = _env!;
 

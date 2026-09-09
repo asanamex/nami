@@ -6,7 +6,7 @@ namespace Nami;
 /// <summary>
 /// Batched Tide operations: enqueue N game-side ops, then <see cref="Flush"/> them in ONE
 /// main-thread round trip. A mod that reads five fields per tick pays one thread hop
-/// instead of five — on bridges like this the hop, not the marshaling, is the dominant
+/// instead of five - on bridges like this the hop, not the marshaling, is the dominant
 /// per-call cost.
 ///
 /// Usage pattern (mirrors the sync GameClass/GameObject API, deferred):
@@ -154,7 +154,7 @@ public sealed unsafe class TideBatch : IDisposable
     /// Runs every enqueued op on the game main thread in ONE round trip and stores the
     /// results. Throws <see cref="InvalidOperationException"/> when the loader is absent,
     /// <see cref="Tide.TideException"/> when the batch itself could not run (e.g. the
-    /// main-thread pump is unavailable). Per-op game-side failures do NOT throw here —
+    /// main-thread pump is unavailable). Per-op game-side failures do NOT throw here -
     /// check <see cref="WasOk"/> or let the result accessors throw.
     /// </summary>
     public void Flush()
@@ -212,7 +212,7 @@ public sealed unsafe class TideBatch : IDisposable
             }
 
             // Free the string ARG buffers we consumed (AllocHGlobal by TideValue.FromString),
-            // mirroring the sync API's post-call discipline — on SUCCESS and FAILURE both
+            // mirroring the sync API's post-call discipline - on SUCCESS and FAILURE both
             // (the ops copy shallow, they never own these buffers). Ret slots stay alive
             // for reads.
             foreach (var e in _entries)

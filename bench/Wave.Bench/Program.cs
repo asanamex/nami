@@ -33,6 +33,49 @@ public static class CalcB
     public static int Add(int a, int b) => a + b;
 }
 
+// Signature-shape coverage for the unified Patch router (M9). Each row patches a
+// distinct target with hooks the fast stub can serve, asserts the Fast engine (the
+// deterministic gate - timing-independent), checks correctness, and times the row
+// against a generous budget. If a future change narrows fast eligibility, the engine
+// assert fails in CI instead of silently demoting shapes to IL-copy.
+public static class ShapeTargets
+{
+    public static int SeenV0;
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static void V0() => SeenV0++;
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static void V1(int a) => SeenV0 += a;
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static int Add2(int a, int b) => a + b;
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static long AddL(long a, long b) => a + b;
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static double MulD(double a, double b)
+    {
+        var t = a * b;
+        t += a;
+        t -= b;
+        return t;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static bool IsPos(int x) => x > 0;
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static double MixAdd(int a, double b) => a + b;
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static float NegF(float x) => -x;
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static string Concat2(string a, string b) => a + b;
+}
+
 public static class Program
 {
     private const int N = 1_000_000;
@@ -163,6 +206,8 @@ public static class Program
         Check(waveM2 / harmonyTime <= ratioBudget,
             $"M2 vs HarmonyX ratio {waveM2 / harmonyTime:F2}x <= {ratioBudget}x");
 
+        ShapeCoverage(Check, Gate);
+
         foreach (var f in failures)
         {
             Console.Error.WriteLine($"bench gate failed: {f}");
@@ -171,8 +216,136 @@ public static class Program
         return failures.Count == 0 ? 0 : 1;
     }
 
+    private static void ShapeCoverage(Action<bool, string> check, Func<string, double, double> gate)
+    {
+        var fastBudget = gate("NAMI_GATE_FAST_NS", 400);
+
+        static System.Reflection.MethodInfo M(Type t, string name) => t.GetMethod(name)!;
+
+        void FastRow(string name, System.Reflection.MethodInfo target,
+            Delegate? prefix, Delegate? postfix, Action call, Func<bool> verify)
+        {
+            for (int i = 0; i < 200_000; i++) call();
+            try
+            {
+                Wave.Patch(target, "shape-" + name, prefix, postfix);
+            }
+            catch (Wave.HookException ex)
+            {
+                // Not detourable at all (tiny prologue) - a decoder matter, not routing.
+                Console.WriteLine($"shape {name} skipped ({ex.Message.Split(':')[0]})");
+                return;
+            }
+            check(Wave.GetPatchEngine(target) == WavePatchEngine.Fast,
+                $"shape {name} routes Fast (got {Wave.GetPatchEngine(target)})");
+            check(verify(), $"shape {name} computes correctly");
+            var t = Time($"fast {name,-22}", () =>
+            {
+                for (int i = 0; i < N; i++) call();
+            });
+            check(t <= fastBudget, $"fast {name} {t:F2}ns <= {fastBudget}ns");
+            Wave.UnpatchEverything();
+        }
+
+        ShapeTargets.SeenV0 = 0;
+        FastRow("void()", M(typeof(ShapeTargets), nameof(ShapeTargets.V0)),
+            prefix: (Action)(() => { ShapeTargets.SeenV0++; }), null,
+            () => CallV0(), () => ShapeTargets.SeenV0 > 0);
+
+        FastRow("void(int)", M(typeof(ShapeTargets), nameof(ShapeTargets.V1)),
+            prefix: (Action<int>)((int a) => { ShapeTargets.SeenV0 += a; }), null,
+            () => CallV1(3), () => ShapeTargets.SeenV0 >= 3);
+
+        var add2Seen = (0, 0);
+        FastRow("int(int,int)", M(typeof(ShapeTargets), nameof(ShapeTargets.Add2)),
+            prefix: (Func<int, int, bool>)((int a, int b) => { add2Seen = (a, b); return true; }),
+            null,
+            () => CallShapeAdd2(20, 22),
+            () => CallShapeAdd2(20, 22) == 42 && add2Seen == (20, 22));
+
+        FastRow("long(long,long)", M(typeof(ShapeTargets), nameof(ShapeTargets.AddL)),
+            prefix: (Func<long, long, bool>)((long a, long b) => true), null,
+            () => CallAddL(20, 22),
+            () => CallAddL(20, 22) == 42L);
+
+        FastRow("double(double,double)", M(typeof(ShapeTargets), nameof(ShapeTargets.MulD)),
+            prefix: (Func<double, double, bool>)((double a, double b) => true), null,
+            () => CallMulD(2.5, 4),
+            () => CallMulD(2.5, 4) == 8.5);
+
+        FastRow("bool(int)", M(typeof(ShapeTargets), nameof(ShapeTargets.IsPos)),
+            prefix: (Func<int, bool>)((int x) => true), null,
+            () => CallIsPos(5),
+            () => CallIsPos(5) && !CallIsPos(-5));
+
+        FastRow("double(int,double)", M(typeof(ShapeTargets), nameof(ShapeTargets.MixAdd)),
+            prefix: (Func<int, double, bool>)((int a, double b) => true), null,
+            () => CallMixAdd(20, 22.5),
+            () => CallMixAdd(20, 22.5) == 42.5);
+
+        FastRow("float(float)", M(typeof(ShapeTargets), nameof(ShapeTargets.NegF)),
+            prefix: (Func<float, bool>)((float x) => true), null,
+            () => CallNegF(1.5f),
+            () => CallNegF(1.5f) == -1.5f);
+
+        // Skip returns the type default on the fast path.
+        var skip = false;
+        var add2 = M(typeof(ShapeTargets), nameof(ShapeTargets.Add2));
+        for (int i = 0; i < 200_000; i++) CallShapeAdd2(1, 2);
+        Wave.Patch(add2, "shape-skip", prefix: (Func<bool>)(() => !skip));
+        check(Wave.GetPatchEngine(add2) == WavePatchEngine.Fast, "shape skip routes Fast");
+        check(CallShapeAdd2(20, 22) == 42, "shape skip runs when gate passes");
+        skip = true;
+        check(CallShapeAdd2(20, 22) == 0, "shape skip returns default(int) when gated");
+        Wave.UnpatchEverything();
+
+        // M2 controls: shapes the fast path must refuse stay ILCopy.
+        var concat = M(typeof(ShapeTargets), nameof(ShapeTargets.Concat2));
+        Wave.Patch(concat, "shape-m2",
+            prefix: (Func<string, string, bool>)((string a, string b) => true));
+        check(Wave.GetPatchEngine(concat) == WavePatchEngine.ILCopy, "shape string routes ILCopy");
+        check(ShapeTargets.Concat2("a", "b") == "ab", "shape string computes");
+        Wave.UnpatchEverything();
+
+        Wave.Patch(add2, "shape-m2ref", postfix: (ActionRefInt)RefPostfix);
+        check(Wave.GetPatchEngine(add2) == WavePatchEngine.ILCopy, "shape ref-result routes ILCopy");
+        Wave.UnpatchEverything();
+
+        var v0 = M(typeof(ShapeTargets), nameof(ShapeTargets.V0));
+        Wave.Transpile(v0, "shape-m2tr", il => { });
+        check(Wave.GetPatchEngine(v0) == WavePatchEngine.ILCopy, "shape transpiler routes ILCopy");
+        Wave.UnpatchEverything();
+    }
+
+    private delegate void ActionRefInt(ref int result);
+    private static void RefPostfix(ref int __result) => __result += 0;
+
     [MethodImpl(MethodImplOptions.NoInlining)]
     private static void CallTick() => BenchTarget.Tick();
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static void CallV0() => ShapeTargets.V0();
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static void CallV1(int a) => ShapeTargets.V1(a);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static int CallShapeAdd2(int a, int b) => ShapeTargets.Add2(a, b);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static long CallAddL(long a, long b) => ShapeTargets.AddL(a, b);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static double CallMulD(double a, double b) => ShapeTargets.MulD(a, b);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static bool CallIsPos(int x) => ShapeTargets.IsPos(x);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static double CallMixAdd(int a, double b) => ShapeTargets.MixAdd(a, b);
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static float CallNegF(float x) => ShapeTargets.NegF(x);
 
     [MethodImpl(MethodImplOptions.NoInlining)]
     private static int CallAddA(int a, int b) => CalcA.Add(a, b);

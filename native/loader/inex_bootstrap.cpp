@@ -7,15 +7,15 @@
 //
 // TIMING (the whole game here): the preloader patches the one-shot entrypoint
 // (Application..cctor) into an already-loaded CoreModule to no effect, so Start()
-// must run BEFORE first managed execution — exactly Doorstop timing. Primary path:
+// must run BEFORE first managed execution - exactly Doorstop timing. Primary path:
 // a mono_jit_init detour runs Start synchronously on the game main thread right
 // after the runtime comes up. The detour is installed either directly (Mono
-// already loaded — the injector holds the main thread suspended until we signal
+// already loaded - the injector holds the main thread suspended until we signal
 // hook-ready, so this always wins) or synchronously inside the Mono LoadLibrary
-// via an LdrDllNotification (dynamically-loaded Mono — stock Unity desktop).
+// via an LdrDllNotification (dynamically-loaded Mono - stock Unity desktop).
 // Fallback path (both missed, e.g. prologue refused): Tide's mono_runtime_invoke
 // drain runs Start, and a chainloader kick
-// (Initialize+Start, both idempotent) fires once a scene is live — late Start can
+// (Initialize+Start, both idempotent) fires once a scene is live - late Start can
 // never hit the one-shot patch, so the kick replicates what it would have called.
 // Kick ordering vs a naturally-fired entrypoint is safe: both ends are guarded.
 
@@ -280,7 +280,7 @@ bool wait_for_domain_stable(MonoApi& api) {
     int stable = 0;
     for (int i = 0; i < 120; i++) {
         // The Ldr callback may have lost a lock race: one decisive retry from a
-        // normal thread (blocking install can't contend — try-acquire never waits).
+        // normal thread (blocking install can't contend - try-acquire never waits).
         if (InterlockedCompareExchange(&g_hook_retry, 0, 0) != 0 &&
             InterlockedCompareExchange(&g_jit_hooked, 0, 0) == 0) {
             install_jit_hook();
@@ -294,7 +294,7 @@ bool wait_for_domain_stable(MonoApi& api) {
             }
         } else {
             // New (or first) domain identity: any Start from a previous epoch died
-            // with its domain — allow exactly one fresh Start for this epoch.
+            // with its domain - allow exactly one fresh Start for this epoch.
             if (ctx.domain != prev) {
                 InterlockedExchange(&g_started, 0);
             }
@@ -324,8 +324,8 @@ using jit_init_version_fn = void* (*)(const char*, const char*);
 using jit_init_fn = void* (*)(const char*);
 jit_init_version_fn g_orig_jit_init_version = nullptr;
 jit_init_fn g_orig_jit_init = nullptr;
-volatile LONG g_jit_hooked = 0;  // detour installed (any path) — exactly-once guard
-volatile LONG g_hook_retry = 0;  // mono seen but install unconfirmed — boot thread retries
+volatile LONG g_jit_hooked = 0;  // detour installed (any path) - exactly-once guard
+volatile LONG g_hook_retry = 0;  // mono seen but install unconfirmed - boot thread retries
 void* g_ldr_cookie = nullptr;
 
 // --- mono-load notification: catch dynamically-loaded Mono -----------------
@@ -603,7 +603,7 @@ int arm(const std::string& nami_root_utf8) {
     } else {
         ilog(g_log_path, "mono not loaded and load-watch unavailable; drain fallback covers");
     }
-    // Interception armed (installed, refused, or watched) — release the main thread.
+    // Interception armed (installed, refused, or watched) - release the main thread.
     signal_hook_ready();
     HANDLE thread = CreateThread(nullptr, 0, watcher_thread, nullptr, 0, nullptr);
     if (thread == nullptr) {

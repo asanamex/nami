@@ -19,8 +19,8 @@ namespace Nami.Wave.Internal;
 /// </summary>
 internal sealed unsafe class Detour : IDisposable
 {
-    private const int MinJumpSize = 14; // mov rax, imm64 (10) + jmp rax (2) — see EmitAbsoluteJump
-    private const int MinNearJumpSize = 5; // E9 rel32 — see EmitRelativeJump
+    private const int MinJumpSize = 14; // mov rax, imm64 (10) + jmp rax (2) - see EmitAbsoluteJump
+    private const int MinNearJumpSize = 5; // E9 rel32 - see EmitRelativeJump
     private const int MaxPrologueBytes = 64;
 
     private readonly byte* _target;
@@ -147,6 +147,8 @@ internal sealed unsafe class Detour : IDisposable
         }
 
         // Allocate the run-original trampoline and (if needed) a skip trampoline.
+        // Prefer near the target: relocated RIP-relative operands keep their reach
+        // (a far-away trampoline silently truncates their disp32 - see TrampolinesSound).
         var trampolineSize = (nuint)(offset + MinJumpSize + 32);
         byte* trampoline;
         if (nearJump)
@@ -161,7 +163,11 @@ internal sealed unsafe class Detour : IDisposable
         }
         else
         {
-            trampoline = (byte*)RawMemory.AllocExecutable(trampolineSize);
+            trampoline = (byte*)RawMemory.TryAllocExecutableNear(t, trampolineSize);
+            if (trampoline == null)
+            {
+                trampoline = (byte*)RawMemory.AllocExecutable(trampolineSize);
+            }
         }
 
         var detourObj = new Detour(t, offset, nearJump, original, trampoline, trampolineSize)
@@ -174,6 +180,10 @@ internal sealed unsafe class Detour : IDisposable
 
         // Emits the relocated prologue into `dst`, fixing RIP-relative displacements for
         // that buffer's own location. Returns the byte offset just past the prologue.
+        // Tracks whether every relocated RIP-relative target still fits disp32: when the
+        // trampoline sits too far from the original's data, the fixup would silently
+        // truncate (see TrampolinesSound) - executing such a trampoline corrupts memory.
+        bool relocationsFit = true;
         int EmitRelocated(byte* dst)
         {
             int dp = 0;
@@ -195,6 +205,10 @@ internal sealed unsafe class Detour : IDisposable
                     byte* newDispField = dst + dp + ins.Length - 4;
                     byte* newRipAfter = newDispField + 4;
                     long newDisp = origTarget - newRipAfter;
+                    if (newDisp != (int)newDisp)
+                    {
+                        relocationsFit = false;
+                    }
                     WriteI32(newDispField, (int)newDisp);
                 }
 
@@ -206,6 +220,8 @@ internal sealed unsafe class Detour : IDisposable
         }
 
         // Trampoline A: relocated prologue + jump back into the original past the patch site.
+        // The jump-back preserves all registers (indirect form): a value-returning
+        // original reaches it with its result live in rax/xmm0.
         int tp = EmitRelocated(trampoline);
         if (nearJump)
         {
@@ -214,7 +230,7 @@ internal sealed unsafe class Detour : IDisposable
         }
         else
         {
-            EmitAbsoluteJump(trampoline + tp, t + offset);
+            EmitIndirectJump(trampoline + tp, t + offset);
             tp += MinJumpSize;
         }
         RawMemory.FlushCode(trampoline, (nuint)tp);
@@ -222,10 +238,13 @@ internal sealed unsafe class Detour : IDisposable
 
         // Trampoline B (skip): relocated prologue + add rsp,reserve + pop pushed regs (reverse)
         // + ret. Only allocated when the prologue has stack effects; otherwise the dispatcher
-        // stub returns directly.
+        // stub returns directly. Allocated near for the same relocation-reach reason.
         if (!detourObj.FrameSafe)
         {
-            var skip = (byte*)RawMemory.AllocExecutable((nuint)(offset + 64));
+            var skipAt = RawMemory.TryAllocExecutableNear(t, (nuint)(offset + 64));
+            var skip = (byte*)(skipAt == null
+                ? RawMemory.AllocExecutable((nuint)(offset + 64))
+                : skipAt);
             detourObj._allocations.Add((IntPtr)skip);
             int sp = EmitRelocated(skip);
             if (detourObj.TotalReserveBytes != 0)
@@ -245,6 +264,7 @@ internal sealed unsafe class Detour : IDisposable
             detourObj._skipTrampoline = skip;
         }
 
+        detourObj.TrampolinesSound = relocationsFit;
         return detourObj;
     }
 
@@ -253,6 +273,14 @@ internal sealed unsafe class Detour : IDisposable
     /// <summary>Trampoline that runs the relocated prologue, unwinds the frame and returns
     /// (used when a gate skips the original). Null when the prologue is frame-safe.</summary>
     public IntPtr SkipTrampoline => (IntPtr)_skipTrampoline;
+
+    /// <summary>
+    /// True when every relocated RIP-relative operand still reaches its target from the
+    /// trampoline buffers. False means executing either trampoline would corrupt memory
+    /// (the disp32 fixup overflowed) - the fast stub path must not be used (the IL-copy
+    /// path never executes trampolines, so it is unaffected).
+    /// </summary>
+    public bool TrampolinesSound { get; private set; } = true;
 
     /// <summary>Emits `add rsp, imm8/imm32` at p; returns bytes written.</summary>
     private static int EmitAddRspImm(byte* p, int imm)
@@ -288,6 +316,12 @@ internal sealed unsafe class Detour : IDisposable
 
     /// <summary>The method-body address this detour was created for.</summary>
     public IntPtr TargetAddress => (IntPtr)_target;
+
+    /// <summary>
+    /// True when the prologue patch is a 5-byte relative jump: anything it points at
+    /// (including the site stub) must live within ±2GB of the target.
+    /// </summary>
+    public bool IsNearJump => _nearJump;
 
     /// <summary>Points the detour at its final target (the per-site dispatcher stub).</summary>
     public void Retarget(IntPtr detour) => _detour = (byte*)detour;
@@ -428,6 +462,19 @@ internal sealed unsafe class Detour : IDisposable
         WriteU64(p + 2, (ulong)destination);
         p[10] = 0xFF; p[11] = 0xE0; // jmp rax
         p[12] = 0x90; p[13] = 0x90; // nop padding (never executed)
+    }
+
+    /// <summary>
+    /// Emits `jmp qword ptr [rip+0]` + inline address slot at <paramref name="p"/>
+    /// (14 bytes, same footprint as <see cref="EmitAbsoluteJump"/>). Unlike the absolute
+    /// form it preserves every register and flag - required for trampoline jump-backs,
+    /// which run with the original's value return live in rax/xmm0.
+    /// </summary>
+    public static void EmitIndirectJump(byte* p, byte* destination)
+    {
+        p[0] = 0xFF; p[1] = 0x25; // jmp [rip+disp32]
+        WriteI32(p + 2, 0);       // disp32 = 0: the slot immediately follows
+        WriteU64(p + 6, (ulong)destination);
     }
 
     /// <summary>Emits `jmp rel32` at <paramref name="p"/> (5 bytes); destination must be ±2GB.</summary>

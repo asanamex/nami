@@ -86,7 +86,7 @@ internal static unsafe class X64Decoder
                 return null;
             }
 
-            // Refuse 3-byte escapes (0F 38 / 0F 3A) — BMI/SSE4 — cannot measure safely here.
+            // Refuse 3-byte escapes (0F 38 / 0F 3A) - BMI/SSE4 - cannot measure safely here.
             byte second = p[i + 1];
             if (second is 0x38 or 0x3A)
             {
@@ -302,7 +302,7 @@ internal static unsafe class X64Decoder
                     break;
             }
 
-            // sub rsp, imm8/imm32 (83 /5 imm8, 81 /5 imm32) — via ModRM reg==5
+            // sub rsp, imm8/imm32 (83 /5 imm8, 81 /5 imm32) - via ModRM reg==5
             if (opcode is 0x81 or 0x83 && hasModRm)
             {
                 int reg = (modrm >> 3) & 7;
@@ -418,7 +418,7 @@ internal static unsafe class X64Decoder
                     return 1;
                 case 0xC6: // shufps etc imm8
                     return 1;
-                case 0xC7: // cmpxchg8b/16b (no imm) OR 0F C7 group — no imm
+                case 0xC7: // cmpxchg8b/16b (no imm) OR 0F C7 group - no imm
                     return 0;
             }
 

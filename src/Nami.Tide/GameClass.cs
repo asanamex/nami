@@ -107,7 +107,7 @@ public sealed unsafe class GameClass
 
     /// <summary>
     /// Finds the first loaded object of this class (via <c>FindObjectsOfType</c>, first
-    /// element — the singular <c>FindObjectOfType</c> wrapper aborts the process when
+    /// element - the singular <c>FindObjectOfType</c> wrapper aborts the process when
     /// invoked from outside managed game code). Active objects only. Runs on the main
     /// thread at a frame boundary (window executor); null when no live object matches.
     /// Needs a visible game window. Caller owns the handle (dispose it).

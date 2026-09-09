@@ -7,7 +7,7 @@
 // IL2CPP methods are native x64 code inside GameAssembly.dll; there is no managed
 // method to detour (Wave's IL-copy engine is CoreCLR-only). Instead we resolve the
 // Il2CppMethodInfo for a class method (il2cpp_class_get_method_from_name), take its
-// native entry (methodPointer, +0 — the first field in every metadata layout v24-v39),
+// native entry (methodPointer, +0 - the first field in every metadata layout v24-v39),
 // follow any leading jump thunks, and install a dispatch-stub detour (native_stub.h)
 // that routes calls through the managed dispatch with raw argument pointers.
 //
@@ -15,7 +15,7 @@
 // executor), exactly like the typed ops.
 //
 // v1 scope (honest): prefix observer + skip semantics, raw pointer arguments
-// (rcx/rdx/r8/r9 — instance methods see `this` in args[0]); value-typed returns are
+// (rcx/rdx/r8/r9 - instance methods see `this` in args[0]); value-typed returns are
 // not observable (skip returns 0). Stack arguments (5+) and argument/result
 // marshaling arrive with the next slice.
 //
@@ -25,7 +25,7 @@
 // exposes all arg_count arguments as contiguous raw slots (regs first, then stack;
 // arg_count <= 12). Prefix may supply a replacement result on skip; postfix may
 // rewrite the slot. Stack out-params are not observable on the full path (the stub
-// re-presents args from its own copy) — prefix-only hooks preserve them.
+// re-presents args from its own copy) - prefix-only hooks preserve them.
 
 #ifdef __cplusplus
 extern "C" {

@@ -119,7 +119,7 @@ public sealed class PluginContext(PluginManifest manifest, LogHub hub, Chainload
 
 /// <summary>
 /// Loads plugins discovered in the mods directory into isolated, unloadable load contexts,
-/// calls lifecycle methods, applies crash quarantine, and — when hot reload is enabled —
+/// calls lifecycle methods, applies crash quarantine, and - when hot reload is enabled -
 /// watches the mods directory so edited/rebuild plugins reload live into a new generation.
 /// All structural changes flow through a command queue drained between update ticks, so
 /// reloads never race a running <see cref="OnUpdate"/>.
@@ -397,7 +397,7 @@ public sealed class Chainloader : IDisposable, Nami.Sdk.ITideOpSink
         }
         catch
         {
-            // Wave absent or unpatch failed — never fatal for reload.
+            // Wave absent or unpatch failed - never fatal for reload.
         }
     }
 
@@ -426,7 +426,7 @@ public sealed class Chainloader : IDisposable, Nami.Sdk.ITideOpSink
     /// depends on it (transitively), then re-load the changed ids from disk in dependency
     /// order. If a new generation fails to load, the failure is reported and the plugin id
     /// is left unloaded (the old generation cannot be resurrected once its ALC is released)
-    /// — but other ids in the same reload still load.
+    /// - but other ids in the same reload still load.
     /// </summary>
     private ReloadResult ReloadCore(string pluginId)
     {
@@ -434,7 +434,7 @@ public sealed class Chainloader : IDisposable, Nami.Sdk.ITideOpSink
         var target = all.FirstOrDefault(p => p.Manifest.Id.Equals(pluginId, StringComparison.OrdinalIgnoreCase));
         if (target is null)
         {
-            // Not currently loaded — for the watcher path this is a brand-new mod drop (or a
+            // Not currently loaded - for the watcher path this is a brand-new mod drop (or a
             // previously failed load): load it fresh if a manifest for the id exists on disk.
             var fresh = DiscoverPlugins()
                 .FirstOrDefault(m => m.Id.Equals(pluginId, StringComparison.OrdinalIgnoreCase));
@@ -466,7 +466,7 @@ public sealed class Chainloader : IDisposable, Nami.Sdk.ITideOpSink
 
         _hub.Log("chainloader", LogLevel.Info, $"Hot reload: {string.Join(", ", reloadIds)}");
 
-        // Unload old generations (dependents first, then the target — reverse load order).
+        // Unload old generations (dependents first, then the target - reverse load order).
         var unloaded = new List<string>();
         foreach (var id in reloadIds.AsEnumerable().Reverse())
         {

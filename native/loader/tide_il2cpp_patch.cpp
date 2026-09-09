@@ -63,7 +63,7 @@ bool resolve_api() {
     }
     auto load = [&](const char* name) -> void* {
         // Call the EXPORT address (E9 jmp-thunk), never the followed body (Unity 6000
-        // register conventions) — same rule as tide_il2cpp_ops.cpp.
+        // register conventions) - same rule as tide_il2cpp_ops.cpp.
         return reinterpret_cast<void*>(GetProcAddress(ga, name));
     };
     g_api.domain_get = reinterpret_cast<decltype(g_api.domain_get)>(load("il2cpp_domain_get"));
@@ -93,7 +93,7 @@ bool IsExecutable(const void* p) {
     return (mbi.Protect & 0xF0) != 0;  // any EXECUTE* protection
 }
 
-// Follows leading jump thunks (E9 rel32, FF 25 disp32) like the managed Wave resolver —
+// Follows leading jump thunks (E9 rel32, FF 25 disp32) like the managed Wave resolver -
 // some il2cpp method pointers are shared-generic thunks or export-style trampolines.
 void* FollowJumpStubs(void* entry) {
     auto* p = static_cast<unsigned char*>(entry);
@@ -148,7 +148,7 @@ int RunHookOp(void* arg) {
     op->result = -1;
 
     // The window-proc executor must be up (this op runs inside the game's message
-    // pump — the only context where the VM is safe).
+    // pump - the only context where the VM is safe).
     install_window_executor();
     if (!resolve_api()) {
         log_tide("il2cpp patch: api resolve failed");

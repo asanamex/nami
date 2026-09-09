@@ -40,7 +40,7 @@ public class HotReloadTests
         var alphaBefore = chainloader.Plugins.Single(p => p.Manifest.Id == "dev.nami.fixtures.alpha");
         var genBefore = alphaBefore.Generation;
 
-        // alpha has no dependents besides beta, but gamma depends on beta — the fixpoint
+        // alpha has no dependents besides beta, but gamma depends on beta - the fixpoint
         // reload set is alpha + beta + gamma (reverse-load-order unload, deps-first reload).
         var result = chainloader.Reload("dev.nami.fixtures.alpha");
 
@@ -76,7 +76,7 @@ public class HotReloadTests
         Assert.True(chainloader.RequestReload("dev.nami.fixtures.alpha"));
         Assert.False(chainloader.RequestReload("dev.nami.fixtures.unknown")); // not loaded → not queued
 
-        // Not applied synchronously — the command drains on the next tick.
+        // Not applied synchronously - the command drains on the next tick.
         Assert.Equal(genBefore, chainloader.Plugins.Single(p => p.Manifest.Id == "dev.nami.fixtures.alpha").Generation);
         chainloader.UpdateAll();
 
@@ -99,7 +99,7 @@ public class HotReloadTests
         Assert.DoesNotContain(chainloader.Plugins, p => p.Manifest.Id == "dev.nami.fixtures.gamma");
 
         // Simulate dropping a brand-new mod dll while the game runs (as the watcher would see),
-        // then reload by its id — it is not loaded yet, so it must be loaded fresh.
+        // then reload by its id - it is not loaded yet, so it must be loaded fresh.
         File.Copy(Path.Combine(AppContext.BaseDirectory, "GammaPlugin.dll"),
             Path.Combine(fixture.ModsDir, "GammaPlugin.dll"));
 
