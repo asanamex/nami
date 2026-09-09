@@ -3,12 +3,13 @@ using System.Reflection.Emit;
 
 namespace Nami.Wave.Internal;
 
-/// <summary>A registered prefix/postfix on a patch site.</summary>
+/// <summary>A registered prefix/postfix/transpiler on a patch site.</summary>
 public sealed class PatchEntry
 {
     public required string Owner;
     public Delegate? Prefix;   // void/bool prefix
     public Delegate? Postfix;  // void postfix
+    public List<WaveTranspiler> Transpilers { get; } = new(); // cursor-based IL rewriters (run first)
 }
 
 /// <summary>
@@ -67,6 +68,35 @@ internal static class PatchedBodyBuilder
         var (tb, method, il) = IlRewriter.BeginGeneratedMethod(body, "Wave_Patched");
         var (bridgeIndex, bridgeField) = RegisterBridge(entries.ToArray());
 
+        // Transpiler pass first: every transpiler rewrites the ORIGINAL body through a
+        // cursor (in registration order, each seeing the previous one's output, with
+        // provenance conflicts collected). The result is the "original" that prefix/postfix
+        // wrapping then observes.
+        WaveIlInstruction? transpiledHead = null;
+        WaveIlInstruction? transpiledTail = null;
+        if (entries.Any(e => e.Transpilers.Count > 0))
+        {
+            (transpiledHead, transpiledTail) = IlNodes.From(body);
+            var conflicts = new List<WaveTranspilerConflict>();
+            foreach (var entry in entries)
+            {
+                foreach (var transpiler in entry.Transpilers)
+                {
+                    var cursor = WaveIlCursor.Create(transpiledHead, transpiledTail, entry.Owner, target);
+                    try
+                    {
+                        transpiler(cursor);
+                    }
+                    catch (Exception ex)
+                    {
+                        throw new Wave.HookException($"transpiler '{entry.Owner}' failed on {target}: {ex.Message}", ex);
+                    }
+                    conflicts.AddRange(cursor.TakeConflicts());
+                }
+            }
+            Wave.ReportTranspilerConflicts(target, conflicts);
+        }
+
         // State locals, alive across the whole method:
         //   0: object __state
         //   1: return-value local (only when the target returns a value)
@@ -100,9 +130,17 @@ internal static class PatchedBodyBuilder
         il.Emit(OpCodes.Ldloc, lSkip);
         il.Emit(OpCodes.Brtrue, lblSkipped);
 
-        // Run the original body inline; the hooks rewrite every ret into the postfix tail.
+        // Run the original body inline (transpiled when transpilers are present); the hooks
+        // rewrite every ret into the postfix tail.
         var hooks = new PatchHooks(bridgeField, bridgeIndex, entries, target, body, lState, lResult, lSkip, lblSkipped);
-        IlRewriter.EmitInto(il, body, hooks);
+        if (transpiledHead is not null)
+        {
+            IlNodes.Emit(il, body, transpiledHead, transpiledTail!, hooks);
+        }
+        else
+        {
+            IlRewriter.EmitInto(il, body, hooks);
+        }
 
         var t = tb.CreateType();
         return t.GetMethod(method.Name, BindingFlags.Public | BindingFlags.Static)!;

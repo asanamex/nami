@@ -186,12 +186,7 @@ internal static class IlRewriter
         var genericMethodArgs = b.Method.IsGenericMethod ? b.Method.GetGenericArguments() : Type.EmptyTypes;
 
         // Locals: re-declare with the original types, preserving indices.
-        var locals = new LocalBuilder[b.Locals.Count];
-        for (int i = 0; i < b.Locals.Count; i++)
-        {
-            var lv = b.Locals[i];
-            locals[i] = il.DeclareLocal(MapLocalType(lv.LocalType, b, genericArgs, genericMethodArgs), lv.IsPinned);
-        }
+        var locals = DeclareLocals(il, b);
 
         // Labels for every instruction; branches resolve to these.
         var labels = new Dictionary<int, Label>();
@@ -347,8 +342,30 @@ internal static class IlRewriter
         }
     }
 
-    private static void Emit(ILGenerator il, IlInstruction ins, Module module, Type? declaringType,
-        Type[] genericArgs, Type[] genericMethodArgs, LocalBuilder[] locals, Func<int, Label> labelFor)
+    /// <summary>Re-declares the body's original locals on <paramref name="il"/>, preserving indices
+    /// (shared by the offset-driven and transpiler-node emitters).</summary>
+    internal static LocalBuilder[] DeclareLocals(ILGenerator il, IlBody b)
+    {
+        var declaringType = b.DeclaringType;
+        var genericArgs = declaringType?.IsGenericType == true ? declaringType.GetGenericArguments() : Type.EmptyTypes;
+        var genericMethodArgs = b.Method.IsGenericMethod ? b.Method.GetGenericArguments() : Type.EmptyTypes;
+        var locals = new LocalBuilder[b.Locals.Count];
+        for (int i = 0; i < b.Locals.Count; i++)
+        {
+            var lv = b.Locals[i];
+            locals[i] = il.DeclareLocal(MapLocalType(lv.LocalType, b, genericArgs, genericMethodArgs), lv.IsPinned);
+        }
+        return locals;
+    }
+
+    /// <summary>
+    /// Emits one instruction. <paramref name="labelFor"/> resolves raw branch-target offsets
+    /// (the offset-driven path); on the transpiler path branch operands are labels handled
+    /// by the caller, and operands may already be RESOLVED (string/Type/MemberInfo injected
+    /// by a transpiler) — those are emitted directly without token resolution.
+    /// </summary>
+    internal static void Emit(ILGenerator il, IlInstruction ins, Module module, Type? declaringType,
+        Type[] genericArgs, Type[] genericMethodArgs, LocalBuilder[] locals, Func<int, Label>? labelFor = null)
     {
         var op = ins.OpCode;
         var operand = ins.Operand;
@@ -376,15 +393,31 @@ internal static class IlRewriter
                 return;
             case OperandType.ShortInlineBrTarget:
             case OperandType.InlineBrTarget:
-                il.Emit(op, labelFor((int)operand!));
+                if (operand is Label resolved)
+                {
+                    il.Emit(op, resolved);
+                }
+                else if (labelFor is not null)
+                {
+                    il.Emit(op, labelFor((int)operand!));
+                }
+                else
+                {
+                    throw new InvalidOperationException($"raw branch target on {op} without a label resolver");
+                }
                 return;
             case OperandType.InlineSwitch:
             {
+                if (operand is Label[] resolvedSwitch)
+                {
+                    il.Emit(op, resolvedSwitch);
+                    return;
+                }
                 var targets = (int[])operand!;
                 var labels = new Label[targets.Length];
                 for (int i = 0; i < targets.Length; i++)
                 {
-                    labels[i] = labelFor(targets[i]);
+                    labels[i] = labelFor!(targets[i]);
                 }
                 il.Emit(op, labels);
                 return;
@@ -422,10 +455,22 @@ internal static class IlRewriter
                 il.Emit(op, (double)operand!);
                 return;
             case OperandType.InlineString:
-                il.Emit(op, (string)module.ResolveString((int)operand!)!);
+                if (operand is string s)
+                {
+                    il.Emit(op, s); // transpiler-injected literal
+                }
+                else
+                {
+                    il.Emit(op, (string)module.ResolveString((int)operand!)!);
+                }
                 return;
             case OperandType.InlineField:
             {
+                if (operand is FieldInfo knownField)
+                {
+                    il.Emit(op, knownField); // transpiler-injected reference
+                    return;
+                }
                 var field = module.ResolveField((int)operand!, genericArgs, genericMethodArgs)
                     ?? throw new InvalidOperationException($"cannot resolve field token {(int)operand!:X8}");
                 il.Emit(op, field);
@@ -433,6 +478,16 @@ internal static class IlRewriter
             }
             case OperandType.InlineMethod:
             {
+                if (operand is MethodInfo knownMethod)
+                {
+                    il.Emit(op, knownMethod); // transpiler-injected reference
+                    return;
+                }
+                if (operand is ConstructorInfo knownCtor)
+                {
+                    il.Emit(op, knownCtor);
+                    return;
+                }
                 var method = module.ResolveMethod((int)operand!, genericArgs, genericMethodArgs)
                     ?? throw new InvalidOperationException($"cannot resolve method token {(int)operand!:X8}");
                 switch (method)
@@ -450,6 +505,11 @@ internal static class IlRewriter
             }
             case OperandType.InlineType:
             {
+                if (operand is Type knownType)
+                {
+                    il.Emit(op, knownType); // transpiler-injected reference
+                    return;
+                }
                 var type = module.ResolveType((int)operand!, genericArgs, genericMethodArgs)
                     ?? throw new InvalidOperationException($"cannot resolve type token {(int)operand!:X8}");
                 il.Emit(op, type);
@@ -457,6 +517,26 @@ internal static class IlRewriter
             }
             case OperandType.InlineTok:
             {
+                if (operand is Type or FieldInfo or MethodInfo or ConstructorInfo)
+                {
+                    // Transpiler-injected member reference: same emission as the resolved path.
+                    switch (operand)
+                    {
+                        case Type t:
+                            il.Emit(op, t);
+                            break;
+                        case FieldInfo f:
+                            il.Emit(op, f);
+                            break;
+                        case MethodInfo m:
+                            il.Emit(op, m);
+                            break;
+                        case ConstructorInfo c:
+                            il.Emit(op, c);
+                            break;
+                    }
+                    return;
+                }
                 var member = module.ResolveMember((int)operand!, genericArgs, genericMethodArgs)
                     ?? throw new InvalidOperationException($"cannot resolve member token {(int)operand!:X8}");
                 switch (member)
