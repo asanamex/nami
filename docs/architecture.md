@@ -101,9 +101,9 @@ src/Nami.Cli/                    `nami` console tool: version/doctor/list/help +
                                   (offline IL2CPP projection: images/dump/generate/header) + inex
                                   (legacy lane: install/enable/disable/status;
                                   InexCommand manages) +
-                                  the launcher flow - launch set <game.exe> (stored in nami.json), launch
-                                 [offline|steam] (spawns native/nami_boot.exe; Steam relay to
-                                 steam://rungameid/<id> after the game exits), create
+                                  the launcher flow - launch set <game.exe> [--steam-id <appid>] (stored in nami.json), launch
+                                 [offline|steam] (spawns native/nami_boot.exe; steam mode ensures the Steam client
+                                 is running and syncs the app id to steam_appid.txt first, then injects like offline), create
                                  (self-extracts launchNami.exe + run-with-nami.bat into the nami
                                  root). Game exe auto-detection (GameLocator) picks the largest
                                  .exe, skipping crash handlers/updaters.

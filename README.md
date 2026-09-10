@@ -17,7 +17,8 @@
 ## What is this
 
 BepInEx plugins run inside the game's old embedded Mono. Nami instead injects a small native loader, waits for Unity to initialize, then **hosts a modern .NET 10 runtime inside the game process** and loads each mod into its own isolated context.
-
+📖 [Tutorial](TUTORIAL.md) · 🌉 [Tide](docs/tide.md) · 🌊 [Wave](docs/wave.md) · 🏛️ [Architecture](docs/architecture.md) · ⚖️ [vs BepInEx](docs/vs-bepinex.md) · 🔬 [Technical deep-dive](docs/technical-difference.md)
+📝 [Modding guide](docs/modding.md) (writing mods, config, CLI reference)
 Why you might care:
 
 - Mods run on .NET 10 with real isolation: a throwing mod disables itself, the game keeps playing.
@@ -74,8 +75,6 @@ flowchart LR
 | 📦 **Tooling** | `nami install/run/pack/doctor`, offline IL2CPP projection, `.nmod` packages |
 | 🕰️ **Legacy lane** | Unmodified BepInEx 5.x mods on Mono (`nami inex`), no proxy files |
 
-📖 [Tutorial](TUTORIAL.md) · 🏛️ [Architecture](docs/architecture.md) · ⚖️ [vs BepInEx](docs/vs-bepinex.md) · 🔬 [Technical deep-dive](docs/technical-difference.md)
-
 <details>
 <summary><b>Proven in a real game</b> (sample probe log, IL2CPP title, timestamps trimmed)</summary>
 
@@ -118,7 +117,7 @@ commands:
                           remember which executable is the game
   launch   [offline|steam] [gameDir]
                           run the game with Nami injected (default: offline;
-                          steam relays to a clean Steam session after exit)
+                          steam runs through the Steam client, needs --steam-id set)
   create   [offline|steam] [gameDir]
                           write launchNami.exe + run-with-nami.bat into the nami root
   run      <mod.csproj> [gameDir]
