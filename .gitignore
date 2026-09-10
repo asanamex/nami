@@ -43,3 +43,6 @@ Thumbs.db
 # NuGet
 *.nupkg
 artifacts/
+
+# Pack artifacts (released via the releases tab, never committed)
+nami-*.zip
