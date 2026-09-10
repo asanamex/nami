@@ -9,6 +9,5 @@
     <Version>0.1.0</Version>
     <Authors>Nami</Authors>
     <Product>Nami</Product>
-    <PackageLicenseExpression>PolyForm-Noncommercial-1.0.0</PackageLicenseExpression>
   </PropertyGroup>
 </Project>
