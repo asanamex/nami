@@ -4,7 +4,7 @@ namespace Nami.Cli.Commands;
 
 /// <summary>
 /// `nami launch` - remembers the game executable (`set`), then launches the game with Nami
-/// injected (`offline`, default) or relays through Steam after the game exits (`steam`).
+/// injected (`offline`, default or `steam`; steam ensures the Steam client is running first).
 /// </summary>
 internal static class LaunchCommand
 {
@@ -33,7 +33,6 @@ internal static class LaunchCommand
                     break;
             }
         }
-
         if (gameExe is null && steamId is null)
         {
             Console.Error.WriteLine("usage: nami launch set <game.exe> [--steam-id <appid>] [--force] [gameDir]");
@@ -69,37 +68,64 @@ internal static class LaunchCommand
     {
         var root = InstallContext.RequireRoot(gameDir);
         var config = NamiConfig.Load(root);
-        var isSteam = mode is "steam";
 
         var gameDirFull = Path.GetDirectoryName(root) ?? gameDir;
         var gameExe = ResolveGameExe(gameDirFull, config);
 
-        if (isSteam && string.IsNullOrEmpty(config.SteamAppId))
+        if (mode is "steam")
         {
-            Console.WriteLine("note: no steam app id is set — `nami launch steam` falls back to a normal");
-            Console.WriteLine("      Nami-injected launch. Set one with `nami launch set --steam-id <appid>`");
-            Console.WriteLine("      to get the Steam relay (clean unmodded session after the game exits).");
-            return LaunchInjected(gameExe, root);
+            Launcher.EnsureSteamRunning();
+            var appId = EnsureSteamAppContext(gameExe, config);
+            Console.WriteLine($"steam context: app {appId}");
         }
 
-        if (isSteam && config.SteamRelaySkipInjection)
+        return LaunchInjected(gameExe, root);
+    }
+
+    /// <summary>
+    /// Resolves the Steam app id for steam mode (configured value first, then steam_appid.txt
+    /// next to the game) and syncs it back to steam_appid.txt so the injected game boots with
+    /// Steam context. Throws when no app id is known or the game directory is not writable.
+    /// </summary>
+    public static string EnsureSteamAppContext(string gameExe, NamiConfig config)
+    {
+        var dir = Path.GetDirectoryName(gameExe)
+            ?? throw new InvalidOperationException($"could not locate the game directory for '{gameExe}'.");
+        var file = Path.Combine(dir, "steam_appid.txt");
+
+        string? fileId = null;
+        if (File.Exists(file))
         {
-            Console.WriteLine($"launching '{gameExe}' without Nami (steamRelaySkipInjection), then relaying to Steam...");
-            var code = RunDirect(gameExe, gameDirFull);
-            Console.WriteLine("game exited — starting the clean Steam session...");
-            SteamRelay(config.SteamAppId!);
-            return code;
+            var text = File.ReadAllText(file).Trim();
+            fileId = string.IsNullOrEmpty(text) ? null : text;
         }
 
-        var message = LaunchInjected(gameExe, root);
-        if (isSteam && config.SteamAppId is not null)
+        var appId = config.SteamAppId ?? fileId
+            ?? throw new InvalidOperationException(
+                "no Steam app id is set — run `nami launch set --steam-id <appid>` first.");
+        if (!ulong.TryParse(appId, out _))
         {
-            Console.WriteLine("game exited — starting the clean Steam session...");
-            SteamRelay(config.SteamAppId);
+            throw new InvalidOperationException(
+                $"invalid steam app id: '{appId}'. Run `nami launch set --steam-id <appid>`.");
         }
 
-        Console.WriteLine(message);
-        return 0;
+        if (fileId != appId)
+        {
+            try
+            {
+                File.WriteAllText(file, appId);
+            }
+            catch (Exception ex)
+            {
+                throw new InvalidOperationException(
+                    $"could not write Steam app id to '{file}': {ex.Message}. " +
+                    "Steam mode needs steam_appid.txt next to the game.");
+            }
+
+            Console.WriteLine($"steam app id {appId} written to steam_appid.txt");
+        }
+
+        return appId;
     }
 
     /// <summary>Resolves the game exe: configured value first, then auto-detection (largest .exe).</summary>
@@ -131,21 +157,4 @@ internal static class LaunchCommand
         return 0;
     }
 
-    private static int RunDirect(string gameExe, string workingDir)
-    {
-        var runner = new ProcessRunner();
-        return runner.Run(gameExe, "", workingDir);
-    }
-
-    private static void SteamRelay(string steamAppId)
-    {
-        try
-        {
-            Launcher.OpenUri($"steam://rungameid/{steamAppId}");
-        }
-        catch (Exception ex)
-        {
-            Console.Error.WriteLine($"could not start Steam: {ex.Message}");
-        }
-    }
 }

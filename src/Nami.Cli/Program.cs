@@ -330,8 +330,7 @@ internal static class Program
         else
         {
             var detected = GameLocator.AutoDetect(gameDirFull);
-            Console.WriteLine($"game exe : {(detected is not null ? $"auto-detect -> {detected}" : "none found — run `nami launch set <game>.exe`")}" +
-                              (config.SteamAppId is not null ? $" (steam id {config.SteamAppId})" : ""));
+            Console.WriteLine($"game exe : {(detected is not null ? $"auto-detect -> {detected}" : "none found — run `nami launch set <game>.exe`")}" + (config.SteamAppId is not null ? $" (steam id {config.SteamAppId})" : ""));
         }
 
         var missing = Launcher.MissingRootFiles(root);
@@ -428,7 +427,7 @@ internal static class Program
                                       remember which executable is the game
               launch   [offline|steam] [gameDir]
                                       run the game with Nami injected (default: offline;
-                                      steam relays to a clean Steam session after exit)
+                                      steam runs through the Steam client, needs --steam-id set)
               create   [offline|steam] [gameDir]
                                       write launchNami.exe + run-with-nami.bat into the nami root
               run      <mod.csproj> [gameDir]

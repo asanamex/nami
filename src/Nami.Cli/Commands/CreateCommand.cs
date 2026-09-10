@@ -12,15 +12,13 @@ internal static class CreateCommand
     {
         var root = InstallContext.RequireRoot(gameDir);
         var config = NamiConfig.Load(root);
-        var isSteam = mode is "steam";
-
         var gameDirFull = Path.GetDirectoryName(root) ?? gameDir;
         var gameExe = LaunchCommand.ResolveGameExe(gameDirFull, config);
 
-        if (isSteam && string.IsNullOrEmpty(config.SteamAppId))
+        if (mode is "steam" && config.SteamAppId is null
+            && !File.Exists(Path.Combine(Path.GetDirectoryName(gameExe) ?? gameDirFull, "steam_appid.txt")))
         {
-            Console.WriteLine("warning: no steam app id is set — the shortcut will run the game with Nami injected");
-            Console.WriteLine("         (offline behavior). Set one with `nami launch set --steam-id <appid>` first.");
+            Console.WriteLine("warning: no steam app id is set — `nami launch steam` needs one (`nami launch set --steam-id <appid>`).");
         }
 
         ShortcutGenerator.WriteShortcuts(root, gameExe, mode ?? "offline");
@@ -30,9 +28,7 @@ internal static class CreateCommand
         Console.WriteLine($"created {shim}");
         Console.WriteLine($"created {bat}");
         Console.WriteLine();
-        Console.WriteLine(isSteam && config.SteamAppId is not null
-            ? "double-click launchNami.exe to run the game with Nami, then relay to a clean Steam session after exit."
-            : "double-click launchNami.exe (or run-with-nami.bat) to launch the game with Nami.");
+        Console.WriteLine("double-click launchNami.exe (or run-with-nami.bat) to launch the game with Nami.");
         return 0;
     }
 }

@@ -6,8 +6,7 @@ using System.Diagnostics;
 //
 // Usage:
 //   launchNami            launch the game with Nami injected (offline)
-//   launchNami steam      launch with Nami injected; when the game exits, relay to a clean
-//                         Steam session via steam://rungameid/<appid> (appid from nami.json)
+//   launchNami steam      launch the game with Nami injected; ensures the Steam client is running first
 //
 // The game executable comes from nami.json ("gameExe"); nami.json lives at <root>/nami.json.
 
@@ -55,6 +54,45 @@ if (!File.Exists(boot) || !File.Exists(loader))
     return 1;
 }
 
+var wantsSteam = args.Length > 0 && args[0].Equals("steam", StringComparison.OrdinalIgnoreCase);
+if (wantsSteam)
+{
+    var gameDir = Path.GetDirectoryName(gameExe) ?? namiRoot;
+    var appidFile = Path.Combine(gameDir, "steam_appid.txt");
+    string? fileId = null;
+    if (File.Exists(appidFile))
+    {
+        fileId = File.ReadAllText(appidFile).Trim();
+        if (fileId.Length == 0) fileId = null;
+    }
+
+    var appId = steamAppId ?? fileId;
+    if (appId is null)
+    {
+        Console.Error.WriteLine("[launchNami] no Steam app id — run `nami launch set --steam-id <appid>` first");
+        return 1;
+    }
+
+    if (fileId != appId)
+    {
+        try
+        {
+            File.WriteAllText(appidFile, appId);
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[launchNami] could not write Steam app id to {appidFile}: {ex.Message}");
+            return 1;
+        }
+    }
+
+    if (Process.GetProcessesByName("steam").Length == 0)
+    {
+        Console.Error.WriteLine("[launchNami] Steam client not running — start Steam, then retry");
+        return 1;
+    }
+}
+
 var workingDir = Path.GetDirectoryName(gameExe) ?? namiRoot;
 using (var p = Process.Start(new ProcessStartInfo
        {
@@ -75,22 +113,6 @@ using (var p = Process.Start(new ProcessStartInfo
     {
         Console.Error.WriteLine($"[launchNami] nami_boot exited with code {p.ExitCode} — check nami.log");
         return p.ExitCode;
-    }
-}
-
-// Steam relay: after the Nami-injected session ends, offer a clean Steam launch.
-var wantsSteam = args.Length > 0 && args[0].Equals("steam", StringComparison.OrdinalIgnoreCase);
-if (wantsSteam && steamAppId is not null)
-{
-    Console.WriteLine("[launchNami] game exited — starting a clean Steam session...");
-    try
-    {
-        Process.Start(new ProcessStartInfo { FileName = $"steam://rungameid/{steamAppId}", UseShellExecute = true });
-    }
-    catch (Exception ex)
-    {
-        Console.Error.WriteLine($"[launchNami] could not start Steam: {ex.Message}");
-        return 1;
     }
 }
 

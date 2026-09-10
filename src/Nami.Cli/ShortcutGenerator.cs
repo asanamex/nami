@@ -43,7 +43,7 @@ public static class ShortcutGenerator
         sb.AppendLine($"\"%NAMI%native\\nami_boot.exe\" \"%GAME%\" \"%NAMI%native\\nami_loader.dll\"");
         if (mode.Equals("steam", StringComparison.OrdinalIgnoreCase))
         {
-            sb.AppendLine("rem (steam relay is handled by launchNami.exe; this batch runs the Nami-injected game)");
+            sb.AppendLine("rem (this batch runs the Nami-injected game; no relay)");
         }
 
         sb.AppendLine("pause");

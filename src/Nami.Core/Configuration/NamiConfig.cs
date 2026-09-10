@@ -37,14 +37,8 @@ public sealed class NamiConfig
     /// <summary>Absolute path to the game executable (set by `nami launch set`; empty = auto-detect).</summary>
     public string? GameExe { get; set; }
 
-    /// <summary>Steam app id used by `nami launch steam` to relay to a clean Steam session (optional).</summary>
+    /// <summary>Steam app id giving `nami launch steam` its Steam context (written to steam_appid.txt next to the game).</summary>
     public string? SteamAppId { get; set; }
-
-    /// <summary>
-    /// When true, `nami launch steam` (with a SteamAppId set) launches the game directly WITHOUT
-    /// Nami injection, then relaunches through Steam after it exits - for online/anti-cheat games.
-    /// </summary>
-    public bool SteamRelaySkipInjection { get; set; }
 
     /// <summary>Built-in per-plugin performance profiler (tick timings, Tide-op latency).</summary>
     public ProfilerConfig Profiler { get; set; } = new();

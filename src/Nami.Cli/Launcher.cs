@@ -92,10 +92,42 @@ public static class Launcher
             : $"nami_boot exited with code {exit} — see {Path.Combine(namiRoot, "nami.log")} and native\\nami-loader.log";
     }
 
-    /// <summary>Launches a URI via the shell (steam://rungameid/...). Injectable for tests.</summary>
-    public static void OpenUri(string uri) => Process.Start(new ProcessStartInfo
+    /// <summary>Launches a URI via the shell (steam://). Injectable for tests.</summary>
+    internal static Action<string> OpenUri = uri => Process.Start(new ProcessStartInfo
     {
         FileName = uri,
         UseShellExecute = true
     });
+
+    /// <summary>Detects a running Steam client. Injectable for tests.</summary>
+    internal static Func<bool> SteamClientRunning = () => Process.GetProcessesByName("steam").Length > 0;
+
+    /// <summary>Ensures the Steam client is running, booting it via steam:// if needed.</summary>
+    internal static void EnsureSteamRunning(int timeoutSeconds = 30)
+    {
+        if (SteamClientRunning())
+        {
+            return;
+        }
+
+        try
+        {
+            OpenUri("steam://");
+        }
+        catch (Exception ex)
+        {
+            throw new InvalidOperationException("Steam doesn't appear to be installed or running - start Steam, then retry", ex);
+        }
+
+        for (var i = 0; i < timeoutSeconds; i++)
+        {
+            System.Threading.Thread.Sleep(1000);
+            if (SteamClientRunning())
+            {
+                return;
+            }
+        }
+
+        throw new InvalidOperationException($"Steam client did not appear within {timeoutSeconds}s - start Steam, then retry");
+    }
 }
