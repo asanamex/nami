@@ -17,6 +17,8 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\Nami.Cli\Nami.Cli.csproj" />
     <ProjectReference Include="..\..\src\Nami.Interop\Nami.Interop.csproj" />
+    <!-- Test-only: supplies a real plugin DLL so `nami reload` id validation runs against a manifest. -->
+    <ProjectReference Include="..\fixtures\Alpha\Alpha.csproj" />
   </ItemGroup>
 
   <ItemGroup>

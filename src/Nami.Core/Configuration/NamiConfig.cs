@@ -5,7 +5,8 @@ namespace Nami.Core.Configuration;
 
 /// <summary>
 /// Loads and saves Nami's central <c>nami.json</c> configuration with a simple, permissive schema.
-/// Unknown fields are preserved on save. The loader tolerates a missing or malformed file by using defaults.
+/// Unknown fields are NOT preserved: the loader has no <c>JsonExtensionData</c> member, so unknown
+/// keys are dropped on save. The loader tolerates a missing or malformed file by using defaults.
 /// Keys are written camelCase (and read case-insensitively), e.g. <c>enableMonoBridge</c>.
 /// </summary>
 public sealed class NamiConfig

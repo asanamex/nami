@@ -27,6 +27,7 @@
     <Project Path="tests/fixtures/Bad/Bad.csproj" />
     <Project Path="tests/fixtures/Beta/Beta.csproj" />
     <Project Path="tests/fixtures/Gamma/Gamma.csproj" />
+    <Project Path="tests/fixtures/Hostile/Hostile.csproj" />
   </Folder>
   <Folder Name="/tools/">
     <Project Path="tools/launch-shim/launch-shim.csproj" />

@@ -1,5 +1,6 @@
 using Nami.Core;
 using Nami.Core.Configuration;
+using Nami.Core.Generations;
 using Nami.Core.Logging;
 using Nami.Sdk;
 
@@ -53,7 +54,7 @@ public class ChainloaderTests
         var gamma = Array.IndexOf(ids, "dev.nami.fixtures.gamma");
         Assert.True(alpha < beta && beta < gamma);
 
-        Assert.All(chainloader.Plugins, p => Assert.Equal(PluginState.Active, p.State));
+        Assert.All(chainloader.Plugins, p => Assert.Equal(LifetimeState.Running, p.Lifetime));
         chainloader.Shutdown();
     }
 
@@ -97,7 +98,7 @@ public class ChainloaderTests
             chainloader.UpdateAll();
         }
 
-        Assert.Equal(PluginState.Quarantined, bad.State);
+        Assert.Equal(LifetimeState.Quarantined, bad.Lifetime);
         Assert.NotNull(bad.QuarantinedAt);
         Assert.True(bad.ConsecutiveFailures >= 3);
         Assert.Equal(1, quarantined);
@@ -105,7 +106,7 @@ public class ChainloaderTests
         // Other plugins still run after the bad one is disabled.
         chainloader.UpdateAll();
         var alpha = chainloader.Plugins.Single(p => p.Manifest.Id == "dev.nami.fixtures.alpha");
-        Assert.Equal(PluginState.Active, alpha.State);
+        Assert.Equal(LifetimeState.Running, alpha.Lifetime);
         chainloader.Shutdown();
     }
 
@@ -154,7 +155,7 @@ public class ChainloaderTests
             chainloader.UpdateAll();
         }
 
-        Assert.NotEqual(PluginState.Quarantined, bad.State);
+        Assert.NotEqual(LifetimeState.Quarantined, bad.Lifetime);
         Assert.True(bad.ConsecutiveFailures >= 3);
         Assert.Equal(0, quarantined);
         chainloader.Shutdown();

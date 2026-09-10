@@ -29,6 +29,9 @@ internal static class Program
                 "interop" => Interop(rest),
                 "inex" => Inex(rest),
                 "nmod" => Nmod(rest),
+                "reload" => Reload(rest),
+                "status" => Status(rest),
+                "reload-history" => ReloadHistory(rest),
                 "help" or "--help" or "-h" => Help(),
                 _ => Unknown(command)
             };
@@ -303,6 +306,34 @@ internal static class Program
         return NmodCommand.Run(gameDir, rest);
     }
 
+    /// <summary>
+    /// nami reload &lt;modId|--all&gt; [--source &lt;dll&gt;] [gameDir] - queue a live-reload
+    /// request for the running game (writes reload-requests/, never touches the runtime).
+    /// </summary>
+    private static int Reload(string[] args)
+    {
+        var gameDir = ParseGameDir(args, out var positional);
+        return ReloadCommand.Run(gameDir, positional);
+    }
+
+    /// <summary>
+    /// nami status [--json] [gameDir] - render the live runtime's status.json (read-only).
+    /// </summary>
+    private static int Status(string[] args)
+    {
+        var gameDir = ParseGameDir(args, out var positional);
+        return StatusCommand.Run(gameDir, positional);
+    }
+
+    /// <summary>
+    /// nami reload-history &lt;mod&gt; [gameDir] - render the reload-history.json ring (read-only).
+    /// </summary>
+    private static int ReloadHistory(string[] args)
+    {
+        var gameDir = ParseGameDir(args, out var positional);
+        return ReloadHistoryCommand.Run(gameDir, positional);
+    }
+
     private static int Doctor(string[] args)
     {
         var gameDir = ParseGameDir(args, out _);
@@ -440,6 +471,12 @@ internal static class Program
                                       legacy BepInEx lane (boots BepInEx 5.x in game Mono)
               nmod     info|install [args...] [gameDir]
                                       .nmod package distribution (manifest info / install)
+              reload   <modId|--all> [--source <dll>] [gameDir]
+                                      queue a live-reload request for the running game
+              status   [--json] [gameDir]
+                                      render the live runtime's status.json
+              reload-history <mod> [gameDir]
+                                      render recorded reloads for one mod
               help                    show this help
             """);
         return 0;

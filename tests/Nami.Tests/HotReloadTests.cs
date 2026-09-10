@@ -1,5 +1,6 @@
 using Nami.Core;
 using Nami.Core.Configuration;
+using Nami.Core.Generations;
 using Nami.Core.Logging;
 using Nami.Sdk;
 
@@ -57,7 +58,7 @@ public class HotReloadTests
         Assert.Equal(1, chainloader.Plugins.Single(p => p.Manifest.Id == "dev.nami.fixtures.gamma").ReloadCount);
         Assert.NotSame(alphaBefore.Instance, alphaAfter.Instance);
         Assert.NotSame(alphaBefore.LoadContext, alphaAfter.LoadContext);
-        Assert.All(chainloader.Plugins, p => Assert.Equal(PluginState.Active, p.State));
+        Assert.All(chainloader.Plugins, p => Assert.Equal(LifetimeState.Running, p.Lifetime));
         chainloader.Shutdown();
     }
 
@@ -82,7 +83,7 @@ public class HotReloadTests
 
         var alpha = chainloader.Plugins.Single(p => p.Manifest.Id == "dev.nami.fixtures.alpha");
         Assert.True(alpha.Generation > genBefore);
-        Assert.Equal(PluginState.Active, alpha.State);
+        Assert.Equal(LifetimeState.Running, alpha.Lifetime);
         chainloader.Shutdown();
     }
 
@@ -108,7 +109,7 @@ public class HotReloadTests
         Assert.Empty(result.Failed);
         Assert.Equal(new[] { "dev.nami.fixtures.gamma" }, result.Reloaded);
         var gamma = chainloader.Plugins.Single(p => p.Manifest.Id == "dev.nami.fixtures.gamma");
-        Assert.Equal(PluginState.Active, gamma.State);
+        Assert.Equal(LifetimeState.Running, gamma.Lifetime);
         chainloader.Shutdown();
     }
 
@@ -130,7 +131,7 @@ public class HotReloadTests
         Assert.Equal(new[] { "dev.nami.fixtures.beta" }, result.Unloaded);
         Assert.DoesNotContain(chainloader.Plugins, p => p.Manifest.Id == "dev.nami.fixtures.beta");
         // Alpha (no dependency on beta) is untouched and still active.
-        Assert.Equal(PluginState.Active, chainloader.Plugins.Single(p => p.Manifest.Id == "dev.nami.fixtures.alpha").State);
+        Assert.Equal(LifetimeState.Running, chainloader.Plugins.Single(p => p.Manifest.Id == "dev.nami.fixtures.alpha").Lifetime);
         chainloader.Shutdown();
     }
 
@@ -161,7 +162,7 @@ public class HotReloadTests
 
         var gamma = chainloader.Plugins.FirstOrDefault(p => p.Manifest.Id == "dev.nami.fixtures.gamma");
         Assert.NotNull(gamma);
-        Assert.Equal(PluginState.Active, gamma.State);
+        Assert.Equal(LifetimeState.Running, gamma.Lifetime);
         chainloader.Shutdown();
     }
 
@@ -198,8 +199,132 @@ public class HotReloadTests
 
         var reloaded = chainloader.Plugins.Single(p => p.Manifest.Id == "dev.nami.fixtures.alpha");
         Assert.True(reloaded.Generation > genBefore, "watcher did not reload the touched mod within the timeout");
-        Assert.Equal(PluginState.Active, reloaded.State);
+        Assert.Equal(LifetimeState.Running, reloaded.Lifetime);
         chainloader.Shutdown();
+    }
+
+    [Fact]
+    public void ReloadRequests_ValidRequest_CommitsAndDeletesFile()
+    {
+        using var fixture = new GameDirFixture();
+        fixture.WriteConfig();
+        CopyPlugins(fixture, "AlphaPlugin.dll", "BetaPlugin.dll");
+
+        var config = new NamiConfig { RootPath = fixture.Root };
+        config.HotReload.DebounceMs = 150;
+        var chainloader = Create(fixture, config);
+        chainloader.LoadAll();
+        chainloader.StartHotReload();
+
+        try
+        {
+            var genBefore = chainloader.Plugins.Single(p => p.Manifest.Id == "dev.nami.fixtures.alpha").Generation;
+            var requestsDir = Path.Combine(fixture.Root, "reload-requests");
+            Directory.CreateDirectory(requestsDir);
+            var requestPath = Path.Combine(requestsDir, "dev.nami.fixtures.alpha.request");
+            File.WriteAllText(requestPath, """{"modId":"dev.nami.fixtures.alpha"}""");
+
+            var deadline = DateTime.UtcNow.AddSeconds(15);
+            while (DateTime.UtcNow < deadline)
+            {
+                chainloader.UpdateAll();
+                var alpha = chainloader.Plugins.FirstOrDefault(p => p.Manifest.Id == "dev.nami.fixtures.alpha");
+                if (alpha is not null && alpha.Generation != genBefore)
+                {
+                    break;
+                }
+
+                Thread.Sleep(50);
+            }
+
+            var reloaded = chainloader.Plugins.Single(p => p.Manifest.Id == "dev.nami.fixtures.alpha");
+            Assert.True(reloaded.Generation > genBefore, "reload request was not consumed within the timeout");
+            Assert.Equal(LifetimeState.Running, reloaded.Lifetime);
+            Assert.False(File.Exists(requestPath));
+        }
+        finally
+        {
+            chainloader.Shutdown();
+        }
+    }
+
+    [Fact]
+    public void ReloadRequests_MalformedRequest_DeletedWithoutCrash()
+    {
+        using var fixture = new GameDirFixture();
+        fixture.WriteConfig();
+        CopyPlugins(fixture, "AlphaPlugin.dll");
+
+        var config = new NamiConfig { RootPath = fixture.Root };
+        config.HotReload.DebounceMs = 150;
+        var chainloader = Create(fixture, config);
+        chainloader.LoadAll();
+        chainloader.StartHotReload();
+
+        try
+        {
+            var genBefore = chainloader.Plugins.Single(p => p.Manifest.Id == "dev.nami.fixtures.alpha").Generation;
+            var requestsDir = Path.Combine(fixture.Root, "reload-requests");
+            Directory.CreateDirectory(requestsDir);
+            var poisonPath = Path.Combine(requestsDir, "poison.request");
+            File.WriteAllText(poisonPath, """{"modId": *** not json ***""");
+
+            // Consumption is observable: the poison file is deleted so it cannot loop forever.
+            var consumedDeadline = DateTime.UtcNow.AddSeconds(10);
+            while (File.Exists(poisonPath) && DateTime.UtcNow < consumedDeadline)
+            {
+                chainloader.UpdateAll();
+                Thread.Sleep(50);
+            }
+
+            Assert.False(File.Exists(poisonPath));
+            Assert.Equal(genBefore, chainloader.Plugins.Single(p => p.Manifest.Id == "dev.nami.fixtures.alpha").Generation);
+
+            // The runtime is unharmed: a later reload still commits.
+            var result = chainloader.Reload("dev.nami.fixtures.alpha");
+            Assert.Empty(result.Failed);
+        }
+        finally
+        {
+            chainloader.Shutdown();
+        }
+    }
+
+    [Fact]
+    public void ReloadRequests_UnknownModRequest_IgnoredAndDeleted()
+    {
+        using var fixture = new GameDirFixture();
+        fixture.WriteConfig();
+        CopyPlugins(fixture, "AlphaPlugin.dll");
+
+        var config = new NamiConfig { RootPath = fixture.Root };
+        config.HotReload.DebounceMs = 150;
+        var chainloader = Create(fixture, config);
+        chainloader.LoadAll();
+        chainloader.StartHotReload();
+
+        try
+        {
+            var genBefore = chainloader.Plugins.Single(p => p.Manifest.Id == "dev.nami.fixtures.alpha").Generation;
+            var requestsDir = Path.Combine(fixture.Root, "reload-requests");
+            Directory.CreateDirectory(requestsDir);
+            var unknownPath = Path.Combine(requestsDir, "dev.nami.fixtures.unknown.request");
+            File.WriteAllText(unknownPath, """{"modId":"dev.nami.fixtures.unknown"}""");
+
+            var consumedDeadline = DateTime.UtcNow.AddSeconds(10);
+            while (File.Exists(unknownPath) && DateTime.UtcNow < consumedDeadline)
+            {
+                chainloader.UpdateAll();
+                Thread.Sleep(50);
+            }
+
+            Assert.False(File.Exists(unknownPath));
+            Assert.Equal(genBefore, chainloader.Plugins.Single(p => p.Manifest.Id == "dev.nami.fixtures.alpha").Generation);
+        }
+        finally
+        {
+            chainloader.Shutdown();
+        }
     }
 
     [Fact]

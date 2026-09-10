@@ -20,6 +20,7 @@
     <ProjectReference Include="..\fixtures\Beta\Beta.csproj" />
     <ProjectReference Include="..\fixtures\Gamma\Gamma.csproj" />
     <ProjectReference Include="..\fixtures\Bad\Bad.csproj" />
+    <ProjectReference Include="..\fixtures\Hostile\Hostile.csproj" />
   </ItemGroup>
 
   <ItemGroup>

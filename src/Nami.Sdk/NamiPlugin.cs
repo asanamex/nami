@@ -31,4 +31,17 @@ public abstract class NamiPlugin
 
     /// <summary>Called every frame while the plugin is active. Prefer a game-loop hook for production mods.</summary>
     public virtual void OnUpdate() { }
+
+    /// <summary>
+    /// Migrates persisted state from <paramref name="fromVersion"/> to this build's schema.
+    /// Runs against a read-only snapshot during reload preparation; returning the input keeps it as-is.
+    /// Returning null or throwing rejects the migration and keeps the current state.
+    /// </summary>
+    public virtual string? MigrateState(int fromVersion, string json) => json;
+
+    /// <summary>
+    /// Validates this generation before it goes live; returning false rejects the candidate
+    /// (the current generation keeps running).
+    /// </summary>
+    public virtual bool OnValidate() => true;
 }
