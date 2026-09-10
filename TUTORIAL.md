@@ -42,7 +42,7 @@ because a few log lines and options differ.
 - Windows 10/11 x64
 - Your Unity game, ideally with a backup copy
 - The `nami-1.0.1.zip` release file (from the
-  [releases page](https://github.com/asanamex/nami/releases)) - about 38 MB
+  [releases page](https://github.com/asanamex/nami/releases)) - about 150 MB
 - Mod DLLs you want to run (from their authors), or none at all for a first smoke test
 
 No .NET SDK, no CMake, no compiler, no command line wizardry. If the zip path ever fails
