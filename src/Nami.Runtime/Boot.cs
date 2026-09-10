@@ -30,14 +30,16 @@ public static class Boot
         hub.Log("boot", LogLevel.Info, $"Nami managed runtime booting (nami_root={namiRoot})");
         hub.Log("boot", LogLevel.Info, $"clr={Environment.Version} os={RuntimeInformation.OSDescription} arch={RuntimeInformation.ProcessArchitecture}");
 
-        // Cross-runtime bridge: OPT-IN. Tide connects mods to the game's Mono runtime.
-        // A native crash here cannot be caught by managed code, so it stays behind the
-        // explicit `enableMonoBridge` flag until it is proven stable on more games.
+        // Cross-runtime bridge: OPT-IN via `enableMonoBridge`. Propagated honestly into
+        // Tide: when false, Tide.IsAvailable is false and every mod Tide op throws
+        // TideException(-3) instead of touching the game's Mono runtime (no AV possible).
         var config = NamiConfig.Load(namiRoot);
         if (Enum.TryParse<LogLevel>(config.LogLevel, ignoreCase: true, out var level))
         {
             hub.MinimumLevel = level;
         }
+        Tide.SetBridgeEnabled(config.EnableMonoBridge);
+        hub.Log("boot", LogLevel.Info, $"Tide bridge {(config.EnableMonoBridge ? "enabled" : "disabled")} (enableMonoBridge={config.EnableMonoBridge.ToString().ToLowerInvariant()})");
         if (config.EnableMonoBridge)
         {
             hub.Log("boot", LogLevel.Info, "attaching Tide bridge...");

@@ -6,7 +6,7 @@
     <Nullable>enable</Nullable>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <AnalysisLevel>latest</AnalysisLevel>
-    <Version>1.0.2</Version>
+    <Version>1.0.3</Version>
     <Authors>Nami</Authors>
     <Product>Nami</Product>
   </PropertyGroup>

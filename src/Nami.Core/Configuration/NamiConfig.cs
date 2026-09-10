@@ -30,8 +30,11 @@ public sealed class NamiConfig
 
     /// <summary>
     /// EXPERIMENTAL: attempt to bridge into the game's native Mono runtime from our hosted
-    /// CoreCLR (call UnityEngine.Debug.Log etc. through the embedding API). Defaults to false:
-    /// the CoreCLR↔Mono GC interop is not yet stable, and a crash here would take the game down.
+    /// CoreCLR (call UnityEngine.Debug.Log etc. through the embedding API). Defaults to false.
+    /// Honest gate: <c>Boot.Run</c> propagates this into <c>Tide.SetBridgeEnabled</c>, so when
+    /// false <c>Tide.IsAvailable</c> is false and every mod Tide op throws
+    /// <c>TideException</c> with <c>Code=-3</c> instead of touching native (no AV possible
+    /// by construction). The boot self-test runs only when this is true.
     /// </summary>
     public bool EnableMonoBridge { get; set; }
 

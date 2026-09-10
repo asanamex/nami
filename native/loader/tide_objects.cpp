@@ -406,7 +406,7 @@ void* box_primitive(const TideValue& v) {
             if (obj == nullptr) {
                 return nullptr;
             }
-            *static_cast<int32_t*>(g_api.object_unbox(obj)) = v.data.boolean ? 1 : 0;
+            *static_cast<uint8_t*>(g_api.object_unbox(obj)) = v.data.boolean ? 1 : 0;
             return obj;
         }
         case TideType_I64: {
@@ -806,7 +806,7 @@ void write_ret(TideValue* ret, void* mono_result) {
             ret->data.r8 = *static_cast<double*>(g_api.object_unbox(mono_result));
             break;
         case TideType_Bool:
-            ret->data.boolean = *static_cast<int32_t*>(g_api.object_unbox(mono_result));
+            ret->data.boolean = *static_cast<uint8_t*>(g_api.object_unbox(mono_result)) ? 1 : 0;
             break;
         case TideType_String: {
             void* utf8 = g_api.string_to_utf8(mono_result);
@@ -1392,7 +1392,7 @@ int tide_object_op(void* arg) {
                     req->ret->data.r8 = *static_cast<double*>(g_api.object_unbox(element));
                     break;
                 case TideType_Bool:
-                    req->ret->data.boolean = *static_cast<int32_t*>(g_api.object_unbox(element));
+                    req->ret->data.boolean = *static_cast<uint8_t*>(g_api.object_unbox(element)) ? 1 : 0;
                     break;
                 default:
                     req->ret->type = TideType_Object;

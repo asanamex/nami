@@ -152,10 +152,11 @@ public sealed unsafe class TideBatch : IDisposable
 
     /// <summary>
     /// Runs every enqueued op on the game main thread in ONE round trip and stores the
-    /// results. Throws <see cref="InvalidOperationException"/> when the loader is absent,
-    /// <see cref="Tide.TideException"/> when the batch itself could not run (e.g. the
-    /// main-thread pump is unavailable). Per-op game-side failures do NOT throw here -
-    /// check <see cref="WasOk"/> or let the result accessors throw.
+    /// results. Throws <see cref="Tide.TideException"/> with <c>Code=-3</c> when the
+    /// bridge is disabled (<c>enableMonoBridge=false</c>), <see cref="InvalidOperationException"/>
+    /// when the loader is absent, <see cref="Tide.TideException"/> when the batch itself
+    /// could not run (e.g. the main-thread pump is unavailable). Per-op game-side failures
+    /// do NOT throw here - check <see cref="WasOk"/> or let the result accessors throw.
     /// </summary>
     public void Flush()
     {
@@ -168,6 +169,10 @@ public sealed unsafe class TideBatch : IDisposable
         {
             _flushed = true;  // nothing to do; no loader round trip needed
             return;
+        }
+        if (!Tide.BridgeEnabled)
+        {
+            throw new Tide.TideException("Tide bridge is disabled (enableMonoBridge=false in nami.json)") { Code = -3 };
         }
         if (!Tide.IsAvailable)
         {

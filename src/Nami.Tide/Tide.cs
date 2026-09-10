@@ -77,6 +77,25 @@ public static unsafe partial class Tide
     // The loader module handle (nami_loader.dll is loaded in-process).
     private static IntPtr _loaderModule;
 
+    // Honest enableMonoBridge gate (default enabled so out-of-game unit tests and
+    // bridge-on game runs behave as before; Boot.Run propagates nami.json's
+    // enableMonoBridge on every boot). When disabled, IsAvailable is false and every
+    // mod-facing Tide entry throws TideException(-3) instead of touching native.
+    private static int _bridgeEnabled = 1;
+
+    internal static bool BridgeEnabled => Volatile.Read(ref _bridgeEnabled) != 0;
+
+    internal static void SetBridgeEnabled(bool enabled) => Volatile.Write(ref _bridgeEnabled, enabled ? 1 : 0);
+
+    internal static void ThrowIfBridgeDisabled()
+    {
+        if (!BridgeEnabled)
+        {
+            throw new TideException("Tide bridge is disabled (enableMonoBridge=false in nami.json)") { Code = -3 };
+        }
+    }
+
+
     /// <summary>
     /// Backend the bridge is talking to. Mono = Unity Mono titles (classic Tide, drain via
     /// mono_runtime_invoke detour); Il2Cpp = GameAssembly.dll titles (drain via the game's
@@ -134,17 +153,22 @@ public static unsafe partial class Tide
         }
     }
 
-    /// <summary>True when the loader (and thus the Tide main-thread drain) is present.</summary>
-    public static bool IsAvailable => _loaderModule != IntPtr.Zero;
+    /// <summary>
+    /// True when the loader (and thus the Tide main-thread drain) is present AND the
+    /// bridge is enabled (<c>enableMonoBridge=true</c> in nami.json, propagated by
+    /// <c>Boot.Run</c>). Bridge-off mods see false here and every Tide op throws
+    /// <see cref="TideException"/> with <c>Code=-3</c> instead of executing.
+    /// </summary>
+    public static bool IsAvailable => BridgeEnabled && _loaderModule != IntPtr.Zero;
 
     /// <summary>
     /// True when the backend's main-thread executor is installed and ops can run.
-    /// On Mono this is true as soon as the loader is present; on IL2CPP it requires the
-    /// game's main window to exist (the executor drains the window proc), so it can be
-    /// false during early boot.
+    /// On Mono this is true as soon as the loader is present (and the bridge is
+    /// enabled); on IL2CPP it requires the game's main window to exist (the executor
+    /// drains the window proc), so it can be false during early boot.
     /// </summary>
-    public static bool IsReady => ActiveBackend == Backend.Mono ||
-                                  (ActiveBackend == Backend.Il2Cpp && _il2cppInstalled == 1);
+    public static bool IsReady => IsAvailable &&
+        (ActiveBackend == Backend.Mono || (ActiveBackend == Backend.Il2Cpp && _il2cppInstalled == 1));
 
     private static int _il2cppInstalled;
 
@@ -198,9 +222,14 @@ public static unsafe partial class Tide
         return bytes;
     }
 
-    /// <summary>Invokes <c>UnityEngine.Debug.Log(object)</c> on the game main thread.</summary>
+    /// <summary>
+    /// Invokes <c>UnityEngine.Debug.Log(object)</c> on the game main thread.
+    /// Throws <see cref="TideException"/> with <c>Code=-3</c> when the bridge is
+    /// disabled; returns false (no throw) when the loader is absent but enabled.
+    /// </summary>
     public static bool UnityLog(string message)
     {
+        ThrowIfBridgeDisabled();
         if (!IsAvailable)
         {
             return false;
@@ -240,9 +269,12 @@ public static unsafe partial class Tide
     /// Invokes a parameterless static method on a game class, on the game main thread.
     /// <paramref name="assembly"/> is the assembly name (with or without .dll).
     /// Returns true if the method ran without a game exception.
+    /// Throws <see cref="TideException"/> with <c>Code=-3</c> when the bridge is
+    /// disabled; returns false (no throw) when the loader is absent but enabled.
     /// </summary>
     public static bool InvokeStatic(string assembly, string ns, string klass, string method)
     {
+        ThrowIfBridgeDisabled();
         if (!IsAvailable)
         {
             return false;
@@ -318,6 +350,7 @@ internal static unsafe class TideObjectOp
     public static TideValue Call(TideCallOp op, GameClass target, string member,
         TideValue* args, int argCount, TideType returnType, bool window = false)
     {
+        Tide.ThrowIfBridgeDisabled();
         try
         {
             var req = new CallRequest();
@@ -361,6 +394,7 @@ internal static unsafe class TideObjectOp
     public static TideValue CallInstance(TideCallOp op, long handle, string member,
         TideValue* args, int argCount, TideType returnType)
     {
+        Tide.ThrowIfBridgeDisabled();
         try
         {
             var req = new CallRequest();
