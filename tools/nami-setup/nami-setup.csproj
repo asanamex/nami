@@ -1,0 +1,31 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <!-- net10.0-windows (not plain net10.0): FolderBrowserDialog needs WinForms without
+         platform-compat suppressions. The wizard is Windows-only like everything else. -->
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AssemblyName>InstallNami</AssemblyName>
+    <RootNamespace>Nami.Setup</RootNamespace>
+    <IsPackable>false</IsPackable>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+    <UseWindowsForms>true</UseWindowsForms>
+    <!-- Self-contained single-file: double-click from the extracted release zip with
+         no .NET on PATH and no siblings to rely on (payload layout is load-bearing). -->
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>true</SelfContained>
+    <!-- Nami.Cli is a framework-dependent exe whose DLLs are plain managed code: safe to
+         bundle into this self-contained app. Only the validation (not the bundle) objects. -->
+    <ValidateExecutableReferencesMatchSelfContained>false</ValidateExecutableReferencesMatchSelfContained>
+    <PublishSingleFile>true</PublishSingleFile>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <DebugType>none</DebugType>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Nami.Cli\Nami.Cli.csproj" />
+  </ItemGroup>
+
+</Project>

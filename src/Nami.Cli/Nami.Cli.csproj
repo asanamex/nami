@@ -10,6 +10,7 @@
 
   <ItemGroup>
     <InternalsVisibleTo Include="Nami.Cli.Tests" />
+    <InternalsVisibleTo Include="InstallNami" />
   </ItemGroup>
 
   <ItemGroup>

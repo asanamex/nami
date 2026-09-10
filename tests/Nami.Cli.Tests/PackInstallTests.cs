@@ -53,6 +53,7 @@ public sealed class PackInstallTests : IDisposable
         Directory.CreateDirectory(Path.Combine(_artifacts, "native", "build"));
         File.WriteAllText(Path.Combine(_artifacts, "native", "build", "nami_boot.exe"), "nami_boot.exe");
         File.WriteAllText(Path.Combine(_artifacts, "native", "build", "nami_loader.dll"), "nami_loader.dll");
+        File.WriteAllText(Path.Combine(_artifacts, "InstallNami.exe"), "InstallNami.exe");
 
         Directory.CreateDirectory(Path.Combine(_artifacts, "dotnet", "host", "fxr", "10.0.0"));
         File.WriteAllText(Path.Combine(_artifacts, "dotnet", "host", "fxr", "10.0.0", "hostfxr.dll"), "hostfxr.dll");
@@ -75,6 +76,7 @@ public sealed class PackInstallTests : IDisposable
 
         Assert.NotNull(zip.GetEntry("native/nami_boot.exe"));
         Assert.NotNull(zip.GetEntry("native/nami_loader.dll"));
+        Assert.NotNull(zip.GetEntry("InstallNami.exe"));
         Assert.NotNull(zip.GetEntry("dotnet/host/fxr/10.0.0/hostfxr.dll"));
         Assert.NotNull(zip.GetEntry(Stager.ManifestFileName));
 
@@ -82,10 +84,11 @@ public sealed class PackInstallTests : IDisposable
         using var manifest = JsonDocument.Parse(reader.ReadToEnd());
         Assert.Equal("nami", manifest.RootElement.GetProperty("product").GetString());
         Assert.Equal("10.0.0", manifest.RootElement.GetProperty("runtime").GetString());
-        // 7 managed + 2 native + 1 dotnet file, each with a real sha-256 hash.
+        // 7 managed + 2 native + 1 setup + 1 dotnet file, each with a real sha-256 hash.
         var files = manifest.RootElement.GetProperty("files");
-        Assert.Equal(10, files.EnumerateObject().Count());
+        Assert.Equal(11, files.EnumerateObject().Count());
         Assert.Equal(64, files.GetProperty("Nami.Runtime.dll").GetString()!.Length);
+        Assert.Equal(64, files.GetProperty("InstallNami.exe").GetString()!.Length);
     }
 
     [Fact]
@@ -214,4 +217,95 @@ public sealed class PackInstallTests : IDisposable
             Stager.InstallFromArtifact(_gameDir, Path.Combine(_baseDir, "nope.zip")));
         Assert.Contains("installer artifact not found", ex.Message);
     }
+
+    [Fact]
+    public void Pack_MissingSetupExe_Throws()
+    {
+        File.Delete(Path.Combine(_artifacts, "InstallNami.exe"));
+        var ex = Assert.Throws<InvalidOperationException>(() => Stager.Pack(_repo, ArtifactPath, _artifacts));
+        Assert.Contains("InstallNami.exe is missing", ex.Message);
+    }
+
+    [Fact]
+    public void InstallFromDirectory_CreatesFullRoot()
+    {
+        Stager.Pack(_repo, ArtifactPath, _artifacts);
+        var payload = Path.Combine(_baseDir, "payload");
+        ZipFile.ExtractToDirectory(ArtifactPath, payload);
+
+        var staged = Stager.InstallFromDirectory(_gameDir, payload);
+
+        Assert.Equal(Path.Combine(_gameDir, "nami"), staged.Root);
+        Assert.Equal("1.0.0", staged.Version);
+        Assert.Equal(payload, staged.Source);
+        foreach (var f in Stager.ManagedFiles)
+        {
+            var dst = Path.Combine(staged.Root, f);
+            Assert.True(File.Exists(dst), $"{f} should be installed");
+            Assert.Equal(f, File.ReadAllText(dst));
+        }
+
+        Assert.Equal("InstallNami.exe", File.ReadAllText(Path.Combine(staged.Root, "InstallNami.exe")));
+        Assert.True(Directory.Exists(Path.Combine(staged.Root, "mods")));
+        Assert.True(File.Exists(Path.Combine(staged.Root, "nami.json")));
+    }
+
+    [Fact]
+    public void InstallFromDirectory_Upgrade_ReplacesFramework_KeepsUserContent()
+    {
+        Stager.Pack(_repo, ArtifactPath, _artifacts);
+        var payload = Path.Combine(_baseDir, "payload");
+        ZipFile.ExtractToDirectory(ArtifactPath, payload);
+
+        var root = Path.Combine(_gameDir, "nami");
+        Directory.CreateDirectory(Path.Combine(root, "mods"));
+        File.WriteAllText(Path.Combine(root, "mods", "keep.dll"), "user mod");
+        File.WriteAllText(Path.Combine(root, "Nami.Tide.dll"), "STALE");
+
+        Stager.InstallFromDirectory(_gameDir, payload);
+
+        Assert.Equal("user mod", File.ReadAllText(Path.Combine(root, "mods", "keep.dll")));
+        Assert.Equal("Nami.Tide.dll", File.ReadAllText(Path.Combine(root, "Nami.Tide.dll")));
+    }
+
+    [Fact]
+    public void InstallFromDirectory_MissingPayloadFile_Throws()
+    {
+        Stager.Pack(_repo, ArtifactPath, _artifacts);
+        var payload = Path.Combine(_baseDir, "payload");
+        ZipFile.ExtractToDirectory(ArtifactPath, payload);
+        File.Delete(Path.Combine(payload, "InstallNami.exe")); // first entry alphabetically: nothing installs
+
+        var ex = Assert.Throws<InvalidOperationException>(() => Stager.InstallFromDirectory(_gameDir, payload));
+        Assert.Contains("payload is corrupt", ex.Message);
+        Assert.Empty(Directory.EnumerateFiles(Path.Combine(_gameDir, "nami"), "*", SearchOption.AllDirectories));
+    }
+
+    [Fact]
+    public void InstallFromDirectory_TamperedFile_Throws_AndDoesNotClobber()
+    {
+        Stager.Pack(_repo, ArtifactPath, _artifacts);
+        var payload = Path.Combine(_baseDir, "payload");
+        ZipFile.ExtractToDirectory(ArtifactPath, payload);
+
+        var root = Path.Combine(_gameDir, "nami");
+        Directory.CreateDirectory(root);
+        File.WriteAllText(Path.Combine(root, "Nami.Tide.dll"), "PRIOR");
+        File.WriteAllText(Path.Combine(payload, "Nami.Tide.dll"), "TAMPERED");
+
+        var ex = Assert.Throws<InvalidOperationException>(() => Stager.InstallFromDirectory(_gameDir, payload));
+        Assert.Contains("integrity check failed", ex.Message);
+        Assert.Equal("PRIOR", File.ReadAllText(Path.Combine(root, "Nami.Tide.dll")));
+    }
+
+    [Fact]
+    public void InstallFromDirectory_NoManifest_Throws()
+    {
+        var empty = Path.Combine(_baseDir, "empty-payload");
+        Directory.CreateDirectory(empty);
+
+        var ex = Assert.Throws<InvalidOperationException>(() => Stager.InstallFromDirectory(_gameDir, empty));
+        Assert.Contains("not a Nami installer payload", ex.Message);
+    }
+
 }

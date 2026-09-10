@@ -30,5 +30,6 @@
   </Folder>
   <Folder Name="/tools/">
     <Project Path="tools/launch-shim/launch-shim.csproj" />
+    <Project Path="tools/nami-setup/nami-setup.csproj" />
   </Folder>
 </Solution>

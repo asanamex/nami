@@ -89,4 +89,40 @@ public sealed class GameLocatorTests : IDisposable
         var forced = GameLocator.ResolveExplicit(_gameDir, "UnityCrashHandler64.exe", force: true);
         Assert.Equal(Path.Combine(_gameDir, "UnityCrashHandler64.exe"), forced);
     }
+
+    [Fact]
+    public void Candidates_OrdersBySizeSkipsHelpers()
+    {
+        WriteExe("UnityCrashHandler64.exe", 100_000_000);
+        WriteExe("small.exe", 10_000);
+        WriteExe("MyGame.exe", 50_000_000);
+
+        var candidates = GameLocator.Candidates(_gameDir);
+
+        Assert.Equal(
+        [
+            Path.Combine(_gameDir, "MyGame.exe"),
+            Path.Combine(_gameDir, "small.exe"),
+        ], candidates);
+    }
+
+    [Fact]
+    public void Candidates_FallsBackToSubdirs()
+    {
+        WriteExe("UnityCrashHandler.exe", 200_000_000);
+        Directory.CreateDirectory(Path.Combine(_gameDir, "bin"));
+        File.WriteAllBytes(Path.Combine(_gameDir, "bin", "realgame.exe"), new byte[5_000_000]);
+
+        var candidates = GameLocator.Candidates(_gameDir);
+
+        Assert.Equal([Path.Combine(_gameDir, "bin", "realgame.exe")], candidates);
+    }
+
+    [Fact]
+    public void Candidates_EmptyWhenNothingPlausible()
+    {
+        WriteExe("UnityCrashHandler.exe", 100);
+        Assert.Empty(GameLocator.Candidates(_gameDir));
+    }
+
 }

@@ -83,22 +83,32 @@ public static class GameLocator
     }
 
     /// <summary>
+    /// Lists plausible game executables size-desc: top-level non-helper exes first, then
+    /// immediate-subdir ones (same skips as before: helpers, `_Data`/`nami` dirs, unreadable
+    /// subdirs). Empty when nothing plausible is found.
+    /// </summary>
+    public static IReadOnlyList<string> Candidates(string gameDir)
+    {
+        var result = new List<string>(TopCandidates(gameDir));
+        result.AddRange(SubdirCandidates(gameDir));
+        return result;
+    }
+
+    /// <summary>
     /// Auto-detects the game executable: the largest .exe directly in the game dir, skipping known
     /// non-game helpers; falls back to a heuristic walk of subdirectories when the top level has no
     /// candidate. Returns null when nothing plausible is found.
     /// </summary>
-    public static string? AutoDetect(string gameDir)
-    {
-        var top = LargestExe(Directory.EnumerateFiles(gameDir, "*.exe"));
-        if (top is not null)
-        {
-            return top;
-        }
+    public static string? AutoDetect(string gameDir) => Candidates(gameDir).FirstOrDefault();
 
+    private static List<string> TopCandidates(string gameDir) =>
+        OrderedBySize(TopExeFiles(gameDir));
+
+    private static List<string> SubdirCandidates(string gameDir)
+    {
         // Heuristic fallback: some games keep the real exe under a subfolder (e.g. <game>/bin/).
         // Bound the walk to keep it fast on huge trees and avoid the game's own data folders.
-        string? best = null;
-        long bestSize = 0;
+        var sized = new List<(string Path, long Size)>();
         foreach (var dir in Directory.EnumerateDirectories(gameDir))
         {
             var name = Path.GetFileName(dir);
@@ -110,20 +120,7 @@ public static class GameLocator
 
             try
             {
-                foreach (var exe in Directory.EnumerateFiles(dir, "*.exe", SearchOption.TopDirectoryOnly))
-                {
-                    if (IsKnownNonGameExe(Path.GetFileNameWithoutExtension(exe)))
-                    {
-                        continue;
-                    }
-
-                    var size = new FileInfo(exe).Length;
-                    if (size > bestSize)
-                    {
-                        best = exe;
-                        bestSize = size;
-                    }
-                }
+                sized.AddRange(SizedExes(Directory.EnumerateFiles(dir, "*.exe", SearchOption.TopDirectoryOnly)));
             }
             catch (UnauthorizedAccessException)
             {
@@ -131,13 +128,15 @@ public static class GameLocator
             }
         }
 
-        return best;
+        return Ordered(sized);
     }
 
-    private static string? LargestExe(IEnumerable<string> exes)
+    private static IEnumerable<string> TopExeFiles(string gameDir) =>
+        Directory.EnumerateFiles(gameDir, "*.exe");
+
+    private static List<(string Path, long Size)> SizedExes(IEnumerable<string> exes)
     {
-        string? best = null;
-        long bestSize = 0;
+        var sized = new List<(string Path, long Size)>();
         foreach (var exe in exes)
         {
             if (IsKnownNonGameExe(Path.GetFileNameWithoutExtension(exe)))
@@ -155,15 +154,20 @@ public static class GameLocator
                 continue;
             }
 
-            if (size > bestSize)
-            {
-                best = exe;
-                bestSize = size;
-            }
+            sized.Add((exe, size));
         }
 
-        return best;
+        return sized;
     }
+
+    private static List<string> OrderedBySize(IEnumerable<string> exes) =>
+        Ordered(SizedExes(exes));
+
+    private static List<string> Ordered(List<(string Path, long Size)> sized) =>
+        sized.OrderByDescending(s => s.Size)
+            .ThenBy(s => s.Path, StringComparer.Ordinal)
+            .Select(s => s.Path)
+            .ToList();
 
     /// <summary>Cheap PE check: the file starts with MZ and has a valid e_lfanew pointing at PE\0\0.</summary>
     public static bool LooksLikePeExecutable(string path)

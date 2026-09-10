@@ -158,6 +158,11 @@ public static class Stager
             EnsureRepoSourcesFresh(repoRoot, sources);
         }
 
+        var setupExe = ResolveSetupExe(repoRoot, artifactsRoot)
+            ?? throw new InvalidOperationException(
+                "cannot pack a Nami artifact: InstallNami.exe is missing — publish it first: " +
+                "dotnet publish tools/nami-setup -c Release -r win-x64 --self-contained");
+
         var runtimeSource = ResolveRuntime(sources.DotnetDir);
         if (runtimeSource is null)
         {
@@ -182,6 +187,7 @@ public static class Stager
 
         entries.Add(("native/nami_boot.exe", Path.Combine(sources.NativeDir, "nami_boot.exe")));
         entries.Add(("native/nami_loader.dll", Path.Combine(sources.NativeDir, "nami_loader.dll")));
+        entries.Add(("InstallNami.exe", setupExe));
         foreach (var file in Directory.EnumerateFiles(runtimeSource, "*", SearchOption.AllDirectories))
         {
             entries.Add(("dotnet/" + Path.GetRelativePath(runtimeSource, file).Replace('\\', '/'), file));
@@ -259,50 +265,118 @@ public static class Stager
         }
 
         var root = Path.Combine(gameDir, "nami");
-        Directory.CreateDirectory(root);
         var created = new List<string>();
 
         using (var zip = ZipFile.OpenRead(localPath))
         {
-            foreach (var (rel, expectedHash) in manifest.Files.OrderBy(f => f.Key, StringComparer.Ordinal))
+            InstallManifestFiles(gameDir, manifest, rel =>
             {
                 var entry = zip.GetEntry(rel)
                     ?? throw new InvalidOperationException(
                         $"artifact is corrupt: the manifest lists '{rel}' but the archive does not contain it.");
-                var dst = SafeCombine(root, rel);
-                Directory.CreateDirectory(Path.GetDirectoryName(dst)!);
-
-                // Extract to a temp file, verify the hash, then move into place - a tampered
-                // entry never clobbers a working file.
-                var tmp = dst + ".tmp";
-                string actualHash;
-                using (var src = entry.Open())
-                using (var tmpFs = File.Create(tmp))
-                {
-                    src.CopyTo(tmpFs);
-                }
-
-                using (var tmpFs = File.OpenRead(tmp))
-                {
-                    actualHash = Convert.ToHexStringLower(SHA256.HashData(tmpFs));
-                }
-
-                if (actualHash != expectedHash)
-                {
-                    File.Delete(tmp);
-                    throw new InvalidOperationException(
-                        $"artifact integrity check failed for '{rel}' (expected {expectedHash}, got {actualHash}) — " +
-                        "the artifact is corrupt or was tampered with.");
-                }
-
-                File.Move(tmp, dst, overwrite: true);
-                created.Add(dst);
-            }
+                return entry.Open();
+            }, "artifact", created);
         }
 
         RemoveObsoleteRootFiles(root);
         WriteRootScaffold(root, created);
         return new StagedRoot { GameDir = gameDir, Root = root, Created = created, Version = manifest.Version, Source = artifact };
+    }
+
+    /// <summary>
+    /// Installs a Nami root from an extracted installer payload directory (the release zip
+    /// contents beside the setup wizard). Verifies every file against the payload manifest
+    /// hashes, then behaves exactly like <see cref="InstallFromArtifact"/>.
+    /// </summary>
+    /// <param name="gameDir">Directory that contains the game executable.</param>
+    /// <param name="payloadDir">Directory holding manifest.json + the payload files.</param>
+    public static StagedRoot InstallFromDirectory(string gameDir, string payloadDir)
+    {
+        var manifestPath = Path.Combine(payloadDir, ManifestFileName);
+        if (!File.Exists(manifestPath))
+        {
+            throw new InvalidOperationException(
+                $"'{payloadDir}' is not a Nami installer payload (no {ManifestFileName}).");
+        }
+
+        ArtifactManifest manifest;
+        try
+        {
+            manifest = JsonSerializer.Deserialize<ArtifactManifest>(File.ReadAllText(manifestPath), JsonOptions)
+                ?? throw new InvalidOperationException($"'{payloadDir}' has a corrupt {ManifestFileName}.");
+        }
+        catch (JsonException)
+        {
+            throw new InvalidOperationException($"'{payloadDir}' has a corrupt {ManifestFileName}.");
+        }
+
+        if (manifest.Product != "nami")
+        {
+            throw new InvalidOperationException(
+                $"'{payloadDir}' is not a Nami installer payload (product '{manifest.Product}').");
+        }
+
+        var created = new List<string>();
+        InstallManifestFiles(gameDir, manifest, rel =>
+        {
+            var src = SafeCombine(payloadDir, rel);
+            if (!File.Exists(src))
+            {
+                throw new InvalidOperationException(
+                    $"payload is corrupt: the manifest lists '{rel}' but the payload directory does not contain it.");
+            }
+
+            return File.OpenRead(src);
+        }, "payload", created);
+
+        var root = Path.Combine(gameDir, "nami");
+        RemoveObsoleteRootFiles(root);
+        WriteRootScaffold(root, created);
+        return new StagedRoot { GameDir = gameDir, Root = root, Created = created, Version = manifest.Version, Source = payloadDir };
+    }
+
+    /// <summary>
+    /// Extracts verified manifest files into the nami root. Shared by zip and directory
+    /// installs: <paramref name="openEntry"/> opens one manifest entry for reading (throwing
+    /// the caller-specific missing-entry error when absent), <paramref name="integrityNoun"/>
+    /// names the source ("artifact"/"payload") in integrity errors.
+    /// </summary>
+    private static void InstallManifestFiles(string gameDir, ArtifactManifest manifest, Func<string, Stream> openEntry, string integrityNoun, List<string> created)
+    {
+        var root = Path.Combine(gameDir, "nami");
+        Directory.CreateDirectory(root);
+
+        foreach (var (rel, expectedHash) in manifest.Files.OrderBy(f => f.Key, StringComparer.Ordinal))
+        {
+            var dst = SafeCombine(root, rel);
+            Directory.CreateDirectory(Path.GetDirectoryName(dst)!);
+
+            // Extract to a temp file, verify the hash, then move into place - a tampered
+            // entry never clobbers a working file.
+            var tmp = dst + ".tmp";
+            string actualHash;
+            using (var src = openEntry(rel))
+            using (var tmpFs = File.Create(tmp))
+            {
+                src.CopyTo(tmpFs);
+            }
+
+            using (var tmpFs = File.OpenRead(tmp))
+            {
+                actualHash = Convert.ToHexStringLower(SHA256.HashData(tmpFs));
+            }
+
+            if (actualHash != expectedHash)
+            {
+                File.Delete(tmp);
+                throw new InvalidOperationException(
+                    $"{integrityNoun} integrity check failed for '{rel}' (expected {expectedHash}, got {actualHash}) — " +
+                    $"the {integrityNoun} is corrupt or was tampered with.");
+            }
+
+            File.Move(tmp, dst, overwrite: true);
+            created.Add(dst);
+        }
     }
 
     /// <summary>Locates the repo root by walking up from the current directory (or null).</summary>
@@ -317,6 +391,29 @@ public static class Stager
             }
 
             dir = dir.Parent;
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Locates the published setup wizard for packing: Release publish output first, Debug
+    /// fallback; a bare InstallNami.exe directly under an explicit artifacts root (tests).
+    /// </summary>
+    private static string? ResolveSetupExe(string repoRoot, string? artifactsRoot)
+    {
+        if (artifactsRoot is not null)
+        {
+            var testPath = Path.Combine(artifactsRoot, "InstallNami.exe");
+            return File.Exists(testPath) ? testPath : null;
+        }
+        foreach (var config in new[] { "Release", "Debug" })
+        {
+            var path = Path.Combine(repoRoot, "tools", "nami-setup", "bin", config, "net10.0-windows", "win-x64", "publish", "InstallNami.exe");
+            if (File.Exists(path))
+            {
+                return path;
+            }
         }
 
         return null;
