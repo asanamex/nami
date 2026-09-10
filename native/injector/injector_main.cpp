@@ -28,12 +28,14 @@ Status inject_into_game(const wchar_t* game_exe, const wchar_t* loader_dll_path,
     STARTUPINFOW si{};
     si.cb = sizeof(si);
     PROCESS_INFORMATION pi{};
+    std::fwprintf(stdout, L"[injector] launching suspended: %ls\n", game_exe);
     if (!CreateProcessW(game_exe, nullptr, nullptr, nullptr, FALSE, CREATE_SUSPENDED, nullptr,
                         game_dir, &si, &pi)) {
-        std::fwprintf(stderr, L"[injector] CreateProcessW(%s) failed: %lu\n", game_exe,
+        std::fwprintf(stderr, L"[injector] CreateProcessW(%ls) failed: %lu\n", game_exe,
                       GetLastError());
         return Status::Error;
     }
+    std::fwprintf(stdout, L"[injector] game process started, pid=%lu\n", pi.dwProcessId);
 
     // --- 2. Classic LoadLibraryW injection (no code stub). ---
     // kernel32 (and thus LoadLibraryW) is loaded at the SAME address in every process on
@@ -49,6 +51,8 @@ Status inject_into_game(const wchar_t* game_exe, const wchar_t* loader_dll_path,
     }
 
     const size_t path_bytes = (wcslen(loader_dll_path) + 1) * sizeof(wchar_t);
+    std::fwprintf(stdout, L"[injector] writing loader path (%zu bytes) into pid=%lu\n", path_bytes,
+                  pi.dwProcessId);
     void* remote_path = VirtualAllocEx(pi.hProcess, nullptr, path_bytes, MEM_COMMIT | MEM_RESERVE,
                                        PAGE_READWRITE);
     if (remote_path == nullptr) {
@@ -74,17 +78,20 @@ Status inject_into_game(const wchar_t* game_exe, const wchar_t* loader_dll_path,
     // the whole early-boot path - never fires. The wait is bounded; the game
     // always resumes.
     wchar_t ready_name[64]{};
-    swprintf_s(ready_name, L"Local\\NamiHookReady-%lu", pi.dwProcessId);
     HANDLE ready = CreateEventW(nullptr, TRUE, FALSE, ready_name);
+    std::fwprintf(stdout, L"[injector] starting remote thread (LoadLibraryW) in pid=%lu\n",
+                  pi.dwProcessId);
     const HANDLE remote_thread = CreateRemoteThread(pi.hProcess, nullptr, 0, load_library_w,
                                                     remote_path, 0, nullptr);
     if (remote_thread == nullptr) {
         std::fwprintf(stderr, L"[injector] CreateRemoteThread failed: %lu\n", GetLastError());
     } else {
+        std::fwprintf(stdout, L"[injector] waiting for loader ready signal (up to 30s)...\n");
         bool hooked = false;
         if (ready != nullptr &&
             WaitForSingleObject(ready, 30000) == WAIT_OBJECT_0) {
             hooked = true;
+            std::fwprintf(stdout, L"[injector] loader ready\n");
         } else {
             std::fwprintf(stderr, L"[injector] hook-ready wait timed out; resuming anyway\n");
         }
@@ -94,11 +101,9 @@ Status inject_into_game(const wchar_t* game_exe, const wchar_t* loader_dll_path,
             VirtualFreeEx(pi.hProcess, remote_path, 0, MEM_RELEASE);
         }
     }
-    if (ready != nullptr) {
-        CloseHandle(ready);
-    }
 
     // Let the game run now that early interception is in place (or was skipped).
+    std::fwprintf(stdout, L"[injector] resuming game thread\n");
     ResumeThread(pi.hThread);
 
     CloseHandle(pi.hThread);

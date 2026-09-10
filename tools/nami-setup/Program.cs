@@ -14,6 +14,10 @@ namespace Nami.Setup;
 /// </summary>
 internal static class Program
 {
+    private const string SteamCommonDirX86 = @"C:\Program Files (x86)\Steam\steamapps\common";
+    private const string SteamCommonDir64 = @"C:\Program Files\Steam\steamapps\common";
+    private const int BrowserPageSize = 14;
+
     private sealed record Options(string? GameDir, string? Exe, string? SteamId, bool Yes, bool NoLaunch);
 
     private sealed class UsageException(string message) : Exception(message);
@@ -23,6 +27,7 @@ internal static class Program
     [STAThread]
     private static int Main(string[] args)
     {
+        Console.OutputEncoding = Encoding.UTF8;
         Options options;
         try
         {
@@ -41,13 +46,14 @@ internal static class Program
         }
         catch (CancelException)
         {
-            Console.WriteLine("cancelled.");
+            Ui.Line("");
+            Ui.Info("cancelled — nothing was changed.");
             Pause(options);
             return 0;
         }
         catch (InvalidOperationException ex)
         {
-            Console.Error.WriteLine($"setup failed: {ex.Message}");
+            Ui.Error($"setup failed: {ex.Message}");
             Pause(options);
             return 1;
         }
@@ -104,8 +110,7 @@ internal static class Program
     private static int Run(Options options)
     {
         var version = Assembly.GetExecutingAssembly().GetName().Version?.ToString(3) ?? "1.0.0";
-        Console.WriteLine($"Nami setup {version}");
-        Console.WriteLine();
+        Welcome(version);
 
         var payloadDir = Path.GetDirectoryName(Environment.ProcessPath)
             ?? throw new InvalidOperationException("cannot locate the setup payload.");
@@ -116,92 +121,287 @@ internal static class Program
                 "installer payload not found beside InstallNami.exe — copy it next to the extracted release zip and run it again.");
         }
 
-        var gameDir = ResolveGameDir(options);
-        var root = Path.Combine(gameDir, "nami");
+        Ui.Step(1, 5, "Find your game");
+        var (gameDir, detectedSteamId) = ResolveGameDir(options);
+        Ui.Ok($"game folder: {gameDir}");
+
+        Ui.Step(2, 5, "Confirm the game executable");
+        Ui.Info("Nami needs to know exactly which .exe is the game (not a crash handler or updater).");
         var gameExe = ResolveGameExe(gameDir, options);
-        var (steamAppId, steamMode) = ResolveSteamApp(gameDir, gameExe, options);
+        Ui.Ok($"game exe: {gameExe}");
 
-        Console.WriteLine($"installing into {gameDir}...");
+        Ui.Step(3, 5, "Steam or offline?");
+        Ui.Info("Steam games run with full Steam context (in-game status, overlay). Offline games just run.");
+        var (steamAppId, steamMode) = ResolveSteamApp(gameDir, gameExe, options, detectedSteamId);
+        Ui.Ok(steamMode ? $"mode: Steam (app {steamAppId})" : "mode: offline");
+
+        Ui.Step(4, 5, "Install Nami");
+        Ui.Info("Copying the framework next to your game. Your game files are never touched —");
+        Ui.Info("everything Nami owns lives in the new nami/ folder.");
         var staged = Stager.InstallFromDirectory(gameDir, payloadDir);
-        foreach (var created in staged.Created)
-        {
-            Console.WriteLine($"  created {created}");
-        }
+        Ui.Ok($"installed {staged.Created.Count} framework files into {staged.Root}");
 
-        var config = NamiConfig.Load(root);
+        var config = NamiConfig.Load(staged.Root);
         config.GameExe = gameExe;
         config.SteamAppId = steamAppId;
         config.Save();
-        Console.WriteLine($"game exe set: {gameExe}");
         if (steamAppId is not null)
         {
             var synced = LaunchCommand.EnsureSteamAppContext(gameExe, config);
-            Console.WriteLine($"steam context: app {synced}");
+            Ui.Ok($"steam context: app {synced} (steam_appid.txt is in place)");
         }
 
-        WriteShortcuts(root, gameExe, steamMode);
+        WriteShortcuts(staged.Root, gameExe, steamMode);
 
+        Ui.Step(5, 5, "Done — shortcuts ready");
         var canLaunch = !steamMode || Launcher.SteamClientRunning();
         if (steamMode && !canLaunch)
         {
-            Console.WriteLine("Steam client is not running — start Steam, then launch from launchNami.exe.");
+            Ui.Warn("Steam client is not running — start Steam, then launch from launchNami.exe.");
         }
 
         if (canLaunch && !options.NoLaunch && (options.Yes || AskYesNo("Launch the game now?", defaultYes: true)))
         {
-            Console.WriteLine($"launching '{gameExe}' with Nami...");
-            Console.WriteLine(Launcher.LaunchInjected(gameExe, root, new ProcessRunner()));
+            Ui.Info($"launching '{gameExe}' with Nami injected. Watch the lines below —");
+            Ui.Info("they narrate every stage of the launch.");
+            Console.WriteLine(Launcher.LaunchInjected(gameExe, staged.Root, new ProcessRunner()));
         }
 
-        Console.WriteLine();
-        Console.WriteLine("done. Double-click launchNami.exe (or run-with-nami.bat) to play with Nami.");
-        Console.WriteLine("Uninstall any time by deleting the nami/ folder; re-run the in-root InstallNami.exe to repair or upgrade.");
+        Ui.Rule();
+        Ui.Ok("done. Double-click launchNami.exe (or run-with-nami.bat) whenever you want mods.");
+        Ui.Info("Uninstall any time by deleting the nami/ folder.");
+        Ui.Info("Repair or upgrade by re-running the InstallNami.exe inside nami/.");
+        Ui.Info("For anti-cheat games: install, but launch clean from Steam instead of injecting.");
         Pause(options);
         return 0;
     }
 
-    private static string ResolveGameDir(Options options)
+    private static void Welcome(string version)
     {
-        var arg = options.GameDir;
+        Ui.Banner($"NAMI SETUP {version}");
+        Ui.Line("Nami is a fast, isolated mod loader for Unity games.");
+        Ui.Line("This wizard installs it next to your game in about a minute:");
+        Ui.Line("  1. Find your game   2. Confirm its .exe   3. Steam or offline");
+        Ui.Line("  4. Install          5. Play (optionally right away)");
+        Ui.Line("Nothing is uploaded anywhere. To stop at any point, press Esc or close this window.");
+        Ui.Rule();
+    }
+
+    private static (string GameDir, string? DetectedSteamId) ResolveGameDir(Options options)
+    {
+        if (options.GameDir is not null)
+        {
+            if (!Directory.Exists(options.GameDir))
+            {
+                throw new InvalidOperationException($"game directory not found: {options.GameDir}");
+            }
+
+            return (options.GameDir, null);
+        }
+
         while (true)
         {
-            var picked = arg ?? BrowseForGameDir();
-            arg = null;
-            if (picked is null)
+            Ui.Line("Where is the game?");
+            Ui.Line("  1. Pick a folder (a window opens)");
+            Ui.Line("  2. Load Steam games (choose from your installed list)");
+            Ui.Line("  Esc. Cancel");
+            var key = Ui.ReadKey("Pick 1, 2, or Esc: ");
+            if (key == ConsoleKey.D1 || key == ConsoleKey.NumPad1)
+            {
+                var picked = BrowseForGameDir();
+                if (picked is null)
+                {
+                    continue;
+                }
+
+                return (picked, null);
+            }
+
+            if (key == ConsoleKey.D2 || key == ConsoleKey.NumPad2)
+            {
+                var steam = BrowseSteamGames();
+                if (steam is not null)
+                {
+                    return steam.Value;
+                }
+
+                continue;
+            }
+
+            if (key == ConsoleKey.Escape)
             {
                 throw new CancelException();
             }
-
-            if (!Directory.Exists(picked))
-            {
-                if (options.Yes)
-                {
-                    throw new InvalidOperationException($"game directory not found: {picked}");
-                }
-
-                Console.WriteLine($"folder not found: {picked}");
-                continue;
-            }
-
-            if (Directory.Exists(Path.Combine(picked, "nami")) && !options.Yes &&
-                !AskYesNo("Nami is already installed here — upgrade in place?", defaultYes: true))
-            {
-                continue;
-            }
-
-            return picked;
         }
     }
 
     private static string? BrowseForGameDir()
     {
+        Ui.Info("A folder window is opening — click the folder that contains the game exe, then OK.");
         using var dialog = new FolderBrowserDialog
         {
             Description = "Pick the folder containing the game exe",
             UseDescriptionForTitle = true,
             ShowNewFolderButton = false,
         };
-        return dialog.ShowDialog() == DialogResult.OK ? dialog.SelectedPath : null;
+        if (dialog.ShowDialog() != DialogResult.OK)
+        {
+            Ui.Info("folder picker closed without a choice.");
+            return null;
+        }
+
+        if (!Directory.Exists(dialog.SelectedPath))
+        {
+            Ui.Warn($"folder not found: {dialog.SelectedPath}");
+            return null;
+        }
+
+        return dialog.SelectedPath;
+    }
+
+    private static (string GameDir, string? DetectedSteamId)? BrowseSteamGames()
+    {
+        var common = SteamCommonDir();
+        if (common is null)
+        {
+            Ui.Error("no Steam library found at the default location.");
+            Ui.Info(@"Steam is usually at C:\Program Files (x86)\Steam — pick option 1 instead.");
+            return null;
+        }
+
+        List<string> games;
+        try
+        {
+            games = Directory.GetDirectories(common)
+                .Select(Path.GetFileName)
+                .Where(n => !string.IsNullOrEmpty(n))
+                .Select(n => n!)
+                .OrderBy(n => n, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+        }
+        catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException)
+        {
+            Ui.Error($"could not list Steam games: {ex.Message}");
+            return null;
+        }
+
+        if (games.Count == 0)
+        {
+            Ui.Warn($"no games installed under {common} — install one via Steam first.");
+            return null;
+        }
+
+        Ui.Info($"found {games.Count} Steam game(s) — default library only.");
+        Ui.Info("Move with W/S (or arrow keys), Enter selects, Esc goes back.");
+        var selected = 0;
+        while (true)
+        {
+            RenderGameList(games, selected);
+            var key = Console.ReadKey(intercept: true).Key;
+            if (key is ConsoleKey.W or ConsoleKey.UpArrow)
+            {
+                selected = Math.Clamp(selected - 1, 0, games.Count - 1);
+            }
+            else if (key is ConsoleKey.S or ConsoleKey.DownArrow)
+            {
+                selected = Math.Clamp(selected + 1, 0, games.Count - 1);
+            }
+            else if (key == ConsoleKey.Enter)
+            {
+                var folder = Path.Combine(common, games[selected]);
+                var appId = FindSteamAppId(Path.GetDirectoryName(common)!, games[selected]);
+                if (appId is not null)
+                {
+                    Ui.Ok($"selected {games[selected]} (Steam app {appId})");
+                }
+
+                return (folder, appId);
+            }
+            else if (key == ConsoleKey.Escape)
+            {
+                return null;
+            }
+        }
+    }
+
+    private static string? SteamCommonDir()
+    {
+        if (Directory.Exists(SteamCommonDirX86))
+        {
+            return SteamCommonDirX86;
+        }
+
+        return Directory.Exists(SteamCommonDir64) ? SteamCommonDir64 : null;
+    }
+
+    private static void RenderGameList(List<string> games, int selected)
+    {
+        Console.Clear();
+        Ui.Banner("YOUR STEAM GAMES");
+        var top = Math.Clamp(selected - BrowserPageSize / 2, 0, Math.Max(0, games.Count - BrowserPageSize));
+        for (var i = top; i < Math.Min(top + BrowserPageSize, games.Count); i++)
+        {
+            var marker = i == selected ? Ui.Paint(ConsoleColor.Green, "> ") : "  ";
+            var name = i == selected ? Ui.Paint(ConsoleColor.White, games[i]) : games[i];
+            Console.WriteLine($"{marker}{i + 1}. {name}");
+        }
+
+        Ui.Line($"— {selected + 1}/{games.Count} —  W/S or arrows move · Enter selects · Esc back —");
+    }
+
+    /// <summary>
+    /// Matches a Steam library folder to its app id via appmanifest_*.acf (`installdir` key).
+    /// Best-effort: skips unreadable or malformed manifests.
+    /// </summary>
+    private static string? FindSteamAppId(string steamappsDir, string folderName)
+    {
+        string[] manifests;
+        try
+        {
+            manifests = Directory.GetFiles(steamappsDir, "appmanifest_*.acf");
+        }
+        catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException)
+        {
+            return null;
+        }
+
+        foreach (var manifest in manifests)
+        {
+            try
+            {
+                string? appId = null;
+                string? installDir = null;
+                foreach (var line in File.ReadLines(manifest))
+                {
+                    var parts = line.Split('"');
+                    if (parts.Length < 4)
+                    {
+                        continue;
+                    }
+
+                    if (parts[1].Equals("appid", StringComparison.OrdinalIgnoreCase))
+                    {
+                        appId = parts[3];
+                    }
+                    else if (parts[1].Equals("installdir", StringComparison.OrdinalIgnoreCase))
+                    {
+                        installDir = parts[3];
+                    }
+                }
+
+                if (installDir is not null && installDir.Equals(folderName, StringComparison.OrdinalIgnoreCase) &&
+                    appId is not null && ulong.TryParse(appId, out _))
+                {
+                    return appId;
+                }
+            }
+            catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException)
+            {
+                // Unreadable manifest; try the next one.
+            }
+        }
+
+        return null;
     }
 
     private static string ResolveGameExe(string gameDir, Options options)
@@ -219,8 +419,11 @@ internal static class Program
         }
 
         var detected = GameLocator.AutoDetect(gameDir);
-        if (detected is not null && (options.Yes || AskYesNo($"Use {Path.GetFileName(detected)}?", defaultYes: true)))
+        if (detected is not null && (options.Yes || AskYesNo($"Is {Path.GetFileName(detected)} the game?", defaultYes: true)))
         {
+            Ui.Info("Auto-detect picks the largest .exe that is not a known helper (crash");
+            Ui.Info("handler, updater, …). If the game still boots clean later, come back and");
+            Ui.Info("pick the exe by hand with InstallNami --exe <name>.");
             return detected;
         }
 
@@ -228,6 +431,11 @@ internal static class Program
         {
             throw new InvalidOperationException(
                 $"could not auto-detect the game executable in '{gameDir}' — re-run without --yes to pick it.");
+        }
+
+        if (detected is null)
+        {
+            Ui.Info("Nothing looked like a game exe, so here are all the candidates.");
         }
 
         while (true)
@@ -278,7 +486,7 @@ internal static class Program
         }
         catch (ArgumentException ex)
         {
-            Console.WriteLine(ex.Message);
+            Ui.Warn(ex.Message);
             if (!AskYesNo("Use it anyway?", defaultYes: false))
             {
                 return null;
@@ -291,12 +499,13 @@ internal static class Program
         }
         catch (Exception ex) when (ex is FileNotFoundException || ex is ArgumentException)
         {
-            Console.WriteLine(ex.Message);
+            Ui.Warn(ex.Message);
             return null;
         }
     }
 
-    private static (string? AppId, bool SteamMode) ResolveSteamApp(string gameDir, string gameExe, Options options)
+    private static (string? AppId, bool SteamMode) ResolveSteamApp(
+        string gameDir, string gameExe, Options options, string? detectedSteamId)
     {
         var steamFile = Path.Combine(Path.GetDirectoryName(gameExe) ?? gameDir, "steam_appid.txt");
         if (File.Exists(steamFile))
@@ -304,11 +513,11 @@ internal static class Program
             var fileId = File.ReadAllText(steamFile).Trim();
             if (ulong.TryParse(fileId, out _))
             {
-                Console.WriteLine($"steam app id {fileId} (from steam_appid.txt)");
+                Ui.Info($"steam_appid.txt already says {fileId} — keeping it.");
                 return (fileId, true);
             }
 
-            Console.WriteLine("warning: existing steam_appid.txt is not a valid app id — ignoring it.");
+            Ui.Warn("existing steam_appid.txt is not a valid app id — ignoring it.");
         }
 
         if (options.SteamId is not null)
@@ -321,14 +530,26 @@ internal static class Program
             return (options.SteamId, true);
         }
 
+        if (detectedSteamId is not null)
+        {
+            if (options.Yes || AskYesNo($"Steam detected this as app {detectedSteamId} — play it through Steam?", defaultYes: true))
+            {
+                return (detectedSteamId, true);
+            }
+
+            return (null, false);
+        }
+
         if (!options.Yes && AskYesNo("Is this a Steam game?", defaultYes: false))
         {
             while (true)
             {
-                Console.Write("Steam app id (digits, empty = offline): ");
+                Console.Write("Steam app id (just digits — find it in the store URL; empty = offline): ");
                 var input = Console.ReadLine()?.Trim();
                 if (string.IsNullOrEmpty(input))
                 {
+                    Ui.Info("no id given — installing as offline. You can switch later with");
+                    Ui.Info("InstallNami --steam-id <id> or nami launch set --steam-id <id>.");
                     return (null, false);
                 }
 
@@ -337,10 +558,11 @@ internal static class Program
                     return (input, true);
                 }
 
-                Console.WriteLine($"invalid steam app id: '{input}'");
+                Ui.Warn($"'{input}' is not digits — app ids are numbers only, e.g. 2386580.");
             }
         }
 
+        Ui.Info("offline it is. If this is actually a Steam title, re-run with --steam-id <id>.");
         return (null, false);
     }
 
@@ -358,8 +580,7 @@ internal static class Program
             Path.Combine(root, ShortcutGenerator.BatFileName),
             ShortcutGenerator.BatContent(gameExe, root, steamMode ? "steam" : "offline"),
             Encoding.Default);
-        Console.WriteLine($"created {Path.Combine(root, ShortcutGenerator.ShimFileName)}");
-        Console.WriteLine($"created {Path.Combine(root, ShortcutGenerator.BatFileName)}");
+        Ui.Ok($"shortcuts: {ShortcutGenerator.ShimFileName} + {ShortcutGenerator.BatFileName} (double-click either to play)");
     }
 
     private static bool AskYesNo(string question, bool defaultYes)
@@ -383,6 +604,8 @@ internal static class Program
             {
                 return false;
             }
+
+            Ui.Warn("type y or n (or just Enter for the capital-letter default).");
         }
     }
 
@@ -393,7 +616,55 @@ internal static class Program
             return;
         }
 
-        Console.WriteLine("Press any key to close...");
+        Ui.Line("Press any key to close...");
         Console.ReadKey(intercept: true);
+    }
+
+    /// <summary>Tiny colored-console helper. Colors are skipped when output is redirected.</summary>
+    private static class Ui
+    {
+        public static string Paint(ConsoleColor color, string text)
+        {
+            if (Console.IsOutputRedirected)
+            {
+                return text;
+            }
+
+            var code = (int)color < 8 ? 30 + (int)color : 90 + ((int)color - 8);
+            return $"\x1b[{code}m{text}\x1b[0m";
+        }
+
+        public static void Line(string text) => Console.WriteLine(text);
+
+        public static void Banner(string text)
+        {
+            var bar = new string('=', text.Length + 8);
+            Console.WriteLine(Paint(ConsoleColor.Cyan, bar));
+            Console.WriteLine(Paint(ConsoleColor.Cyan, $"==  {text}  =="));
+            Console.WriteLine(Paint(ConsoleColor.Cyan, bar));
+        }
+
+        public static void Rule() => Console.WriteLine(Paint(ConsoleColor.DarkGray, new string('-', 60)));
+
+        public static void Step(int n, int total, string title)
+        {
+            Console.WriteLine();
+            Console.WriteLine(Paint(ConsoleColor.Cyan, $"── Step {n}/{total}: {title} ──"));
+        }
+
+        public static void Ok(string text) => Console.WriteLine(Paint(ConsoleColor.Green, $"[ OK ] {text}"));
+
+        public static void Info(string text) => Console.WriteLine(Paint(ConsoleColor.Gray, $"       {text}"));
+
+        public static void Warn(string text) => Console.WriteLine(Paint(ConsoleColor.Yellow, $"[ !! ] {text}"));
+
+        public static void Error(string text) => Console.Error.WriteLine(Paint(ConsoleColor.Red, text));
+
+        public static ConsoleKey ReadKey(string prompt)
+        {
+            Console.Write(prompt);
+            Console.WriteLine("  (press a key)");
+            return Console.ReadKey(intercept: true).Key;
+        }
     }
 }
