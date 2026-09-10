@@ -187,7 +187,7 @@ public static class Stager
             entries.Add(("dotnet/" + Path.GetRelativePath(runtimeSource, file).Replace('\\', '/'), file));
         }
 
-        var version = typeof(Stager).Assembly.GetName().Version?.ToString(3) ?? "0.1.0";
+        var version = typeof(Stager).Assembly.GetName().Version?.ToString(3) ?? "1.0.0";
 
         // Hash every file first so the manifest can be written into the same archive.
         var hashes = new Dictionary<string, string>(StringComparer.Ordinal);
@@ -385,13 +385,21 @@ public static class Stager
             }
         }
 
-        var nativeSources = new[] { "loader", "core", "injector" }
-            .Select(d => Path.Combine(repoRoot, "native", d));
-        foreach (var f in new[] { "nami_boot.exe", "nami_loader.dll" })
+        // Each binary is checked only against the sources it links: the loader pulls
+        // loader/ + core/, the injector exe pulls injector/ + core/. Lumping every
+        // source against both binaries false-positives (observed: untouched
+        // nami_boot.exe flagged for loader-only edits).
+        var binarySources = new Dictionary<string, string[]>
         {
-            var binary = Path.Combine(sources.NativeDir, f);
-            var binaryTime = File.GetLastWriteTimeUtc(binary);
-            var newer = nativeSources
+            ["nami_boot.exe"] = ["injector", "core"],
+            ["nami_loader.dll"] = ["loader", "core"],
+        };
+        foreach (var (binary, dirs) in binarySources)
+        {
+            var binaryPath = Path.Combine(sources.NativeDir, binary);
+            var binaryTime = File.GetLastWriteTimeUtc(binaryPath);
+            var newer = dirs
+                .Select(d => Path.Combine(repoRoot, "native", d))
                 .Where(Directory.Exists)
                 .SelectMany(d => Directory.EnumerateFiles(d, "*", SearchOption.AllDirectories)
                     .Where(s => s.EndsWith(".cpp", StringComparison.OrdinalIgnoreCase) ||
@@ -401,7 +409,7 @@ public static class Stager
                 .ToList();
             if (newer.Count > 0)
             {
-                stale.Add($"{f} older than: {string.Join(", ", newer)}");
+                stale.Add($"{binary} older than: {string.Join(", ", newer)}");
             }
         }
 

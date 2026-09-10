@@ -98,7 +98,7 @@ Gates that run without a game (green on this checkout): `Nami.Cli.Tests` 60/60, 
 </details>
 
 <details>
-<summary><b>Full CLI reference</b> (real <code>nami help</code> output, v0.1.0)</summary>
+<summary><b>Full CLI reference</b> (real <code>nami help</code> output, v1.0.0)</summary>
 
 ```
 nami - a fast, isolated Unity mod loader

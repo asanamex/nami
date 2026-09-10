@@ -42,7 +42,7 @@ internal static class Program
 
     private static int Version()
     {
-        var version = typeof(Program).Assembly.GetName().Version?.ToString(3) ?? "0.1.0";
+        var version = typeof(Program).Assembly.GetName().Version?.ToString(3) ?? "1.0.0";
         Console.WriteLine($"Nami {version} (mod loader for Unity games)");
         return 0;
     }

@@ -39,7 +39,7 @@ public sealed class PackInstallTests : IDisposable
         }
     }
 
-    private string ArtifactPath => Path.Combine(_baseDir, "nami-0.1.0.zip");
+    private string ArtifactPath => Path.Combine(_baseDir, "nami-1.0.0.zip");
 
     /// <summary>Builds a fake artifacts root whose files are distinguishable by content.</summary>
     private void WriteArtifacts()
@@ -63,7 +63,7 @@ public sealed class PackInstallTests : IDisposable
     {
         var result = Stager.Pack(_repo, ArtifactPath, _artifacts);
 
-        Assert.Equal("0.1.0", result.Version);
+        Assert.Equal("1.0.0", result.Version);
         Assert.Equal("10.0.0", result.Runtime);
         Assert.True(File.Exists(ArtifactPath));
 
@@ -103,7 +103,7 @@ public sealed class PackInstallTests : IDisposable
         var staged = Stager.InstallFromArtifact(_gameDir, ArtifactPath);
 
         Assert.Equal(Path.Combine(_gameDir, "nami"), staged.Root);
-        Assert.Equal("0.1.0", staged.Version);
+        Assert.Equal("1.0.0", staged.Version);
         foreach (var f in Stager.ManagedFiles)
         {
             var dst = Path.Combine(staged.Root, f);
@@ -203,7 +203,7 @@ public sealed class PackInstallTests : IDisposable
         Assert.StartsWith("file://", uri);
 
         var staged = Stager.InstallFromArtifact(_gameDir, uri);
-        Assert.Equal("0.1.0", staged.Version);
+        Assert.Equal("1.0.0", staged.Version);
         Assert.True(File.Exists(Path.Combine(staged.Root, "Nami.Runtime.dll")));
     }
 

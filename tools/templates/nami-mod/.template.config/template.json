@@ -15,7 +15,7 @@
     "NamiVersion": {
       "type": "parameter",
       "datatype": "string",
-      "defaultValue": "0.1.0",
+      "defaultValue": "1.0.0",
       "replaces": "NAMI_VERSION",
       "displayName": "Nami NuGet version",
       "description": "Version of the Nami.Sdk/Nami.Tide packages to reference"

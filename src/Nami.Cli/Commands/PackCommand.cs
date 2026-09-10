@@ -19,7 +19,7 @@ internal static class PackCommand
 
         try
         {
-            var result = Stager.Pack(repoRoot, outPath ?? $"nami-{typeof(Stager).Assembly.GetName().Version?.ToString(3) ?? "0.1.0"}.zip", artifactsRoot);
+            var result = Stager.Pack(repoRoot, outPath ?? $"nami-{typeof(Stager).Assembly.GetName().Version?.ToString(3) ?? "1.0.0"}.zip", artifactsRoot);
             Console.WriteLine($"packed Nami {result.Version} (bundled .NET {result.Runtime}) -> {result.FilePath}");
             Console.WriteLine($"  {result.FileCount} files, {result.SizeBytes / 1024.0 / 1024.0:F1} MB — self-contained installer artifact");
             Console.WriteLine();

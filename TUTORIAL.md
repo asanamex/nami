@@ -105,8 +105,8 @@ name):
     <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
   </PropertyGroup>
   <ItemGroup>
-    <PackageReference Include="Nami.Sdk" Version="0.1.0" />
-    <PackageReference Include="Nami.Tide" Version="0.1.0" />
+    <PackageReference Include="Nami.Sdk" Version="1.0.0" />
+    <PackageReference Include="Nami.Tide" Version="1.0.0" />
   </ItemGroup>
 </Project>
 ```
