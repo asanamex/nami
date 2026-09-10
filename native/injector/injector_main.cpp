@@ -77,7 +77,12 @@ Status inject_into_game(const wchar_t* game_exe, const wchar_t* loader_dll_path,
     // thread scheduling vs an already-running main thread) and the jit detour -
     // the whole early-boot path - never fires. The wait is bounded; the game
     // always resumes.
+    // Named to match the loader's signal (inex::signal_hook_ready opens
+    // Local\NamiHookReady-<pid> with the *game* pid). An unnamed event here
+    // can never be opened from the game process — every boot burned the full
+    // 30 s timeout and resumed anyway.
     wchar_t ready_name[64]{};
+    swprintf_s(ready_name, L"Local\\NamiHookReady-%lu", pi.dwProcessId);
     HANDLE ready = CreateEventW(nullptr, TRUE, FALSE, ready_name);
     std::fwprintf(stdout, L"[injector] starting remote thread (LoadLibraryW) in pid=%lu\n",
                   pi.dwProcessId);
