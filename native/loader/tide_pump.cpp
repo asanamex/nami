@@ -229,8 +229,21 @@ int measure_relocatable_prologue(const unsigned char* p, int min_bytes, bool all
                 rip_rel = true;  // RIP-relative
             }
             if (rip_rel) {
-                // disp32 at `len`; the instruction ends at len+4. Relocatable only
-                // with explicit disp32 fixup - record the slot for the installer.
+                // disp32 at `len`; the instruction ends at len+4 ONLY when no
+                // immediate bytes follow. Group-1 ALU (80-83) and MOV r/m,imm
+                // (C6/C7) carry trailing immediates after the disp, so the true
+                // instruction end is past disp+4 while fixup_relocations rebases
+                // against disp+4 (one byte off for e.g. CMP DWORD [RIP+..],0).
+                // Relocating such an instruction corrupts its target (observed:
+                // mono_jit_init_version's CMP mis-rebased, later AV in
+                // mono_class_vtable). Refuse instead; callers fall back to the
+                // 5-byte near-jump form or another path.
+                if (!two_byte && (op == 0x80 || op == 0x81 || op == 0x82 ||
+                                  op == 0x83 || op == 0xC6 || op == 0xC7)) {
+                    return 0;
+                }
+                // Relocatable only with explicit disp32 fixup - record the slot
+                // for the installer.
                 if (!allow_rip_relative || rips >= max_rips) {
                     return 0;
                 }

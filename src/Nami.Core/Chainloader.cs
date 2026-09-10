@@ -2194,58 +2194,6 @@ public sealed partial class Chainloader : IDisposable, Nami.Sdk.ITideOpSink
             Interlocked.Exchange(ref _currentSnapshot, candidate);
             transaction.CommitTime = at;
 
-
-            // Post-publication Wave rebuilds for slots that need them (never roll back on failure).
-            foreach (var id in committable)
-            {
-                foreach (var stage in transaction.Prepared[id].SlotStages)
-                {
-                    var owner = GenerationDispatcher.SlotOwnerFor(stage.ModId, stage.SlotKey);
-                    var reinstall = NeedsSlotReinstall(stage, preSnap.DispatchSlots);
-                    if (reinstall && stage.Trampoline is not null && stage.Stable &&
-                        preSnap.DispatchSlots.TryGetValue(owner, out var previousSlot) &&
-                        previousSlot.Current.GetType() != stage.Slot.Current.GetType())
-                    {
-                        // Cross-generation delegate-type mismatch on a stable slot: the registered
-                        // trampoline baked castclass <v1-callbackType>, so dispatching the new
-                        // callback through it would throw InvalidCastException. Escalate honestly
-                        // and re-register with the new trampoline at commit (never force the swap).
-                        var bindings = transaction.Prepared[id].Generation.HookBindings;
-                        var index = bindings.FindIndex(b =>
-                            b.SlotKey == stage.SlotKey && b.GenerationId == stage.Slot.CurrentGeneration);
-                        if (index >= 0 && bindings[index].Capability != ReloadCapability.RequiresPatchRebuild)
-                        {
-                            bindings[index] = bindings[index] with { Capability = ReloadCapability.RequiresPatchRebuild };
-                        }
-
-                        _hub.Log("chainloader", LogLevel.Info,
-                            $"Slot '{owner}' callback type changed " +
-                            $"({previousSlot.Current.GetType().Name} -> {stage.Slot.Current.GetType().Name}); " +
-                            "RequiresPatchRebuild (re-registering at commit).");
-                    }
-
-                    if (!reinstall)
-                    {
-                        continue;
-                    }
-
-                    try
-                    {
-                        RebuildSlot(stage);
-                    }
-                    catch (Exception ex) when (IsToleratedNativeBusy(ex))
-                    {
-                        _hub.Log("chainloader", LogLevel.Warn,
-                            $"Slot '{owner}' rebuild deferred: main-thread executor unavailable (-3 tolerated).");
-                    }
-                    catch (Exception ex)
-                    {
-                        _hub.Log("chainloader", LogLevel.Error,
-                            $"Slot '{owner}' rebuild failed after publication (snapshot stands): {ex.GetBaseException().Message}");
-                    }
-                }
-            }
-
             var loaded = new List<string>();
             foreach (var id in committable)
             {
@@ -2317,6 +2265,62 @@ public sealed partial class Chainloader : IDisposable, Nami.Sdk.ITideOpSink
             {
                 _hub.Log("chainloader", LogLevel.Info, $"Removed: {string.Join(", ", gone)}");
             }
+            // Post-retirement Wave rebuilds for slots that need them (never roll back on failure).
+            // Deliberately AFTER the old graph retires and quiesces: a same-owner native rewrite
+            // tears in-flight executions (proven by test), so the old body keeps serving (stale but
+            // whole) from publication until the old generation has drained. Residual risk — game
+            // threads inside the target during the rewrite — is logged operator territory, top item
+            // for the manual Hardline protocol.
+            foreach (var id in committable)
+            {
+                foreach (var stage in transaction.Prepared[id].SlotStages)
+                {
+                    var owner = GenerationDispatcher.SlotOwnerFor(stage.ModId, stage.SlotKey);
+                    var reinstall = NeedsSlotReinstall(stage, preSnap.DispatchSlots);
+                    if (reinstall && stage.Trampoline is not null && stage.Stable &&
+                        preSnap.DispatchSlots.TryGetValue(owner, out var previousSlot) &&
+                        previousSlot.Current.GetType() != stage.Slot.Current.GetType())
+                    {
+                        // Cross-generation delegate-type mismatch on a stable slot: the registered
+                        // trampoline baked castclass <v1-callbackType>, so dispatching the new
+                        // callback through it would throw InvalidCastException. Escalate honestly
+                        // and re-register with the new trampoline at commit (never force the swap).
+                        var bindings = transaction.Prepared[id].Generation.HookBindings;
+                        var index = bindings.FindIndex(b =>
+                            b.SlotKey == stage.SlotKey && b.GenerationId == stage.Slot.CurrentGeneration);
+                        if (index >= 0 && bindings[index].Capability != ReloadCapability.RequiresPatchRebuild)
+                        {
+                            bindings[index] = bindings[index] with { Capability = ReloadCapability.RequiresPatchRebuild };
+                        }
+
+                        _hub.Log("chainloader", LogLevel.Info,
+                            $"Slot '{owner}' callback type changed " +
+                            $"({previousSlot.Current.GetType().Name} -> {stage.Slot.Current.GetType().Name}); " +
+                            "RequiresPatchRebuild (re-registering at commit).");
+                    }
+
+                    if (!reinstall)
+                    {
+                        continue;
+                    }
+
+                    try
+                    {
+                        RebuildSlot(stage);
+                    }
+                    catch (Exception ex) when (IsToleratedNativeBusy(ex))
+                    {
+                        _hub.Log("chainloader", LogLevel.Warn,
+                            $"Slot '{owner}' rebuild deferred: main-thread executor unavailable (-3 tolerated).");
+                    }
+                    catch (Exception ex)
+                    {
+                        _hub.Log("chainloader", LogLevel.Error,
+                            $"Slot '{owner}' rebuild failed after publication (snapshot stands): {ex.GetBaseException().Message}");
+                    }
+                }
+            }
+
 
             var failed = transaction.CommitOrder
                 .Where(id => !committable.Contains(id, StringComparer.OrdinalIgnoreCase))
@@ -2913,6 +2917,9 @@ public sealed partial class Chainloader : IDisposable, Nami.Sdk.ITideOpSink
     public void Shutdown()
     {
         StopHotReload();
+        // Drop the static registry root (mirrors Dispose): post-shutdown generations must
+        // collect once the caller drops the Chainloader instead of lingering via TideMetrics.
+        Nami.Sdk.TideMetrics.Unregister(this);
         DrainCommands();
         // Retirement order only, mirroring CommitGraph's reverse-dependency retire (C→B→A):
         // dependents drain before the dependencies they may still call into during teardown.

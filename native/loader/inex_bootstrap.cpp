@@ -5,19 +5,21 @@
 // or doorstop_config.ini, so Nami bootstraps it directly. The entry contract matches
 // doorstop_config.ini's own comment: `static void Doorstop.Entrypoint.Start()`.
 //
-// TIMING (the whole game here): the preloader patches the one-shot entrypoint
-// (Application..cctor) into an already-loaded CoreModule to no effect, so Start()
-// must run BEFORE first managed execution - exactly Doorstop timing. Primary path:
-// a mono_jit_init detour runs Start synchronously on the game main thread right
-// after the runtime comes up. The detour is installed either directly (Mono
-// already loaded - the injector holds the main thread suspended until we signal
-// hook-ready, so this always wins) or synchronously inside the Mono LoadLibrary
-// via an LdrDllNotification (dynamically-loaded Mono - stock Unity desktop).
-// Fallback path (both missed, e.g. prologue refused): Tide's mono_runtime_invoke
-// drain runs Start, and a chainloader kick
-// (Initialize+Start, both idempotent) fires once a scene is live - late Start can
-// never hit the one-shot patch, so the kick replicates what it would have called.
-// Kick ordering vs a naturally-fired entrypoint is safe: both ends are guarded.
+// TIMING: preloader Start used to run synchronously inside the mono_jit_init
+// detour (Doorstop timing, before first managed execution so the one-shot
+// inside jit_init the AppDomain has no ExeConfig yet, so Start half-initializes
+// (ConfigurationErrorsException in TraceLogSource after Harmony/UnityPatches
+// already applied mid-init; seen in every early-start preloader log). The
+// lane-on game-thread AV itself (identical mono+0xAB94 offset) root-caused to
+// the shared detour toolkit (see tide_pump.cpp), not to Start: a Start-free
+// control still crashed until that fix. So Start is DEFERRED anyway:
+// the mono_jit_init detours are now transparent passthroughs (timing markers
+// only), and the watcher late sequence is the SOLE boot path - once a window is
+// visible and the script domain is stable, drain_late_sequence runs Start +
+// the chainloader kick (Initialize+Start, both idempotent) atomically in one
+// drain call. Late Start can never hit the one-shot cctor patch (it already
+// fired), so the kick replicates what it would have called. Kick ordering vs a
+// naturally-fired entrypoint is safe: both ends are guarded.
 
 #include "inex_bootstrap.h"
 
@@ -465,19 +467,26 @@ bool register_mono_load_watch() {
     g_ldr_cookie = cookie;
     return true;
 }
-
 void* inex_jit_init_version_detour(const char* domain_name, const char* version) {
     void* domain = g_orig_jit_init_version(domain_name, version);
-    // On the game main thread, runtime fully up, zero managed code run yet.
-    const int rc = run_preloader_start();
-    ilog(g_log_path, (std::string("early preloader start rc=") + std::to_string(rc)).c_str());
+    // Deferred: preloader Start NO LONGER runs here. Inside mono_jit_init_version
+    // the AppDomain has no ExeConfig yet, so Start half-initializes BepInEx
+    // (ConfigurationErrorsException in TraceLogSource after Harmony/UnityPatches
+    // already applied mid-init; seen in every early-start preloader log). The
+    // watcher late sequence (drain_late_sequence post-window, domain-stable) runs
+    // Start + the chainloader kick instead, where the AppDomain is fully
+    // configured. (The lane-on AV itself root-caused to the shared detour
+    // toolkit mis-relocating RIP-relative+immediate, fixed in tide_pump.cpp; a
+    // Start-free control still crashed until that fix.) The detour stays
+    // installed as a transparent passthrough (timing marker only).
+    ilog(g_log_path, "jit_init_version observed (start deferred to late sequence)");
     return domain;
 }
 
 void* inex_jit_init_detour(const char* domain_name) {
     void* domain = g_orig_jit_init(domain_name);
-    const int rc = run_preloader_start();
-    ilog(g_log_path, (std::string("early preloader start rc=") + std::to_string(rc)).c_str());
+    // Same deferral as above (mono_jit_init legacy entry).
+    ilog(g_log_path, "jit_init observed (start deferred to late sequence)");
     return domain;
 }
 
