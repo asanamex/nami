@@ -41,7 +41,7 @@ because a few log lines and options differ.
 
 - Windows 10/11 x64
 - Your Unity game, ideally with a backup copy
-- The `nami-1.0.0.zip` release file (from the
+- The `nami-1.0.1.zip` release file (from the
   [releases page](https://github.com/asanamex/nami/releases)) - about 38 MB
 - Mod DLLs you want to run (from their authors), or none at all for a first smoke test
 
@@ -58,7 +58,7 @@ Every step below says what success looks like. Go slowly; each step takes second
 **Step 1. Back up the game.** Copy the whole game folder to a second location. Skip this
 only if you can re-download the game quickly.
 
-**Step 2. Unzip into place.** Open `nami-1.0.0.zip`. Inside is the *contents* of a
+**Step 2. Unzip into place.** Open `nami-1.0.1.zip`. Inside is the *contents* of a
 `nami/` folder (flat framework layout: `native/`, `dotnet/`, managed DLLs, plus a
 `manifest.json` of SHA-256 hashes) - there is no `nami/` folder in the zip itself.
 Create a `nami/` folder directly inside the game folder, next to the game exe, and
@@ -149,7 +149,7 @@ Then, from the repo root:
 nami install "C:\path\to\YourGame"
 
 :::: same, but from the release artifact (every file hash-verified against manifest.json)
-nami install "C:\path\to\YourGame" --from nami-1.0.0.zip
+nami install "C:\path\to\YourGame" --from nami-1.0.1.zip
 
 ::: remember the game exe once (add --steam-id <appid> for Steam titles)
 nami launch set "C:\path\to\YourGame\YourGame.exe" "C:\path\to\YourGame"
