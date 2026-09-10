@@ -171,7 +171,7 @@ camelCase and read case-insensitively.
   "logLevel": "Info",
   "enabledPlugins": ["com.example.mymod"],
   "enableMonoBridge": false,
-  "steamAppId": "2386580",
+  "steamAppId": "1234567",
   "profiler": { "enabled": true, "summaryIntervalSeconds": 30.0 },
   "hotReload": { "enabled": true, "autoWatch": true, "debounceMs": 500 },
   "pluginConfig": { "com.example.mymod": { "greeting": "hi" } }
