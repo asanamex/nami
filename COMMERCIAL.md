@@ -13,3 +13,11 @@ To ask:
 3. Wait for written approval before you charge anything.
 
 Using Nami or mentioning it endorses nothing either way (section 5), and the license grants no trademark rights beyond attribution (section 6).
+
+## Content monetization is not software commercialization
+
+Monetizing content that features a Nami mod needs no permission: Patreon-supported
+free mods, optional donations, and monetized YouTube/Twitch videos featuring the mod
+are allowed under section 8. Permission kicks in when software containing or depending
+on Nami or Nami mods is distributed commercially: paid modpacks, games built on Nami
+sold commercially, internal studio use, and paid games shipping a free Nami mod.

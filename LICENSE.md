@@ -33,3 +33,18 @@ logos, or branding except as expressly permitted for attribution.
 Nami is provided "as is", without warranty of any kind,
 express or implied, and the Nami copyright holder will not
 be liable for any damages arising from its use.
+
+8. Content Monetization vs Software Commercialization
+Monetizing content that features a Nami mod is allowed.
+Commercially distributing software that contains or depends
+on Nami or Nami mods is permission-based under section 3.
+
+| Scenario | Allowed? |
+|---|---|
+| Free mod supported by Patreon | Yes |
+| Free mod with optional donations | Yes |
+| YouTube/Twitch creator monetizing videos featuring the mod | Yes |
+| Paid modpack containing a Nami mod | Permission required |
+| Developer building and commercially distributing a game using Nami | Permission required |
+| Studio using Nami internally | Permission required |
+| Paid game shipping with a free Nami mod | Permission required |
