@@ -58,22 +58,25 @@ Every step below says what success looks like. Go slowly; each step takes second
 **Step 1. Back up the game.** Copy the whole game folder to a second location. Skip this
 only if you can re-download the game quickly.
 
-**Step 2. Unzip into place.** Open `nami-1.0.0.zip`. Inside is a single `nami/` folder
-layout. Copy that `nami/` folder so it sits directly inside the game folder, next to the
-game exe:
+**Step 2. Unzip into place.** Open `nami-1.0.0.zip`. Inside is the *contents* of a
+`nami/` folder (flat framework layout: `native/`, `dotnet/`, managed DLLs, plus a
+`manifest.json` of SHA-256 hashes) - there is no `nami/` folder in the zip itself.
+Create a `nami/` folder directly inside the game folder, next to the game exe, and
+extract the zip into it. Then create an empty `mods/` folder inside:
 
 ```
 YourGame/
   YourGame.exe
   YourGame_Data/
-  nami/                  <-- goes here
+  nami/                  <-- create this, extract the zip into it
     Nami.Runtime.dll
     Nami.Core.dll
     ...
     native/nami_boot.exe
     native/nami_loader.dll
     dotnet/              <-- bundled .NET, you do nothing with it
-    mods/                <-- empty for now
+    manifest.json        <-- hash manifest, leave it alone
+    mods/                <-- create empty
 ```
 
 Success: `<game>/nami/mods/` exists and is empty. Nothing else in the game folder changed.
@@ -144,6 +147,9 @@ Then, from the repo root:
 ```bat
 ::: stage a root from build outputs (Release tree; refuses stale outputs, see below)
 nami install "C:\path\to\YourGame"
+
+:::: same, but from the release artifact (every file hash-verified against manifest.json)
+nami install "C:\path\to\YourGame" --from nami-1.0.0.zip
 
 ::: remember the game exe once (add --steam-id <appid> for Steam titles)
 nami launch set "C:\path\to\YourGame\YourGame.exe" "C:\path\to\YourGame"
