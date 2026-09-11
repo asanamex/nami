@@ -98,10 +98,12 @@ internal static class Program
             return LaunchCommand.Set(gameDir, positional);
         }
 
-        // nami launch [offline|steam] [gameDir]
-        var mode = args.Length > 0 && args[0] is "offline" or "steam" ? args[0] : null;
-        var launchGameDir = mode is null ? ParseGameDir(args, out _) : ParseGameDir(args.Skip(1).ToArray(), out _);
-        return LaunchCommand.Run(launchGameDir, mode);
+        // nami launch [offline|steam] [--debug] [gameDir]
+        var debug = args.Any(a => a.Equals("--debug", StringComparison.OrdinalIgnoreCase));
+        var filtered = args.Where(a => !a.Equals("--debug", StringComparison.OrdinalIgnoreCase)).ToArray();
+        var mode = filtered.Length > 0 && filtered[0] is "offline" or "steam" ? filtered[0] : null;
+        var launchGameDir = mode is null ? ParseGameDir(filtered, out _) : ParseGameDir(filtered.Skip(1).ToArray(), out _);
+        return LaunchCommand.Run(launchGameDir, mode, debug);
     }
 
     private static int Create(string[] args)
@@ -456,9 +458,10 @@ internal static class Program
                                       native + bundled .NET runtime, hash-verified manifest)
               launch   set <game.exe> [--steam-id <appid>] [--force] [gameDir]
                                       remember which executable is the game
-              launch   [offline|steam] [gameDir]
+              launch   [offline|steam] [--debug] [gameDir]
                                       run the game with Nami injected (default: offline;
-                                      steam runs through the Steam client, needs --steam-id set)
+                                      steam runs through the Steam client, needs --steam-id set;
+                                      --debug streams nami.log until the game exits)
               create   [offline|steam] [gameDir]
                                       write launchNami.exe + run-with-nami.bat into the nami root
               run      <mod.csproj> [gameDir]

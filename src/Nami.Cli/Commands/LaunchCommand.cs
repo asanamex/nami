@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using Nami.Core.Configuration;
 
 namespace Nami.Cli.Commands;
@@ -63,8 +64,8 @@ internal static class LaunchCommand
         return 0;
     }
 
-    /// <summary>Handles `nami launch [offline|steam] [gameDir]`.</summary>
-    public static int Run(string gameDir, string? mode)
+    /// <summary>Handles `nami launch [offline|steam] [--debug] [gameDir]`.</summary>
+    public static int Run(string gameDir, string? mode, bool debug = false)
     {
         var root = InstallContext.RequireRoot(gameDir);
         var config = NamiConfig.Load(root);
@@ -79,7 +80,7 @@ internal static class LaunchCommand
             Console.WriteLine($"steam context: app {appId}");
         }
 
-        return LaunchInjected(gameExe, root);
+        return LaunchInjected(gameExe, root, debug);
     }
 
     /// <summary>
@@ -149,12 +150,97 @@ internal static class LaunchCommand
                    "Run `nami launch set <game>.exe`.");
     }
 
-    private static int LaunchInjected(string gameExe, string root)
+    private static int LaunchInjected(string gameExe, string root, bool debug)
     {
         Console.WriteLine($"launching '{gameExe}' with Nami...");
         var message = Launcher.LaunchInjected(gameExe, root, new ProcessRunner());
-        Console.WriteLine(message);
+        if (!debug)
+        {
+            Console.WriteLine(message);
+            return 0;
+        }
+
+        // Debug mode: the injector already returned (the game keeps running), so stay
+        // attached streaming nami.log until the game process exits. Ctrl+C detaches
+        // without touching the game.
+        Console.WriteLine("injected — streaming logs until the game exits (Ctrl+C detaches)...");
+        StreamLogs(
+            Path.Combine(root, "nami.log"),
+            Path.GetFileNameWithoutExtension(gameExe),
+            Console.Out);
+        Console.WriteLine("game process ended.");
         return 0;
+    }
+
+    /// <summary>
+    /// Prints new <c>nami.log</c> content every 250 ms until a process named
+    /// <paramref name="processName"/> has been seen and exits (gives up if it never
+    /// appears within two minutes). Tolerates the log rotating underfoot.
+    /// </summary>
+    internal static void StreamLogs(
+        string logPath, string processName, TextWriter output,
+        Func<string, bool>? isRunning = null, TimeSpan? appearGrace = null)
+    {
+        var running = isRunning ?? (Func<string, bool>)(static name => Process.GetProcessesByName(name).Length > 0);
+        var grace = appearGrace ?? TimeSpan.FromMinutes(2);
+        var start = DateTimeOffset.UtcNow;
+        var seen = false;
+        long position = 0;
+
+        while (true)
+        {
+            var alive = false;
+            try
+            {
+                alive = running(processName);
+            }
+            catch
+            {
+                // Process enumeration is best-effort; a transient failure
+                // must never kill the stream.
+            }
+
+            seen |= alive;
+            if (seen && !alive)
+            {
+                return;
+            }
+
+            if (!seen && DateTimeOffset.UtcNow - start > grace)
+            {
+                output.WriteLine($"(game process '{processName}' never appeared; stopping log stream)");
+                return;
+            }
+
+            try
+            {
+                var length = new FileInfo(logPath).Length;
+                if (length < position)
+                {
+                    position = 0; // fresh boot truncated the log
+                }
+
+                if (length > position)
+                {
+                    using var stream = new FileStream(
+                        logPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+                    stream.Seek(position, SeekOrigin.Begin);
+                    using var reader = new StreamReader(stream);
+                    output.Write(reader.ReadToEnd());
+                    position = stream.Position;
+                }
+            }
+            catch (IOException)
+            {
+                // Log locked mid-rotate or not created yet; retry next tick.
+            }
+            catch (UnauthorizedAccessException)
+            {
+                // Directory not yet readable; retry next tick.
+            }
+
+            Thread.Sleep(250);
+        }
     }
 
 }

@@ -246,4 +246,42 @@ public sealed class LiveCliTests : IDisposable
         Assert.Contains(AlphaId, output);
         Assert.Contains("1->2", output);
     }
+
+    [Fact]
+    public void StreamLogs_PrintsNewLines_UntilProcessEnds()
+    {
+        var log = Path.Combine(_root, "nami.log");
+        File.WriteAllText(log, "[boot] line one\n");
+
+        var calls = 0;
+        var output = new StringWriter();
+        LaunchCommand.StreamLogs(
+            log, "game", output,
+            _ =>
+            {
+                calls++;
+                if (calls == 2)
+                {
+                    File.AppendAllText(log, "[boot] line two\n");
+                }
+
+                return calls < 3;
+            },
+            TimeSpan.FromSeconds(30));
+
+        var text = output.ToString();
+        Assert.Contains("[boot] line one", text);
+        Assert.Contains("[boot] line two", text);
+    }
+
+    [Fact]
+    public void StreamLogs_MissingLog_NeverAppearingProcess_StopsAtGrace()
+    {
+        var output = new StringWriter();
+        LaunchCommand.StreamLogs(
+            Path.Combine(_root, "nami.log"), "ghost", output,
+            _ => false, TimeSpan.FromMilliseconds(100));
+
+        Assert.Contains("never appeared", output.ToString());
+    }
 }
