@@ -244,8 +244,8 @@ executable has been set, it auto-detects the largest `.exe` directly in the game
 (skipping known helpers like crash handlers/updaters; falls back to immediate subfolders
 excluding `_Data/` and `nami/`). `nami launch steam` ensures the Steam client is running,
 syncs the app id to `steam_appid.txt` next to the game (set it with
-`nami launch set --steam-id`; without one it refuses), then launches with Nami injected —
-the game runs with full Steam context (in-game status, overlay). Nothing happens after
+`nami launch set --steam-id`; without one it refuses), then launches with Nami injected.
+The game runs with full Steam context (in-game status, overlay). Nothing happens after
 the game exits. `nami create` writes `launchNami.exe` (self-contained) + `run-with-nami.bat` into the nami
 root, so the game can be started with Nami by double-clicking, without the CLI open.
 `nami run` is the modder's loop: build the mod, copy it into `nami/mods`, and launch.
